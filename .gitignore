@@ -1,0 +1,22 @@
+# Python / tooling
+.venv*/
+__pycache__/
+*.py[cod]
+
+# Generated documents — regenerate from the .md source anytime (never commit binaries)
+*.docx
+*.pdf
+*.html
+
+# YOUR PERSONAL DATA — never committed
+/profile/MASTER_PROFILE.md
+/profile/raw/*
+!/profile/raw/README.md
+
+# Applications are your data too; keep only the README and the demo example tracked
+/applications/*
+!/applications/README.md
+!/applications/example-acme-backend/
+
+# OS
+.DS_Store
