@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resume-tailor"
+version = "1.0.0"
+description = "Build ATS-safe and design-polished resumes from a structured career profile."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "python-docx>=1.2.0",
+    "PyYAML>=6.0.2",
+]
+
+[project.scripts]
+resume-tailor = "resume_tailor.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.14.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.14.0",
+    "types-PyYAML>=6.0.12",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resume_tailor"]
+
+# --- linting / formatting -------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # trailing-comma rules that fight the formatter
+    "CPY001",  # no per-file copyright headers in this project
+    "D203",    # incompatible with D211 (no blank line before class docstring)
+    "D213",    # incompatible with D212 (summary on the first line)
+    "ISC001",  # implicit string concat, handled by the formatter
+    "N813",    # `Document as new_docx` reads far better than the CamelCase original
+    "RUF001",  # resume content is full of en dashes, arrows and typographic quotes —
+    "RUF002",  # flagging them as "ambiguous unicode" is noise, not a finding
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/resume_tailor/cli.py" = ["T201"]  # printing to stdout is the CLI's whole job
+"tests/*" = [
+    "ANN401",   # **kwargs: Any is fine in a test helper
+    "D1",       # a test's name is its documentation
+    "PLC0415",  # local imports keep a test's dependencies next to the assertion
+    "PLR2004",  # magic values are the point of a test assertion
+    "PT018",    # a compound assert is often the clearest way to state one fact
+    "S101",     # assert is how pytest works
+    "SLF001",   # tests reach into private helpers deliberately
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true
+
+# --- type checking --------------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+enable_error_code = [
+    "explicit-override",
+    "ignore-without-code",
+    "possibly-undefined",
+    "redundant-expr",
+    "truthy-bool",
+]
+
+[[tool.mypy.overrides]]
+module = ["docx.*"]
+follow_untyped_imports = true
+
+# --- tests ----------------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=resume_tailor",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=xml",
+    "--cov-fail-under=100",
+]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/resume_tailor"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

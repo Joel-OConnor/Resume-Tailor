@@ -1,10 +1,14 @@
 <!--
-  COVER-LETTER FORMAT — tools/build.py renders this into a .docx + .pdf.
-    # Full Name            → name (first line)
-    header lines           → contact line(s) until the first blank line / "## "
-    plain paragraphs       → the letter body (greeting, 3–4 short paragraphs, sign-off)
-    **bold** inline        → emphasis
-  Keep it to one page (~250–350 words). Everything in this comment is stripped on export.
+  COVER-LETTER FORMAT — always exported single-column (a two-column letter reads badly).
+    # Full Name            the name (first line)
+    header lines           contact line(s) until the first blank line
+    plain paragraphs       the letter body: greeting, 3–4 short paragraphs, sign-off
+    a line ending in "\"   a hard line break (consecutive lines are otherwise joined into one)
+    **bold**  *italic*     inline emphasis
+
+  Keep it to one page (~250–350 words). Export with:
+    .venv/bin/resume-tailor build applications/<folder>/cover-letter.md
+  Everything in this comment is stripped on export.
 -->
 
 # Jordan Rivera
@@ -25,5 +29,5 @@ two of whom were promoted within the year. I care as much about the team's veloc
 I'd welcome the chance to talk about how I can help Acme ship real-time payments reliably. Thank you
 for your consideration.
 
-Sincerely,
+Sincerely,\
 Jordan Rivera

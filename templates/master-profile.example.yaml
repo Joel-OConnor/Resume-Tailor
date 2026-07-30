@@ -1,0 +1,163 @@
+# yaml-language-server: $schema=../schema/master-profile.schema.json
+# Example master profile — copy to profile/master-profile.yaml and replace with your own history.
+#
+#   cp templates/master-profile.example.yaml profile/master-profile.yaml
+#   make profile-check     # validate
+#   make profile-md        # readable Markdown view
+#
+# Everything in this file is fictional. Validated against schema/master-profile.schema.json.
+
+schema_version: 1
+
+contact:
+  name: Jordan Rivera
+  headline: Senior Backend Engineer
+  email: jordan.rivera@email.com
+  phone: (415) 555-0132
+  location: Austin, TX — open to remote
+  work_authorization: US citizen
+  links:
+    - label: LinkedIn
+      url: https://linkedin.com/in/jordanrivera
+    - label: GitHub
+      url: https://github.com/jrivera
+
+target_roles:
+  - Staff Backend Engineer
+  - Senior Backend Engineer
+  - Platform Engineer
+
+summary: >-
+  Senior backend engineer with 8 years building high-throughput payment and data services.
+  Specializes in Python and Go on AWS, scaling systems to millions of daily transactions and
+  mentoring teams toward faster, safer delivery.
+
+technologies:
+  - group: Languages
+    items:
+      - name: Python
+        level: expert
+        years: 8
+        used_at: [northwind-payments, cedar-analytics]
+      - name: Go
+        aliases: [Golang]
+        level: proficient
+        years: 4
+        used_at: [northwind-payments]
+      - name: SQL
+        level: expert
+        years: 8
+        used_at: [northwind-payments, cedar-analytics]
+
+  - group: Cloud & Infrastructure
+    items:
+      - name: Amazon Web Services (AWS)
+        aliases: [AWS]
+        level: expert
+        years: 8
+        used_at: [northwind-payments, cedar-analytics]
+      - name: Kubernetes
+        aliases: [K8s]
+        level: proficient
+        years: 3
+        used_at: [northwind-payments]
+      - name: Terraform
+        aliases: [infrastructure as code, IaC]
+        level: proficient
+        years: 4
+        used_at: [northwind-payments]
+
+  - group: Data
+    items:
+      - name: PostgreSQL
+        aliases: [Postgres]
+        level: expert
+        years: 8
+        used_at: [northwind-payments, cedar-analytics]
+      - name: Apache Kafka
+        aliases: [Kafka]
+        level: proficient
+        years: 5
+        used_at: [northwind-payments, cedar-analytics]
+
+  - group: Practices
+    items:
+      - name: CI/CD
+        aliases: [Continuous Integration, Continuous Delivery]
+        level: expert
+        years: 7
+        used_at: [northwind-payments, cedar-analytics]
+      - name: Test-driven development
+        aliases: [TDD]
+        level: proficient
+        years: 6
+        used_at: [northwind-payments]
+
+experience:
+  - id: northwind-payments
+    company: Northwind Payments
+    industry: Fintech — payments
+    location: Austin, TX
+    summary: Payment processor settling card transactions for mid-market merchants.
+    roles:
+      - title: Senior Backend Engineer
+        start: 2021-03
+        end: present
+        scope: Owns the settlement pipeline; tech lead for a team of six.
+        stack: [Go, Python, PostgreSQL, Kafka, AWS, Terraform]
+        highlights:
+          - label: Settlement Throughput
+            text: >-
+              Redesigned the settlement pipeline to process 4M+ daily transactions, cutting
+              end-to-end latency 38% (820ms → 510ms).
+            tags: [performance, latency, scale, go]
+          - label: Service Decomposition
+            text: >-
+              Led migration from a monolith to 6 Go microservices, reducing deploy time from
+              2 days to under 1 hour.
+            tags: [microservices, go, deployment, architecture]
+          - label: Mentorship
+            text: Mentored 4 engineers; two were promoted within a year.
+            tags: [mentorship, leadership]
+
+  - id: cedar-analytics
+    company: Cedar Analytics
+    industry: Data analytics
+    location: Remote
+    roles:
+      - title: Backend Engineer
+        start: 2018-06
+        end: 2021-02
+        stack: [Python, Kafka, DynamoDB, AWS]
+        highlights:
+          - label: Event Pipeline
+            text: >-
+              Built a Kafka-based event pipeline ingesting 500M events/day with 99.98% delivery
+              reliability.
+            tags: [kafka, streaming, reliability, scale]
+          - label: Cost Reduction
+            text: >-
+              Cut monthly AWS spend 22% (~$14k/mo) by right-sizing services and adding autoscaling.
+            tags: [aws, cost optimization]
+
+education:
+  - credential: B.S. Computer Science
+    institution: University of Texas at Austin
+    completed: 2016-05
+    location: Austin, TX
+
+certifications:
+  - name: AWS Certified Solutions Architect – Associate
+    issuer: Amazon
+    year: "2022"
+
+awards: []
+
+projects:
+  - name: pgbench-lite
+    description: A small load-generator for PostgreSQL, used to size the settlement database.
+    stack: [Python, PostgreSQL]
+    outcome: 300+ GitHub stars.
+
+notes:
+  - Confirm the exact settlement latency numbers before quoting them in an interview.

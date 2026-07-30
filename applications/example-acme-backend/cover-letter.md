@@ -18,5 +18,5 @@ velocity as about the code itself.
 I'd welcome the chance to discuss how I can help Acme ship real-time payments reliably at scale.
 Thank you for your consideration.
 
-Sincerely,
+Sincerely,\
 Jordan Rivera

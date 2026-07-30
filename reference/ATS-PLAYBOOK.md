@@ -19,8 +19,10 @@ So a resume has to win three times: parse cleanly, match the keywords, and read 
 
 ## Formatting rules that keep parsers happy
 
-The `tools/build.py` exporter produces a `.docx` that follows all of these — but if you edit by hand,
-keep to them:
+The **ATS layout** (`resume.docx` / `resume.pdf`) follows all of these by construction. The
+**polished layout** (`resume-polished.*`) deliberately breaks the single-column rule for the benefit
+of human readers — send that one to people, never to a portal. See
+[RESUME-FORMATS.md](RESUME-FORMATS.md). If you edit a `.docx` by hand, keep to these:
 
 **Do**
 - **Single column, top-to-bottom.** Parsers read in one flow. Two-column layouts get interleaved.
@@ -50,7 +52,9 @@ Keywords are how both the ATS search and the AI ranker find you. Use them honest
 - **Match the job title framing** in your summary when it's honest — if you've done the work of a
   "Data Engineer" and that's the title posted, frame yourself that way.
 - **Include acronyms *and* their expansion once:** "Applicant Tracking System (ATS)," "Amazon Web
-  Services (AWS)" — screeners may search for either form.
+  Services (AWS)" — screeners may search for either form. This is what the master profile's
+  `technologies[].aliases` field is for: record both spellings once, then print whichever one the
+  posting used.
 - **Put the most important keywords high** — the summary and the top of your skills and most-recent
   role carry the most weight.
 - **Weave keywords into real accomplishments,** not a stuffed list. "Owned the CI/CD pipeline

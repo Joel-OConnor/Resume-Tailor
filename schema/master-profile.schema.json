@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/resume-tailor/schema/master-profile.schema.json",
+  "title": "Master profile",
+  "description": "The machine-readable superset of a career. Resume tailoring selects and reframes from this file; it never adds anything absent from it.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contact": {
+      "$ref": "#/$defs/Contact",
+      "description": "Name, headline, and contact details."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Generic summary; tailoring rewrites a targeted one per job."
+    },
+    "experience": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Tenure"
+      },
+      "description": "Every employer, most recent first."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version this file targets."
+    },
+    "target_roles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Job titles being aimed at; guides what to emphasise."
+    },
+    "technologies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TechnologyGroup"
+      },
+      "description": "Every technology ever used, grouped."
+    },
+    "education": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Education"
+      },
+      "description": "Degrees and programs."
+    },
+    "certifications": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Credential"
+      },
+      "description": "Certifications and licenses."
+    },
+    "awards": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Credential"
+      },
+      "description": "Awards, publications, talks, patents."
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Project"
+      },
+      "description": "Side projects and open-source work."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Open questions and facts to confirm; never printed on a resume."
+    }
+  },
+  "required": [
+    "contact",
+    "summary",
+    "experience"
+  ],
+  "$defs": {
+    "Contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name, as it should appear on the resume."
+        },
+        "headline": {
+          "type": "string",
+          "description": "Professional headline, e.g. 'Lead Software Engineer & Architect'."
+        },
+        "email": {
+          "type": "string",
+          "description": "Primary email address."
+        },
+        "location": {
+          "type": "string",
+          "description": "City, ST. Add 'remote' or 'open to relocation' if true."
+        },
+        "phone": {
+          "type": "string",
+          "description": "Phone number, formatted the way it should print."
+        },
+        "work_authorization": {
+          "type": "string",
+          "description": "Only if worth stating, e.g. 'US citizen'."
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "description": "Profile and portfolio links."
+        }
+      },
+      "required": [
+        "name",
+        "headline",
+        "email"
+      ],
+      "title": "Who the candidate is and how to reach them."
+    },
+    "Link": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Human label, e.g. LinkedIn or GitHub."
+        },
+        "url": {
+          "type": "string",
+          "description": "Full URL, including the scheme."
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "title": "A profile or portfolio URL."
+    },
+    "Tenure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "description": "Stable slug referenced by technology.used_at, e.g. charter-communications."
+        },
+        "company": {
+          "type": "string",
+          "description": "Employer name."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Role"
+          },
+          "description": "Titles held here, most recent first."
+        },
+        "location": {
+          "type": "string",
+          "description": "City, ST, or Remote."
+        },
+        "industry": {
+          "type": "string",
+          "description": "Industry or domain, useful when a posting names one."
+        },
+        "summary": {
+          "type": "string",
+          "description": "What the company or business unit does."
+        }
+      },
+      "required": [
+        "id",
+        "company",
+        "roles"
+      ],
+      "title": "Everything done at one employer, with each title as a separate :class:`Role`."
+    },
+    "Role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Job title as held."
+        },
+        "start": {
+          "type": "string",
+          "pattern": "^(?:[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$",
+          "description": "Start date as YYYY-MM or YYYY."
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^(?:present|[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$",
+          "description": "End date as YYYY-MM, YYYY, or 'present'."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Team size, org, remit, budget, scale \u2014 context a bullet can't carry."
+        },
+        "stack": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Technologies used in this role."
+        },
+        "highlights": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Highlight"
+          },
+          "description": "Accomplishments in this role."
+        }
+      },
+      "required": [
+        "title",
+        "start",
+        "end"
+      ],
+      "title": "One title held at one employer."
+    },
+    "Highlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Strong verb, what was done, and the measurable outcome."
+        },
+        "label": {
+          "type": "string",
+          "description": "Short bold lead-in for the polished layout, e.g. 'Data Layer Design'."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords this is evidence for, for matching against a posting."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "One accomplishment. Capture many per role \u2014 tailoring picks the relevant few."
+    },
+    "TechnologyGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "Group name, e.g. Frontend, Backend & Cloud, DevOps & Tools."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Technology"
+          },
+          "description": "Technologies in this group, strongest first."
+        }
+      },
+      "required": [
+        "group",
+        "items"
+      ],
+      "title": "A named cluster of technologies \u2014 the unit a resume's Skills section prints."
+    },
+    "Technology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Canonical name, spelled the way a job posting spells it."
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Other spellings a screener may search for, e.g. K8s for Kubernetes."
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "",
+            "exposure",
+            "working",
+            "proficient",
+            "expert"
+          ],
+          "description": "One of: exposure, working, proficient, expert."
+        },
+        "years": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Approximate years of hands-on use."
+        },
+        "used_at": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Employer ids where this was used; each must match an experience id."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "One tool, language, framework, platform, or practice."
+    },
+    "Education": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "credential": {
+          "type": "string",
+          "description": "Degree or program name."
+        },
+        "institution": {
+          "type": "string",
+          "description": "School name."
+        },
+        "completed": {
+          "type": "string",
+          "pattern": "^(?:|[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$",
+          "description": "Completion date as YYYY-MM or YYYY."
+        },
+        "location": {
+          "type": "string",
+          "description": "City, ST."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Honors, GPA if strong, relevant coursework."
+        }
+      },
+      "required": [
+        "credential",
+        "institution"
+      ],
+      "title": "A degree, bootcamp, or program."
+    },
+    "Credential": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "What it is."
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Who issued or hosted it."
+        },
+        "year": {
+          "type": "string",
+          "pattern": "^(?:|[0-9]{4})$",
+          "description": "Year awarded, as YYYY."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Expiry, credential id, or link."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "A certification, license, award, publication, or talk."
+    },
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Project name."
+        },
+        "description": {
+          "type": "string",
+          "description": "What it is and what the candidate's role was."
+        },
+        "stack": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Technologies used."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "Result, usage, or link."
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "Side project, open-source work, or significant personal build."
+    }
+  }
+}

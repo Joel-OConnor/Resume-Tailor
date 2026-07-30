@@ -1,18 +1,31 @@
 <!--
-  RESUME FORMAT CONTRACT — tools/build.py renders this exact structure into an ATS-safe .docx + .pdf.
-  Keep to it so exports come out clean. (Everything inside this comment is stripped on export.)
+  RESUME FORMAT CONTRACT — this exact structure renders into both layouts:
+    resume.docx / resume.pdf                    ATS-safe, single column     → submit this
+    resume-polished.docx / resume-polished.pdf  two-column design           → send to a person
 
-    # Full Name                     → the name (one, first line)
-    lines until the first "## "     → header lines: an optional title, then the contact line
-    ## Section                      → a section heading (Summary, Skills, Experience, Education, …)
-    ### Entry Title                 → a role/degree/project title (bold)
-    a plain line right after ###    → the dates/location line (italic)
-    **Label:** a, b, c              → a skills line: bold label + normal items
-    - bullet                        → a bullet point
-    **bold** inline                 → bold text within any line
+  Syntax:
+    # Full Name                     the name (one, first line)
+    lines until the first blank     header lines — a target title, then the contact line
+    a header line containing " | "  treated as contact details (polished puts these in the rail)
+    ## Section                      section heading (Summary, Skills, Experience, Education, …)
+    ### Entry Title                 a role, degree, project, or certification
+    a plain line right after ###    the dates/location line (italic)
+    **Label:** a, b, c              a skills line: bold label + comma-separated items
+    - bullet                        a bullet point
+    - **Lead-in:** text             a bullet with a bold lead-in — polished drops the glyph
+    *Tech Stack — a, b, c*          a plain line after the bullets: an italic note, no bullet glyph
+    a line ending in "\"            a hard line break (prose lines are otherwise joined)
+    **bold**  *italic*  _italic_    inline emphasis — nests, and \* prints a literal asterisk
+                                    (works everywhere except `##` section headings)
 
-  Rules: single column, standard headings, no tables/images/columns. Contact on ONE line, separated
-  by " | ". Use real text (no icons). This file is a valid example — copy it and fill in real data.
+  Rules:
+    - Single column, standard headings, no tables/images/columns of your own.
+    - Contact details on ONE line separated by " | ". Real text, no icons.
+    - In the polished layout, Skills / Education / Certifications go in the left rail; keep those
+      entries short so they don't wrap badly in a 2.45in column.
+    - Order everything most-relevant-first. The top third of page one is what gets read.
+
+  This file is a valid example — copy it and fill in real data. Comments are stripped on export.
 -->
 
 # Jordan Rivera
@@ -20,35 +33,37 @@ Senior Backend Engineer
 jordan.rivera@email.com | (415) 555-0132 | Austin, TX | linkedin.com/in/jordanrivera | github.com/jrivera
 
 ## Summary
-Senior backend engineer with 8 years building high-throughput payment and data services. Specializes
-in Python and Go on AWS, scaling systems to millions of daily transactions and mentoring teams toward
-faster, safer delivery.
+Senior backend engineer with 8 years building high-throughput payment and data services.
+Specializes in Python and Go on AWS, scaling systems to millions of daily transactions and
+mentoring teams toward faster, safer delivery.
 
 ## Skills
 **Languages:** Python, Go, SQL, TypeScript
 **Cloud & Infra:** AWS (ECS, Lambda, RDS), Kubernetes, Terraform, Docker
 **Data:** PostgreSQL, Redis, Kafka, DynamoDB
-**Practices:** CI/CD (GitHub Actions), observability, test-driven development, on-call leadership
+**Practices:** CI/CD (GitHub Actions), Observability, Test-Driven Development
 
 ## Experience
 
-### Senior Backend Engineer, Northwind Payments — Austin, TX
-Mar 2021 – Present
-- Redesigned the settlement pipeline to process 4M+ daily transactions, cutting end-to-end latency 38% (820ms → 510ms).
-- Led migration from a monolith to 6 Go microservices, reducing deploy time from 2 days to under 1 hour.
-- Introduced automated load testing that caught 3 severe regressions before release, avoiding an estimated $200k in incident costs.
-- Mentored 4 engineers; two were promoted within a year.
+### Northwind Payments — Senior Backend Engineer
+Austin, TX | Mar 2021 – Present
+- **Settlement Throughput:** Redesigned the settlement pipeline to process 4M+ daily transactions, cutting end-to-end latency 38% (820ms → 510ms).
+- **Service Decomposition:** Led migration from a monolith to 6 Go microservices, reducing deploy time from 2 days to under 1 hour.
+- **Release Safety:** Introduced automated load testing that caught 3 severe regressions before release, avoiding an estimated $200k in incident costs.
+- **Mentorship:** Mentored 4 engineers; two were promoted within a year.
+*Tech Stack — Go, Python, PostgreSQL, Kafka, AWS (ECS, Lambda, RDS), Terraform, GitHub Actions*
 
-### Backend Engineer, Cedar Analytics — Remote
-Jun 2018 – Feb 2021
-- Built a Kafka-based event pipeline ingesting 500M events/day with 99.98% delivery reliability.
-- Cut monthly AWS spend 22% (~$14k/mo) by right-sizing services and adding autoscaling.
-- Shipped the public REST API used by 40+ enterprise customers.
+### Cedar Analytics — Backend Engineer
+Remote | Jun 2018 – Feb 2021
+- **Event Pipeline:** Built a Kafka-based event pipeline ingesting 500M events/day with 99.98% delivery reliability.
+- **Cost Reduction:** Cut monthly AWS spend 22% (~$14k/mo) by right-sizing services and adding autoscaling.
+- **Public API:** Shipped the public REST API used by 40+ enterprise customers.
+*Tech Stack — Python, Kafka, DynamoDB, AWS (Lambda, RDS), Docker*
 
 ## Education
 
-### B.S. Computer Science, University of Texas at Austin — Austin, TX
-2016
+### B.S. Computer Science
+University of Texas at Austin, 2016
 
 ## Certifications
 - AWS Certified Solutions Architect – Associate — Amazon — 2022

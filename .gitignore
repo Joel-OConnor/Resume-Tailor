@@ -1,22 +1,35 @@
-# Python / tooling
-.venv*/
-__pycache__/
-*.py[cod]
-
-# Generated documents — regenerate from the .md source anytime (never commit binaries)
-*.docx
-*.pdf
-*.html
-
-# YOUR PERSONAL DATA — never committed
+# --- YOUR PERSONAL DATA — never committed ---------------------------------------------------------
+/profile/master-profile.yaml
 /profile/MASTER_PROFILE.md
 /profile/raw/*
 !/profile/raw/README.md
 
-# Applications are your data too; keep only the README and the demo example tracked
+# Applications are your data too; only the README and the demo example are tracked
 /applications/*
 !/applications/README.md
 !/applications/example-acme-backend/
 
-# OS
+# --- generated documents (regenerate with `make export`) -------------------------------------------
+*.docx
+*.pdf
+*.html
+
+# --- Python ---------------------------------------------------------------------------------------
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- tooling caches and reports -------------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# --- OS -------------------------------------------------------------------------------------------
 .DS_Store
