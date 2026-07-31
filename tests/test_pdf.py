@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from resume_tailor.render import pdf
+from resume_tailor.render.pdf import BROWSER_FAILED, NO_BROWSER
 
 HTML = "<!doctype html><html><body>hi</body></html>"
 
@@ -21,15 +22,20 @@ def _no_real_chrome(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _fake_chrome(
-    monkeypatch: pytest.MonkeyPatch, effect: Any, *, path: str = "/fake/chrome"
+    monkeypatch: pytest.MonkeyPatch,
+    effect: Any,
+    *,
+    path: str = "/fake/chrome",
+    returncode: int = 0,
 ) -> list[list[str]]:
     """Point ``find_chrome`` at ``path`` and record every command ``effect`` receives."""
     calls: list[list[str]] = []
     monkeypatch.setattr(pdf, "find_chrome", lambda: path)
 
-    def run(command: list[str], **_: object) -> object:
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
         calls.append(command)
-        return effect(command)
+        effect(command)
+        return subprocess.CompletedProcess(command, returncode, b"", b"")
 
     monkeypatch.setattr("subprocess.run", run)
     return calls
@@ -66,7 +72,9 @@ def test_find_chrome_falls_back_to_the_path(monkeypatch: pytest.MonkeyPatch) -> 
 # --- html_to_pdf ----------------------------------------------------------------------------------
 def test_without_chrome_the_html_is_written_instead(tmp_path: Path) -> None:
     out = tmp_path / "resume.pdf"
-    assert pdf.html_to_pdf(HTML, out) is False
+    result = pdf.html_to_pdf(HTML, out)
+    assert result.ok is False
+    assert result.reason == NO_BROWSER
     assert not out.exists()
     assert out.with_suffix(".html").read_text(encoding="utf-8") == HTML
 
@@ -74,7 +82,7 @@ def test_without_chrome_the_html_is_written_instead(tmp_path: Path) -> None:
 def test_a_successful_run_produces_the_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls = _fake_chrome(monkeypatch, _writes_pdf)
     out = tmp_path / "resume.pdf"
-    assert pdf.html_to_pdf(HTML, out) is True
+    assert pdf.html_to_pdf(HTML, out).ok is True
     assert out.read_bytes().startswith(b"%PDF")
     assert not out.with_suffix(".html").exists()
     assert len(calls) == 1
@@ -90,7 +98,7 @@ def test_the_legacy_headless_flag_is_retried(
             _writes_pdf(command)
 
     calls = _fake_chrome(monkeypatch, only_old_headless)
-    assert pdf.html_to_pdf(HTML, tmp_path / "resume.pdf") is True
+    assert pdf.html_to_pdf(HTML, tmp_path / "resume.pdf").ok is True
     assert [call[1] for call in calls] == ["--headless=new", "--headless"]
 
 
@@ -102,7 +110,10 @@ def test_an_empty_pdf_counts_as_a_failure(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     _fake_chrome(monkeypatch, empty_file)
     out = tmp_path / "resume.pdf"
-    assert pdf.html_to_pdf(HTML, out) is False
+    result = pdf.html_to_pdf(HTML, out)
+    assert result.ok is False
+    assert result.reason == BROWSER_FAILED
+    assert not out.exists()
     assert out.with_suffix(".html").read_text(encoding="utf-8") == HTML
 
 
@@ -118,7 +129,7 @@ def test_a_crashing_or_hanging_chrome_falls_back(
 
     _fake_chrome(monkeypatch, raises)
     out = tmp_path / "resume.pdf"
-    assert pdf.html_to_pdf(HTML, out) is False
+    assert pdf.html_to_pdf(HTML, out).ok is False
     assert out.with_suffix(".html").exists()
 
 
@@ -141,3 +152,58 @@ def test_chrome_is_never_invoked_through_a_shell(
     calls = _fake_chrome(monkeypatch, _writes_pdf, path="/Applications/Google Chrome/chrome")
     pdf.html_to_pdf(HTML, tmp_path / "resume.pdf")
     assert calls[0][0] == "/Applications/Google Chrome/chrome"
+
+
+def test_a_nonzero_exit_is_a_failure_even_when_a_pdf_is_there(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A crashed browser must not let yesterday's PDF pass as today's export."""
+    out = tmp_path / "resume.pdf"
+    out.write_bytes(b"%PDF-1.4\nSTALE CONTENT FROM AN EARLIER BUILD")
+
+    _fake_chrome(monkeypatch, lambda _: None, returncode=133)
+    result = pdf.html_to_pdf(HTML, out)
+    assert result.ok is False
+    assert result.reason == BROWSER_FAILED
+    assert not out.exists()
+    assert out.with_suffix(".html").read_text(encoding="utf-8") == HTML
+
+
+def test_a_partial_pdf_is_removed_rather_than_left_to_be_attached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def truncated(command: list[str]) -> None:
+        for argument in command:
+            if argument.startswith("--print-to-pdf="):
+                Path(argument.removeprefix("--print-to-pdf=")).write_bytes(b"%PDF-1.4\ntrunc")
+
+    _fake_chrome(monkeypatch, truncated, returncode=1)
+    out = tmp_path / "resume.pdf"
+    assert pdf.html_to_pdf(HTML, out).ok is False
+    assert not out.exists()
+
+
+def test_a_successful_run_clears_a_stale_html_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Otherwise the folder holds two vintages of the same resume with no way to tell which."""
+    out = tmp_path / "resume.pdf"
+    out.with_suffix(".html").write_text("STALE FALLBACK", encoding="utf-8")
+
+    _fake_chrome(monkeypatch, _writes_pdf)
+    assert pdf.html_to_pdf(HTML, out).ok is True
+    assert not out.with_suffix(".html").exists()
+
+
+def test_a_silent_browser_does_not_let_a_stale_pdf_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Chrome can exit 0 and write nothing; last week's PDF must not be taken for this build."""
+    out = tmp_path / "resume.pdf"
+    out.write_bytes(b"%PDF-1.4\nSTALE FROM LAST WEEK")
+
+    _fake_chrome(monkeypatch, lambda _: None, returncode=0)
+    result = pdf.html_to_pdf(HTML, out)
+    assert result.ok is False
+    assert result.reason == BROWSER_FAILED
+    assert not out.exists()

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, assert_never, cast
 
 from docx import Document as new_docx
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.shared import Inches, Pt
+from docx.shared import Inches
 
 from resume_tailor.documents.blocks import (
     Bullet,
@@ -31,8 +31,9 @@ from resume_tailor.documents.blocks import (
 from resume_tailor.render.docx_common import (
     add_spans,
     set_cell_border,
+    set_cell_margins,
     set_indent,
-    set_line_spacing,
+    set_spacing,
 )
 from resume_tailor.render.html_common import FONT_STACK, page, spans_to_html
 
@@ -61,19 +62,43 @@ FONT_SEMIBOLD = "Roboto SemiBold"
 BODY_PT = 10.0
 CONTACT_PT = 9.0
 SECTION_PT = 15.0
+SUBTITLE_PT = 12.0
 NAME_PT = 35.0
-LINE_SPACING = 1.15
+
+# Absolute, so Word and the browser agree — see docx_common.set_spacing for why a ratio does not.
+LINE_PT = 11.5
+NAME_LINE_PT = 36.75
+# The gap ABOVE each block. It lives in exactly one property on each side.
+GAP_PT = {
+    "name": 0.0,
+    "contact": 2.0,
+    "subtitle": 2.0,
+    "section": 12.0,
+    "entry": 6.0,
+    "meta": 0.0,
+    "lead": 3.0,
+    "bullet": 2.0,
+    "para": 4.0,
+    "skill-group": 6.0,
+    "skill-item": 0.0,
+    "skill-inline": 2.0,
+}
 
 PAGE_MARGIN_IN = 0.45
-SIDEBAR_WIDTH_IN = 2.45
-MAIN_WIDTH_IN = 6.05
+SIDEBAR_WIDTH_IN = 2.42
+MAIN_WIDTH_IN = 6.08
 SIDEBAR_INDENT = (0.45, 0.25)
 MAIN_INDENT = (0.30, 0.50)
 BULLET_HANGING_IN = 0.18
 
 
 def _is_contact_line(spans: tuple[Span, ...]) -> bool:
-    """Contact lines are the pipe-separated ones; anything else is a target-title subtitle."""
+    """Contact lines are the pipe-separated ones; anything else is a target-title subtitle.
+
+    Any pipe counts, not just the documented ``" | "``, so a contact line written without spaces
+    still reaches the rail. The cost is that a target title containing a pipe is misread as
+    contact details — write the title without one.
+    """
     return "|" in "".join(span.text for span in spans)
 
 
@@ -142,6 +167,7 @@ def render_docx(
         cell.width = Inches(width)
     for column, width in zip(table.columns, (SIDEBAR_WIDTH_IN, MAIN_WIDTH_IN), strict=True):
         column.width = Inches(width)
+    set_cell_margins(table, 0)
     set_cell_border(rail, "right")
 
     sidebar_groups, main_groups = split_columns(document, sidebar_sections)
@@ -174,18 +200,18 @@ def _fill_cell(
         cell._tc.remove(placeholder._p)  # noqa: SLF001
 
 
-def _paragraph(
+def _paragraph(  # noqa: PLR0913 - each argument is one independent paragraph property
     cell: _Cell,
     indent: tuple[float, float],
+    kind: str,
     *,
     hanging: float = 0.0,
     style: str | None = None,
+    line: float = LINE_PT,
 ) -> DocxParagraph:
     paragraph = cast("DocxParagraph", cell.add_paragraph(style=style))
     set_indent(paragraph, left=indent[0] + hanging, right=indent[1], hanging=hanging)
-    set_line_spacing(paragraph, LINE_SPACING)
-    paragraph.paragraph_format.space_before = Pt(0)
-    paragraph.paragraph_format.space_after = Pt(0)
+    set_spacing(paragraph, before=GAP_PT[kind], line=line)
     return paragraph
 
 
@@ -199,42 +225,37 @@ def _add(  # noqa: C901 - flat dispatch over the block union
 ) -> None:
     match block:
         case Name(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph = _paragraph(cell, indent, "name", line=NAME_LINE_PT)
             add_spans(paragraph, spans, font=FONT_LIGHT, size=NAME_PT)
+        case HeaderLine(spans) if sidebar:
+            paragraph = _paragraph(cell, indent, "contact")
+            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=CONTACT_PT)
         case HeaderLine(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_after = Pt(2)
-            if sidebar:
-                add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=CONTACT_PT)
-            else:
-                add_spans(paragraph, spans, font=FONT, size=SECTION_PT * 0.8)
+            paragraph = _paragraph(cell, indent, "subtitle")
+            add_spans(paragraph, spans, font=FONT, size=SUBTITLE_PT)
         case Section(title):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_before = Pt(12)
-            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph = _paragraph(cell, indent, "section")
             add_spans(paragraph, (Span(title),), font=FONT, size=SECTION_PT)
         case Entry(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_before = Pt(6)
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=BODY_PT, bold=True)
+            paragraph = _paragraph(cell, indent, "entry")
+            # The family name already carries the weight; adding bold on top resolves to the
+            # bold companion of SemiBold, which is heavier than the design and than the HTML.
+            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=BODY_PT)
         case Meta(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_after = Pt(3)
+            paragraph = _paragraph(cell, indent, "meta")
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, italic=True)
         case SkillLine(label, items):
             _add_skill(cell, label, items, indent=indent, sidebar=sidebar)
         case Bullet(spans) if _lead_in(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_after = Pt(3)
+            paragraph = _paragraph(cell, indent, "lead")
             add_spans(paragraph, spans, font=FONT, size=BODY_PT)
         case Bullet(spans):
-            paragraph = _paragraph(cell, indent, hanging=BULLET_HANGING_IN, style="List Bullet")
-            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph = _paragraph(
+                cell, indent, "bullet", hanging=BULLET_HANGING_IN, style="List Bullet"
+            )
             add_spans(paragraph, spans, font=FONT, size=BODY_PT)
         case Paragraph(spans):
-            paragraph = _paragraph(cell, indent)
-            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph = _paragraph(cell, indent, "para")
             add_spans(paragraph, spans, font=FONT, size=BODY_PT)
         case _:  # pragma: no cover - mypy proves the block union is exhaustive
             assert_never(block)
@@ -250,18 +271,15 @@ def _add_skill(
 ) -> None:
     """In the rail a skill group stacks one item per line; in the main column it stays inline."""
     if not sidebar:
-        paragraph = _paragraph(cell, indent)
-        paragraph.paragraph_format.space_after = Pt(2)
+        paragraph = _paragraph(cell, indent, "skill-inline")
         add_spans(paragraph, (Span(f"{label}: "),), font=FONT, size=BODY_PT, bold=True)
         add_spans(paragraph, items, font=FONT, size=BODY_PT)
         return
 
-    heading = _paragraph(cell, indent)
-    heading.paragraph_format.space_before = Pt(6)
-    heading.paragraph_format.space_after = Pt(1)
+    heading = _paragraph(cell, indent, "skill-group")
     add_spans(heading, (Span(label),), font=FONT, size=BODY_PT, bold=True)
     for item in _skill_items(items):
-        paragraph = _paragraph(cell, indent)
+        paragraph = _paragraph(cell, indent, "skill-item")
         add_spans(paragraph, item, font=FONT, size=BODY_PT)
 
 
@@ -305,27 +323,32 @@ def _skill_items(items: tuple[Span, ...]) -> list[tuple[Span, ...]]:
 CSS = f"""
 @page {{ size: Letter; margin: {PAGE_MARGIN_IN}in 0; }}
 * {{ box-sizing: border-box; }}
-body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_SPACING};
+/* Every gap is a margin-TOP, every bottom margin is 0, and line-height is absolute — the .docx
+   sums adjacent spacing where CSS collapses it, and Word's line "multiple" is a ratio of the
+   font's natural line box rather than of its size. Points mean the same thing to both. */
+body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
         color: #111; margin: 0; }}
+h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
 /* The rule stops where the content does, exactly as the .docx table row does. */
 .sheet {{ display: flex; align-items: stretch; }}
 .rail {{ width: {SIDEBAR_WIDTH_IN}in; flex: 0 0 {SIDEBAR_WIDTH_IN}in; border-right: 1pt solid #000;
          padding: 0 {SIDEBAR_INDENT[1]}in 0 {SIDEBAR_INDENT[0]}in; }}
 .main {{ width: {MAIN_WIDTH_IN}in; flex: 1 1 {MAIN_WIDTH_IN}in;
          padding: 0 {MAIN_INDENT[1]}in 0 {MAIN_INDENT[0]}in; }}
-h1 {{ font-size: {NAME_PT}pt; font-weight: 200; margin: 0 0 4pt 0; line-height: 1.05; }}
-h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; margin: 12pt 0 4pt 0; }}
-h3 {{ font-size: {BODY_PT}pt; font-weight: 600; margin: 6pt 0 0 0; }}
-.subtitle {{ font-size: {SECTION_PT * 0.8}pt; margin: 0 0 2pt 0; }}
-.contact {{ font-size: {CONTACT_PT}pt; font-weight: 600; margin: 0 0 2pt 0; }}
-.meta {{ font-style: italic; margin: 0 0 3pt 0; }}
-.skill-group {{ font-weight: 700; margin: 6pt 0 1pt 0; }}
-.skill-item {{ margin: 0; }}
-.skill-inline {{ margin: 0 0 2pt 0; }}
-.lead {{ margin: 0 0 3pt 0; }}
-p {{ margin: 0 0 4pt 0; }}
-ul {{ margin: 0 0 4pt 0; padding-left: {BULLET_HANGING_IN + 0.06}in; }}
-li {{ margin: 0 0 2pt 0; }}
+h1 {{ font-size: {NAME_PT}pt; font-weight: 200; line-height: {NAME_LINE_PT}pt;
+      margin-top: {GAP_PT["name"]}pt; }}
+h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; margin-top: {GAP_PT["section"]}pt; }}
+h3 {{ font-size: {BODY_PT}pt; font-weight: 600; margin-top: {GAP_PT["entry"]}pt; }}
+.subtitle {{ font-size: {SUBTITLE_PT}pt; margin-top: {GAP_PT["subtitle"]}pt; }}
+.contact {{ font-size: {CONTACT_PT}pt; font-weight: 600; margin-top: {GAP_PT["contact"]}pt; }}
+.meta {{ font-style: italic; margin-top: {GAP_PT["meta"]}pt; }}
+.skill-group {{ font-weight: 700; margin-top: {GAP_PT["skill-group"]}pt; }}
+.skill-item {{ margin-top: {GAP_PT["skill-item"]}pt; }}
+.skill-inline {{ margin-top: {GAP_PT["skill-inline"]}pt; }}
+.lead {{ margin-top: {GAP_PT["lead"]}pt; }}
+p {{ margin-top: {GAP_PT["para"]}pt; }}
+ul {{ padding-left: {BULLET_HANGING_IN + MAIN_INDENT[0]}in; list-style-position: outside; }}
+li {{ margin-top: {GAP_PT["bullet"]}pt; }}
 """
 
 

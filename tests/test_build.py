@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from resume_tailor.errors import RenderError
 from resume_tailor.render import exporter
 from resume_tailor.render.exporter import Layout, build
+from resume_tailor.render.pdf import NO_BROWSER, PdfResult
 from tests.conftest import RESUME_MD
 
 if TYPE_CHECKING:
@@ -23,9 +25,9 @@ def source(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _pdf_always_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake(_: str, out: Path) -> bool:
+    def fake(_: str, out: Path) -> PdfResult:
         out.write_bytes(b"%PDF-1.4\n")
-        return True
+        return PdfResult(ok=True)
 
     monkeypatch.setattr(exporter, "html_to_pdf", fake)
 
@@ -79,9 +81,9 @@ def test_an_out_dir_is_created_and_used(source: Path, tmp_path: Path) -> None:
 
 
 def test_a_failed_pdf_is_reported_as_html(source: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fails(html: str, out: Path) -> bool:
+    def fails(html: str, out: Path) -> PdfResult:
         out.with_suffix(".html").write_text(html, encoding="utf-8")
-        return False
+        return PdfResult(ok=False, reason=NO_BROWSER)
 
     monkeypatch.setattr(exporter, "html_to_pdf", fails)
     artifacts = build(source, layout=Layout.ATS)
@@ -129,3 +131,100 @@ def test_is_sectioned_distinguishes_a_resume_from_a_letter() -> None:
 
     assert exporter.is_sectioned(parse("# A\n\n## Summary\nx"))
     assert not exporter.is_sectioned(parse("# A\n\nDear sir,\n"))
+
+
+def test_a_dotted_stem_does_not_collapse_the_output_names(tmp_path: Path) -> None:
+    """`with_suffix` would turn resume.v2.md into resume.docx, and polished would overwrite it."""
+    source = tmp_path / "resume.v2.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    assert _names(source, pdf=False) == ["resume.v2.docx", "resume.v2-polished.docx"]
+    assert (tmp_path / "resume.v2.docx").is_file()
+    assert (tmp_path / "resume.v2-polished.docx").is_file()
+
+
+def test_a_dotted_stem_keeps_the_ats_file_single_column(tmp_path: Path) -> None:
+    from docx import Document as read_docx
+
+    source = tmp_path / "jordan.rivera.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    build(source, pdf=False)
+    assert not read_docx(str(tmp_path / "jordan.rivera.docx")).tables
+    assert read_docx(str(tmp_path / "jordan.rivera-polished.docx")).tables
+
+
+def test_a_utf8_bom_does_not_hide_the_name_line(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_bytes(b"\xef\xbb\xbf" + RESUME_MD.encode("utf-8"))
+    assert _names(source, pdf=False) == ["resume.docx", "resume-polished.docx"]
+
+
+def test_an_unreadable_source_is_a_render_error(tmp_path: Path) -> None:
+    (tmp_path / "adir.md").mkdir()
+    with pytest.raises(RenderError, match="cannot read"):
+        build(tmp_path / "adir.md", pdf=False)
+
+
+def test_a_non_utf8_source_is_a_render_error(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_bytes(RESUME_MD.encode("utf-16"))
+    with pytest.raises(RenderError, match="not UTF-8"):
+        build(source, pdf=False)
+
+
+def test_an_out_dir_that_is_a_file_is_a_render_error(source: Path, tmp_path: Path) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("", encoding="utf-8")
+    with pytest.raises(RenderError, match="cannot write to"):
+        build(source, out_dir=blocker, pdf=False)
+
+
+def test_an_unwritable_docx_target_is_a_render_error(source: Path, tmp_path: Path) -> None:
+    (tmp_path / "resume.docx").mkdir()
+    with pytest.raises(RenderError, match="cannot write"):
+        build(source, pdf=False)
+
+
+def test_a_pdf_write_failure_is_a_render_error(
+    source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def explode(_: str, __: Path) -> PdfResult:
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(exporter, "html_to_pdf", explode)
+    with pytest.raises(RenderError, match="cannot write"):
+        build(source, layout=Layout.ATS)
+
+
+def test_output_names_are_built_by_concatenation(tmp_path: Path) -> None:
+    assert exporter.output_names(tmp_path, "resume.v2") == (
+        tmp_path / "resume.v2.docx",
+        tmp_path / "resume.v2.pdf",
+        tmp_path / "resume.v2.html",
+    )
+
+
+def test_a_control_character_does_not_break_the_export(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_text("# Ada\ny@z.com\n\n## Summary\nPasted\x0bfrom Word.\n", encoding="utf-8")
+    assert _names(source, pdf=False) == ["resume.docx", "resume-polished.docx"]
+
+
+def test_a_downgraded_letter_clears_the_previous_polished_export(tmp_path: Path) -> None:
+    """Otherwise last build's two-column file waits in the folder the user sends from."""
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    build(source, pdf=False)
+    assert (tmp_path / "resume-polished.docx").is_file()
+
+    source.write_text("# Ada\ny@z.com\n\nDear Hiring Manager,\n", encoding="utf-8")
+    assert _names(source, pdf=False) == ["resume.docx"]
+    assert not (tmp_path / "resume-polished.docx").exists()
+
+
+def test_an_explicit_layout_never_deletes_the_other_one(tmp_path: Path) -> None:
+    """Only the tool's own downgrade cleans up; the user's choice is not destructive."""
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    build(source, pdf=False)
+    build(source, layout=Layout.ATS, pdf=False)
+    assert (tmp_path / "resume-polished.docx").is_file()

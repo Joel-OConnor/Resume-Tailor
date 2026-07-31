@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from docx import Document as new_docx
 from docx.oxml.ns import qn
 from docx.shared import Pt
@@ -11,9 +13,13 @@ from resume_tailor.render.docx_common import (
     add_spans,
     set_bottom_border,
     set_cell_border,
+    set_cell_margins,
     set_indent,
-    set_line_spacing,
+    set_spacing,
 )
+
+if TYPE_CHECKING:
+    from docx.text.paragraph import Paragraph as DocxParagraph
 
 
 def test_empty_spans_add_no_runs() -> None:
@@ -49,6 +55,55 @@ def test_a_bottom_border_is_a_paragraph_border() -> None:
     assert 'w:color="999999"' in paragraph._p.xml
 
 
+def _ppr_children(paragraph: DocxParagraph) -> list[str]:
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    properties = paragraph._p.find(f"{namespace}pPr")
+    return [child.tag.removeprefix(namespace) for child in properties]
+
+
+def test_ppr_children_stay_in_schema_order() -> None:
+    """w:pBdr precedes w:spacing in CT_PPrBase; out of order, Word calls the file corrupt."""
+    paragraph = new_docx().add_paragraph("Heading")
+    set_spacing(paragraph, before=10, line=13.5)
+    set_bottom_border(paragraph)
+    children = _ppr_children(paragraph)
+    assert children.index("pBdr") < children.index("spacing")
+    assert children.index("spacing") < children.index("contextualSpacing")
+
+
+def test_spacing_is_absolute_and_lives_above_the_paragraph() -> None:
+    paragraph = new_docx().add_paragraph()
+    set_spacing(paragraph, before=12, line=13.5)
+    fmt = paragraph.paragraph_format
+    assert fmt.space_before == Pt(12)
+    assert fmt.space_after == Pt(0)
+    assert fmt.line_spacing == Pt(13.5)
+
+
+def test_spacing_disables_contextual_suppression() -> None:
+    """List Bullet suppresses the gap between items; the browser has no such rule."""
+    paragraph = new_docx().add_paragraph(style="List Bullet")
+    set_spacing(paragraph, before=2, line=13.5)
+    assert 'w:contextualSpacing w:val="0"' in paragraph._p.xml
+
+
+def test_spacing_is_idempotent() -> None:
+    paragraph = new_docx().add_paragraph(style="List Bullet")
+    set_spacing(paragraph, before=2, line=13.5)
+    set_spacing(paragraph, before=4, line=13.5)
+    assert _ppr_children(paragraph).count("contextualSpacing") == 1
+    assert paragraph.paragraph_format.space_before == Pt(4)
+
+
+def test_cell_margins_are_zeroed() -> None:
+    """Word's default table style pads every cell, narrowing the .docx columns vs the HTML."""
+    table = new_docx().add_table(rows=1, cols=2)
+    set_cell_margins(table, 0)
+    xml = table._tbl.xml
+    assert "w:tblCellMar" in xml
+    assert xml.count('w:w="0"') >= 4
+
+
 def test_cell_borders_accumulate_rather_than_replace() -> None:
     cell = new_docx().add_table(rows=1, cols=1).rows[0].cells[0]
     set_cell_border(cell, "right")
@@ -70,9 +125,3 @@ def test_indent_with_a_hanging_first_line() -> None:
     paragraph = new_docx().add_paragraph()
     set_indent(paragraph, left=0.5, right=0.25, hanging=0.25)
     assert paragraph.paragraph_format.first_line_indent == Pt(-18)
-
-
-def test_line_spacing_is_set_as_a_multiple() -> None:
-    paragraph = new_docx().add_paragraph()
-    set_line_spacing(paragraph, 1.15)
-    assert paragraph.paragraph_format.line_spacing == 1.15

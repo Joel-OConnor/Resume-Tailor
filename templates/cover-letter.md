@@ -4,7 +4,8 @@
     header lines           contact line(s) until the first blank line
     plain paragraphs       the letter body: greeting, 3–4 short paragraphs, sign-off
     a line ending in "\"   a hard line break (consecutive lines are otherwise joined into one)
-    **bold**  *italic*     inline emphasis
+    **bold**  *italic*     inline emphasis; _italic_ and ***both*** work too, and
+                           \* \_ \\ print that character literally
 
   Keep it to one page (~250–350 words). Export with:
     .venv/bin/resume-tailor build applications/<folder>/cover-letter.md

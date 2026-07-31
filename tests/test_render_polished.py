@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from resume_tailor.documents.blocks import Document
 
 
+_TWIP = 635  # EMU
+
+
 def _table(document: Document, tmp_path: Path, **kwargs: object) -> Table:
     out = tmp_path / "resume-polished.docx"
     polished.render_docx(document, out, **kwargs)  # type: ignore[arg-type]
@@ -90,8 +93,9 @@ def test_docx_is_a_single_two_column_table(resume: Document, tmp_path: Path) -> 
     table = _table(resume, tmp_path)
     assert len(table.rows) == 1
     assert len(table.columns) == 2
-    assert table.columns[0].width == Inches(polished.SIDEBAR_WIDTH_IN)
-    assert table.columns[1].width == Inches(polished.MAIN_WIDTH_IN)
+    # Widths round-trip through twips, so compare to the nearest twip rather than exactly.
+    assert abs(table.columns[0].width - Inches(polished.SIDEBAR_WIDTH_IN)) <= _TWIP
+    assert abs(table.columns[1].width - Inches(polished.MAIN_WIDTH_IN)) <= _TWIP
 
 
 def test_docx_columns_span_the_full_page_width(resume: Document, tmp_path: Path) -> None:
@@ -103,14 +107,16 @@ def test_docx_columns_span_the_full_page_width(resume: Document, tmp_path: Path)
     assert section.left_margin is not None
     assert section.right_margin is not None
     usable = section.page_width - section.left_margin - section.right_margin
-    assert usable == Inches(polished.SIDEBAR_WIDTH_IN) + Inches(polished.MAIN_WIDTH_IN)
+    assert usable == sum(column.width for column in read_docx(str(out)).tables[0].columns)
 
 
 def test_docx_draws_the_divider_on_the_rail(resume: Document, tmp_path: Path) -> None:
     table = _table(resume, tmp_path)
     xml = table.rows[0].cells[0]._tc.xml
     assert "w:tcBorders" in xml
-    assert 'w:right w:val="single"' in xml.replace('w:val="single" w:sz="8"', 'w:val="single"')
+    assert 'w:right w:val="single" w:sz="8"' in xml
+    # ...and only on the rail: a border on the main cell would double the rule.
+    assert "w:tcBorders" not in table.rows[0].cells[1]._tc.xml
 
 
 def test_docx_has_no_leading_blank_paragraph(resume: Document, tmp_path: Path) -> None:
@@ -287,3 +293,13 @@ def test_an_empty_rail_keeps_a_placeholder_paragraph(tmp_path: Path) -> None:
 def test_the_html_divider_matches_the_docx_border_width(resume: Document) -> None:
     """The .docx draws 1pt (w:sz=8 eighth-points); the PDF has to draw the same rule."""
     assert "border-right: 1pt solid #000" in polished.render_html(resume)
+
+
+def test_any_pipe_marks_a_contact_line_as_the_contract_now_says() -> None:
+    """Documented as "any pipe": a spaceless contact line must still reach the rail."""
+    document = parse("# Ada\nPrincipal Engineer\na@b.c|London\n\n## Summary\nx")
+    sidebar, main = polished.split_columns(document)
+    assert _rail_text(sidebar) == ["a@b.c", "London"]
+    assert [b.spans[0].text for b in main[0].blocks if isinstance(b, HeaderLine)] == [
+        "Principal Engineer"
+    ]

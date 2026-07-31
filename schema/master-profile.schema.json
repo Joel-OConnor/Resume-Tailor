@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/resume-tailor/schema/master-profile.schema.json",
   "title": "Master profile",
-  "description": "The machine-readable superset of a career. Resume tailoring selects and reframes from this file; it never adds anything absent from it.",
+  "description": "The machine-readable superset of a career. Resume tailoring selects and reframes from this file; it never adds anything absent from it. Rules this schema cannot express, enforced by `resume-tailor profile validate`: Each experience[].id must be unique. A role's end must not precede its start. Every technologies[].items[].used_at entry must match an experience[].id in this file. Text values must not carry leading or trailing whitespace.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -12,6 +12,7 @@
     },
     "summary": {
       "type": "string",
+      "minLength": 1,
       "description": "Generic summary; tailoring rewrites a targeted one per job."
     },
     "experience": {
@@ -19,6 +20,7 @@
       "items": {
         "$ref": "#/$defs/Tenure"
       },
+      "minItems": 1,
       "description": "Every employer, most recent first."
     },
     "schema_version": {
@@ -88,14 +90,17 @@
       "properties": {
         "name": {
           "type": "string",
+          "minLength": 1,
           "description": "Full name, as it should appear on the resume."
         },
         "headline": {
           "type": "string",
+          "minLength": 1,
           "description": "Professional headline, e.g. 'Lead Software Engineer & Architect'."
         },
         "email": {
           "type": "string",
+          "minLength": 1,
           "description": "Primary email address."
         },
         "location": {
@@ -131,10 +136,12 @@
       "properties": {
         "label": {
           "type": "string",
+          "minLength": 1,
           "description": "Human label, e.g. LinkedIn or GitHub."
         },
         "url": {
           "type": "string",
+          "minLength": 1,
           "description": "Full URL, including the scheme."
         }
       },
@@ -155,6 +162,7 @@
         },
         "company": {
           "type": "string",
+          "minLength": 1,
           "description": "Employer name."
         },
         "roles": {
@@ -162,6 +170,7 @@
           "items": {
             "$ref": "#/$defs/Role"
           },
+          "minItems": 1,
           "description": "Titles held here, most recent first."
         },
         "location": {
@@ -190,6 +199,7 @@
       "properties": {
         "title": {
           "type": "string",
+          "minLength": 1,
           "description": "Job title as held."
         },
         "start": {
@@ -234,6 +244,7 @@
       "properties": {
         "text": {
           "type": "string",
+          "minLength": 1,
           "description": "Strong verb, what was done, and the measurable outcome."
         },
         "label": {
@@ -259,6 +270,7 @@
       "properties": {
         "group": {
           "type": "string",
+          "minLength": 1,
           "description": "Group name, e.g. Frontend, Backend & Cloud, DevOps & Tools."
         },
         "items": {
@@ -281,6 +293,7 @@
       "properties": {
         "name": {
           "type": "string",
+          "minLength": 1,
           "description": "Canonical name, spelled the way a job posting spells it."
         },
         "aliases": {
@@ -309,7 +322,7 @@
         "used_at": {
           "type": "array",
           "items": {
-            "type": "string"
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
           "description": "Employer ids where this was used; each must match an experience id."
         }
@@ -325,10 +338,12 @@
       "properties": {
         "credential": {
           "type": "string",
+          "minLength": 1,
           "description": "Degree or program name."
         },
         "institution": {
           "type": "string",
+          "minLength": 1,
           "description": "School name."
         },
         "completed": {
@@ -357,6 +372,7 @@
       "properties": {
         "name": {
           "type": "string",
+          "minLength": 1,
           "description": "What it is."
         },
         "issuer": {
@@ -384,10 +400,12 @@
       "properties": {
         "name": {
           "type": "string",
+          "minLength": 1,
           "description": "Project name."
         },
         "description": {
           "type": "string",
+          "minLength": 1,
           "description": "What it is and what the candidate's role was."
         },
         "stack": {

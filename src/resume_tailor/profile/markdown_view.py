@@ -18,8 +18,32 @@ _WHITESPACE = re.compile(r"\s+")
 
 
 def _line(text: str) -> str:
-    """Flatten a value onto one line — a blank line inside it would end the surrounding list."""
+    """Flatten a value onto one line.
+
+    Profile values are folded YAML scalars, so any of them can carry a newline. A blank line
+    inside a list item ends the list; a leading ``#`` or ``-`` starts a heading or a sibling item.
+    Every profile value interpolated below goes through here — a partial application is what let
+    the first version of this fix through.
+    """
     return _WHITESPACE.sub(" ", text).strip()
+
+
+def _joined(values: tuple[str, ...], separator: str = ", ") -> str:
+    """Flatten and join a tuple of profile values."""
+    return separator.join(_line(value) for value in values)
+
+
+_BLOCK_LEADER = re.compile(r"^(#{1,6}\s|>|[-+*]\s|[0-9]{1,9}[.)]\s|```|~~~|---|===)")
+
+
+def _block(text: str) -> str:
+    """Flatten a value that occupies a whole output line, and defuse any block marker.
+
+    A value of ``` would otherwise open a fence that swallows the rest of the document, and a
+    leading ``#`` would inject a heading into the middle of it.
+    """
+    flat = _line(text)
+    return "\\" + flat if _BLOCK_LEADER.match(flat) else flat
 
 
 _MONTHS = (
@@ -56,14 +80,14 @@ def format_period(start: str, end: str) -> str:
 def render_markdown(profile: Profile) -> str:
     """Render the whole profile as Markdown."""
     out: list[str] = [
-        f"# Master Profile — {profile.contact.name}",
+        f"# Master Profile — {_line(profile.contact.name)}",
         "",
         "> Generated from `profile/master-profile.yaml`. Edit the YAML, not this file.",
         "",
     ]
     _contact(profile, out)
     _target_roles(profile, out)
-    _section(out, "Professional summary", [profile.summary])
+    _section(out, "Professional summary", [_block(profile.summary)])
     _technologies(profile, out)
     _experience(profile, out)
     _education(profile, out)
@@ -79,7 +103,7 @@ def _section(out: list[str], title: str, body: list[str]) -> None:
 
 def _contact(profile: Profile, out: list[str]) -> None:
     contact = profile.contact
-    lines = [f"- **Name:** {contact.name}", f"- **Headline:** {contact.headline}"]
+    lines = [f"- **Name:** {_line(contact.name)}", f"- **Headline:** {_line(contact.headline)}"]
     for label, value in (
         ("Location", contact.location),
         ("Email", contact.email),
@@ -87,14 +111,14 @@ def _contact(profile: Profile, out: list[str]) -> None:
         ("Work authorization", contact.work_authorization),
     ):
         if value:
-            lines.append(f"- **{label}:** {value}")
-    lines += [f"- **{link.label}:** {link.url}" for link in contact.links]
+            lines.append(f"- **{label}:** {_line(value)}")
+    lines += [f"- **{_line(link.label)}:** {_line(link.url)}" for link in contact.links]
     _section(out, "Contact & links", lines)
 
 
 def _target_roles(profile: Profile, out: list[str]) -> None:
     if profile.target_roles:
-        _section(out, "Target roles", [f"- {role}" for role in profile.target_roles])
+        _section(out, "Target roles", [f"- {_line(role)}" for role in profile.target_roles])
 
 
 def _technologies(profile: Profile, out: list[str]) -> None:
@@ -102,19 +126,19 @@ def _technologies(profile: Profile, out: list[str]) -> None:
         return
     lines: list[str] = []
     for group in profile.technologies:
-        lines += [f"### {group.group}", ""]
+        lines += [f"### {_line(group.group)}", ""]
         for item in group.items:
             detail = ", ".join(
                 part
                 for part in (
-                    f"aka {'/'.join(item.aliases)}" if item.aliases else "",
-                    item.level,
+                    f"aka {_joined(item.aliases, '/')}" if item.aliases else "",
+                    _line(item.level),
                     f"{item.years:g} yr{'' if item.years == 1 else 's'}" if item.years else "",
-                    f"at {', '.join(item.used_at)}" if item.used_at else "",
+                    f"at {_joined(item.used_at)}" if item.used_at else "",
                 )
                 if part
             )
-            lines.append(f"- **{item.name}**" + (f" — {detail}" if detail else ""))
+            lines.append(f"- **{_line(item.name)}**" + (f" — {detail}" if detail else ""))
         lines.append("")
     _section(out, "Technologies", lines[:-1])
 
@@ -127,30 +151,31 @@ def _experience(profile: Profile, out: list[str]) -> None:
 
 
 def _tenure_lines(tenure: Tenure) -> list[str]:
-    header = tenure.company
+    header = _line(tenure.company)
     if tenure.location:
-        header += f" — {tenure.location}"
+        header += f" — {_line(tenure.location)}"
     lines = [f"### {header}", ""]
     if tenure.industry:
-        lines += [f"*Industry:* {tenure.industry}", ""]
+        lines += [f"*Industry:* {_line(tenure.industry)}", ""]
     if tenure.summary:
-        lines += [tenure.summary, ""]
+        lines += [_block(tenure.summary), ""]
     for role in tenure.roles:
         lines += _role_lines(role)
     return lines
 
 
 def _role_lines(role: Role) -> list[str]:
-    lines = [f"#### {role.title}", "", f"*{format_period(role.start, role.end)}*", ""]
+    lines = [f"#### {_line(role.title)}", "", f"*{format_period(role.start, role.end)}*", ""]
     if role.scope:
         lines += [f"**Scope:** {_line(role.scope)}", ""]
     if role.stack:
-        lines += [f"**Stack:** {', '.join(role.stack)}", ""]
+        lines += [f"**Stack:** {_joined(role.stack)}", ""]
     for highlight in role.highlights:
         prefix = f"**{_line(highlight.label)}:** " if highlight.label else ""
-        suffix = f" *(tags: {', '.join(highlight.tags)})*" if highlight.tags else ""
+        suffix = f" *(tags: {_joined(highlight.tags)})*" if highlight.tags else ""
         lines.append(f"- {prefix}{_line(highlight.text)}{suffix}")
-    lines.append("")
+    if lines[-1]:
+        lines.append("")
     return lines
 
 
@@ -159,13 +184,13 @@ def _education(profile: Profile, out: list[str]) -> None:
         return
     lines: list[str] = []
     for entry in profile.education:
-        lines.append(f"### {entry.credential} — {entry.institution}")
+        lines.append(f"### {_line(entry.credential)} — {_line(entry.institution)}")
         details = [
             part
             for part in (
                 _month_name(entry.completed) if entry.completed else "",
-                entry.location,
-                entry.notes,
+                _line(entry.location),
+                _line(entry.notes),
             )
             if part
         ]
@@ -182,7 +207,9 @@ def _credentials(profile: Profile, out: list[str]) -> None:
             continue
         lines = []
         for entry in entries:
-            detail = " — ".join(part for part in (entry.issuer, entry.year, entry.notes) if part)
+            detail = " — ".join(
+                _line(part) for part in (entry.issuer, entry.year, entry.notes) if part
+            )
             lines.append(f"- {_line(entry.name)}" + (f" — {_line(detail)}" if detail else ""))
         _section(out, title, lines)
 
@@ -192,11 +219,11 @@ def _projects(profile: Profile, out: list[str]) -> None:
         return
     lines: list[str] = []
     for project in profile.projects:
-        lines += [f"### {project.name}", "", project.description, ""]
+        lines += [f"### {_line(project.name)}", "", _block(project.description), ""]
         if project.stack:
-            lines += [f"**Stack:** {', '.join(project.stack)}", ""]
+            lines += [f"**Stack:** {_joined(project.stack)}", ""]
         if project.outcome:
-            lines += [f"**Outcome:** {project.outcome}", ""]
+            lines += [f"**Outcome:** {_line(project.outcome)}", ""]
     _section(out, "Projects", lines[:-1])
 
 
@@ -205,5 +232,5 @@ def _notes(profile: Profile, out: list[str]) -> None:
         _section(
             out,
             "Notes — confirm before using on a resume",
-            [f"- {note}" for note in profile.notes],
+            [f"- {_line(note)}" for note in profile.notes],
         )

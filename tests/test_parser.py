@@ -34,8 +34,14 @@ def test_name_and_header_lines() -> None:
     assert document.blocks[2] == HeaderLine((Span("ada@example.com | London"),))
 
 
-def test_content_before_the_name_is_skipped() -> None:
-    assert parse("junk\n\n# Ada\n\n## Summary\nhi").name == "Ada"
+def test_content_before_the_name_is_an_error_not_a_silent_drop() -> None:
+    """It would vanish from a document the user is about to submit."""
+    with pytest.raises(DocumentError, match="content above the '# Name' line"):
+        parse("Draft v3 — do not send\n\n# Ada\n\n## Summary\nhi")
+
+
+def test_blank_lines_before_the_name_are_fine() -> None:
+    assert parse("\n  \n# Ada\n\n## Summary\nhi").name == "Ada"
 
 
 def test_comments_are_stripped() -> None:
@@ -173,3 +179,49 @@ def test_a_hard_break_ends_the_paragraph_it_is_in() -> None:
         Paragraph((Span("wrapped line one line two"),)),
         Paragraph((Span("after the break"),)),
     ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("- a bullet\\", Bullet((Span("a bullet"),))),
+        ("**Label:** items\\", SkillLine("Label", (Span("items"),))),
+    ],
+)
+def test_a_stray_hard_break_never_survives_into_a_block(source: str, expected: object) -> None:
+    """The marker used to be stripped on prose lines only, so it printed on every other kind."""
+    assert parse(f"# Ada\n\n## X\n{source}").blocks[-1] == expected
+
+
+def test_a_stray_hard_break_never_survives_onto_a_meta_line() -> None:
+    document = parse("# Ada\n\n## X\n### Acme\n2020 – 2024\\")
+    assert document.blocks[-1] == Meta((Span("2020 – 2024", italic=True),))
+
+
+def test_an_escaped_backslash_at_end_of_line_is_not_a_break() -> None:
+    document = parse("# Ada\n\n## X\nends in a literal backslash\\\\\nsame paragraph")
+    assert [b for b in document.blocks if isinstance(b, Paragraph)] == [
+        Paragraph((Span("ends in a literal backslash\\ same paragraph"),))
+    ]
+
+
+def test_a_hard_break_marker_never_survives_on_the_name_or_header_lines() -> None:
+    """The most-read lines on the page; a stray backslash there is unmissable."""
+    document = parse("# Ada Lovelace\\\nada@example.com | London\\\n\n## Summary\nhi")
+    assert document.name == "Ada Lovelace"
+    assert document.blocks[1] == HeaderLine((Span("ada@example.com | London"),))
+
+
+def test_a_line_holding_only_the_marker_keeps_the_pending_meta_slot() -> None:
+    document = parse("# Ada\n\n## Experience\n### Acme\n\\\nAustin | 2021")
+    assert document.blocks[-1] == Meta((Span("Austin | 2021", italic=True),))
+
+
+def test_control_characters_from_a_word_paste_are_stripped() -> None:
+    r"""python-docx passes run text through untouched; a \x0b would crash the export."""
+    document = parse("# Ada\n\n## Summary\nPasted\x0bfrom Word\x07here.")
+    assert document.blocks[-1] == Paragraph((Span("Pastedfrom Wordhere."),))
+
+
+def test_a_tab_becomes_spaces_rather_than_vanishing() -> None:
+    assert parse("# Ada\n\n## Summary\na\tb").blocks[-1] == Paragraph((Span("a   b"),))

@@ -6,23 +6,27 @@
   Syntax:
     # Full Name                     the name (one, first line)
     lines until the first blank     header lines — a target title, then the contact line
-    a header line containing " | "  treated as contact details (polished puts these in the rail)
+    a header line with any "|"      treated as contact details (polished puts these in the rail)
+                                    so keep pipes out of the target-title line
     ## Section                      section heading (Summary, Skills, Experience, Education, …)
     ### Entry Title                 a role, degree, project, or certification
     a plain line right after ###    the dates/location line (italic)
     **Label:** a, b, c              a skills line: bold label + comma-separated items
-    - bullet                        a bullet point
+    - bullet  (or * bullet)         a bullet point
     - **Lead-in:** text             a bullet with a bold lead-in — polished drops the glyph
     *Tech Stack — a, b, c*          a plain line after the bullets: an italic note, no bullet glyph
     a line ending in "\"            a hard line break (prose lines are otherwise joined)
-    **bold**  *italic*  _italic_    inline emphasis — nests, and \* prints a literal asterisk
-                                    (works everywhere except `##` section headings)
+    --- or ___ or ***               a horizontal rule; dropped on export, so use it only as a
+                                    working marker you do not want to appear
+    **bold**  *italic*  _italic_    inline emphasis; ***both*** is bold + italic. It nests,
+    ***both***                      and \* \_ \\ print that character literally. Works
+                                    everywhere except `##` section headings.
 
   Rules:
     - Single column, standard headings, no tables/images/columns of your own.
     - Contact details on ONE line separated by " | ". Real text, no icons.
     - In the polished layout, Skills / Education / Certifications go in the left rail; keep those
-      entries short so they don't wrap badly in a 2.45in column.
+      entries short so they don't wrap badly in a 2.42in column.
     - Order everything most-relevant-first. The top third of page one is what gets read.
 
   This file is a valid example — copy it and fill in real data. Comments are stripped on export.

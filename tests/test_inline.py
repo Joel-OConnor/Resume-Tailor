@@ -126,3 +126,54 @@ def test_backslash_escapes_a_marker(source: str, expected: str) -> None:
 
 def test_an_escaped_marker_does_not_open_emphasis() -> None:
     assert parse_spans(r"\*not italic* at all") == (Span("*not italic* at all"),)
+
+
+def test_single_character_bold_runs_do_not_merge() -> None:
+    """Greedy matching swallowed the closer, printing literal asterisks in the exported resume."""
+    assert parse_spans("Scaled to **5** teams and **9** services") == (
+        Span("Scaled to "),
+        Span("5", bold=True),
+        Span(" teams and "),
+        Span("9", bold=True),
+        Span(" services"),
+    )
+
+
+def test_single_character_bold_italic_runs_do_not_merge() -> None:
+    assert parse_spans("***a*** and ***b***") == (
+        Span("a", bold=True, italic=True),
+        Span(" and "),
+        Span("b", bold=True, italic=True),
+    )
+
+
+def test_many_delimiters_parse_without_blowing_up() -> None:
+    """The matcher recurses; a pathological line must not hang or overflow the stack."""
+    assert spans_to_text(parse_spans("**a** " * 200)).strip() == ("a " * 200).strip()
+
+
+def test_an_escaped_asterisk_inside_an_italic_run() -> None:
+    """The closer must not land on an escaped delimiter — that is what the escape is for."""
+    assert parse_spans(r"*100\* off*") == (Span("100* off", italic=True),)
+
+
+def test_an_italic_flush_against_the_bold_closer() -> None:
+    """Three stars in a row: the bold must close on the last two, not the first two."""
+    assert parse_spans("**Cut latency by *38%***") == (
+        Span("Cut latency by ", bold=True),
+        Span("38%", bold=True, italic=True),
+    )
+
+
+def test_an_escaped_backslash_does_not_block_the_next_emphasis() -> None:
+    assert parse_spans(r"a\\_x_") == (Span("a\\"), Span("x", italic=True))
+
+
+def test_a_long_line_of_delimiters_parses_in_reasonable_time() -> None:
+    """Unbounded backtracking made a 100KB line take over 20 seconds."""
+    import time
+
+    source = "**a " * 25000
+    start = time.monotonic()
+    parse_spans(source)
+    assert time.monotonic() - start < 5

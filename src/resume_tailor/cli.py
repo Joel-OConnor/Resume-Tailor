@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from resume_tailor import __version__
-from resume_tailor.errors import ResumeTailorError
+from resume_tailor.errors import RenderError, ResumeTailorError
 from resume_tailor.profile import DEFAULT_PROFILE_PATH, build_schema, load, render_markdown
 from resume_tailor.render import Layout, build
+from resume_tailor.render.exporter import is_sectioned, read_source
 from resume_tailor.render.polished import DEFAULT_SIDEBAR_SECTIONS
 
 if TYPE_CHECKING:
@@ -52,8 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export.add_argument(
         "--sidebar",
-        default=",".join(DEFAULT_SIDEBAR_SECTIONS),
-        help="comma-separated sections placed in the polished layout's left rail",
+        default=None,
+        help=(
+            "comma-separated sections placed in the polished layout's left rail "
+            f"(default: {', '.join(DEFAULT_SIDEBAR_SECTIONS)})"
+        ),
     )
     export.add_argument("--no-pdf", action="store_true", help="write only the .docx files")
     export.set_defaults(handler=_build)
@@ -88,54 +92,141 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _build(args: argparse.Namespace) -> int:
-    sidebar = tuple(part.strip() for part in args.sidebar.split(",") if part.strip())
-    missing = [path for path in args.files if not path.is_file()]
-    for path in missing:
-        print(f"error: not found: {path}", file=sys.stderr)
-    if clash := _clashing_stems(args):
+    chosen: str | None = args.sidebar
+    sidebar = DEFAULT_SIDEBAR_SECTIONS
+    if chosen is not None:
+        sidebar = tuple(part.strip() for part in chosen.split(",") if part.strip())
+    files: list[Path] = args.files
+    failed = _report_unusable(files)
+    if clash := _clashing_outputs(args):
         print(
-            f"error: {clash} would be written twice — two sources share a name under --out-dir; "
+            f"error: {clash} would be written twice — two sources render to the same file; "
             "build them separately or into different directories",
             file=sys.stderr,
         )
         return 1
-    for path in args.files:
-        if path in missing:
+
+    for path in files:
+        if not path.is_file():
             continue
         print(f"{path}:")
-        for artifact in build(
-            path,
-            out_dir=args.out_dir,
-            layout=args.layout,
-            sidebar_sections=sidebar,
-            pdf=not args.no_pdf,
-        ):
+        # One bad source must not abandon the rest of a batch.
+        try:
+            artifacts = build(
+                path,
+                out_dir=args.out_dir,
+                layout=args.layout,
+                sidebar_sections=sidebar,
+                pdf=not args.no_pdf,
+            )
+        except ResumeTailorError as exc:
+            print(f"error: {path}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if chosen is not None:
+            _warn_unused_sidebar(path, sidebar, args.layout)
+        for artifact in artifacts:
             mark = "✓" if artifact.ok else "!"
-            note = "" if artifact.ok else "  (no Chrome found — open it and print to PDF)"
+            note = "" if artifact.ok else f"  ({artifact.reason})"
             print(f"  {mark} {artifact.path}{note}")
-    return 1 if missing else 0
+            failed = failed or not artifact.ok
+    return 1 if failed else 0
 
 
-def _clashing_stems(args: argparse.Namespace) -> str:
-    """Name a stem that two sources would both write to, or an empty string if there is none.
-
-    Only possible with ``--out-dir``: without it each file lands beside its own source.
-    """
-    if args.out_dir is None:
-        return ""
-    files: list[Path] = args.files
-    seen: set[str] = set()
+def _report_unusable(files: list[Path]) -> bool:
+    """Print a message for every path that cannot be built; True if any was reported."""
+    unusable = False
     for path in files:
-        if path.stem in seen:
-            return path.stem
-        seen.add(path.stem)
+        if path.is_file():
+            continue
+        problem = "not found" if not path.exists() else "not a file"
+        print(f"error: {problem}: {path}", file=sys.stderr)
+        unusable = True
+    return unusable
+
+
+def _warn_unused_sidebar(path: Path, sidebar: tuple[str, ...], layout: Layout) -> None:
+    """Warn about an explicit --sidebar name no heading matches — usually a typo.
+
+    Only for a name the user typed. The default list deliberately covers headings most resumes
+    do not have, so warning about it would be noise on every single build.
+    """
+    if layout is Layout.ATS:
+        return
+    try:
+        headings = {group.key for group in read_source(path).groups() if group.title}
+    except ResumeTailorError:  # pragma: no cover - build() just parsed this file successfully
+        return
+    if unmatched := [name for name in sidebar if name.casefold() not in headings]:
+        print(
+            f"  warning: --sidebar {', '.join(unmatched)} matched no section in {path.name}",
+            file=sys.stderr,
+        )
+
+
+def _clashing_outputs(args: argparse.Namespace) -> str:
+    """Name an output file two sources would both write, or an empty string if there is none.
+
+    Compares the *rendered* names, not the source stems: the polished pass suffixes
+    ``-polished``, so ``resume.md`` and ``resume-polished.md`` collide even though their stems
+    differ. Sources are resolved first, so the same file named two ways is not a clash; names are
+    compared case-insensitively, because on macOS and Windows ``Resume.docx`` and ``resume.docx``
+    are one file and the overwrite this guard exists to prevent would happen silently.
+    """
+    files: list[Path] = args.files
+    seen: dict[tuple[Path, str], Path] = {}
+    for path in files:
+        resolved = _resolve(path)
+        directory = _resolve(args.out_dir or path.parent)
+        for stem in _output_stems(path, args.layout):
+            key = (directory, stem.casefold())
+            if key in seen and seen[key] != resolved:
+                return stem
+            seen[key] = resolved
     return ""
+
+
+def _resolve(path: Path) -> Path:
+    """Normalise a path for comparison, tolerating one that does not exist yet."""
+    try:
+        return path.resolve()
+    except OSError:  # pragma: no cover - platform-dependent
+        return path.absolute()
+
+
+def _output_stems(path: Path, layout: Layout) -> list[str]:
+    """Return the file stems ``path`` renders to under ``layout``."""
+    stems = []
+    if layout in (Layout.ATS, Layout.BOTH):
+        stems.append(path.stem)
+    if layout is Layout.POLISHED or (layout is Layout.BOTH and _has_sections(path)):
+        stems.append(f"{path.stem}-polished")
+    return stems
+
+
+def _has_sections(path: Path) -> bool:
+    """Detect a resume the same way ``build`` does.
+
+    ``build`` downgrades a section-less document to the ATS layout alone, so a pair of cover
+    letters must not be refused for a collision that cannot happen. This asks the real parser
+    rather than scanning for ``## ``: a heading inside the template's leading HTML comment, or
+    one written with leading spaces, would otherwise make the guard and the builder disagree.
+    """
+    try:
+        return is_sectioned(read_source(path))
+    except ResumeTailorError:
+        # The clash check runs over every argument, including one that turns out to be a
+        # directory. Assume a resume so the guard stays conservative; _report_unusable has
+        # already told the user the real problem.
+        return True
 
 
 def _validate(args: argparse.Namespace) -> int:
     profile = load(args.path)
     roles = sum(len(tenure.roles) for tenure in profile.experience)
-    technologies = len({name.casefold() for name in profile.technology_names()})
+    technologies = len(
+        {item.name.casefold() for group in profile.technologies for item in group.items}
+    )
     print(
         f"✓ {args.path} is valid — {len(profile.experience)} employers, {roles} roles, "
         f"{technologies} technologies"
@@ -147,14 +238,21 @@ def _validate(args: argparse.Namespace) -> int:
 
 def _render(args: argparse.Namespace) -> int:
     profile = load(args.path)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(render_markdown(profile), encoding="utf-8")
-    print(f"  ✓ {args.out}")
+    _write(args.out, render_markdown(profile))
     return 0
 
 
 def _schema(args: argparse.Namespace) -> int:
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(build_schema(), indent=2) + "\n", encoding="utf-8")
-    print(f"  ✓ {args.out}")
+    _write(args.out, json.dumps(build_schema(), indent=2) + "\n")
     return 0
+
+
+def _write(out: Path, text: str) -> None:
+    """Write a generated file, reporting a filesystem problem as one clean line."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        msg = f"cannot write {out}: {exc.strerror or exc}"
+        raise RenderError(msg) from exc
+    print(f"  ✓ {out}")

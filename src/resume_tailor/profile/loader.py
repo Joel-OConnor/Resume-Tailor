@@ -8,10 +8,12 @@ because a 400-line profile is no fun to bisect by hand.
 from __future__ import annotations
 
 import dataclasses
+import datetime
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, get_args, get_origin, get_type_hints, override
 
 import yaml
 
@@ -34,17 +36,41 @@ _PRESENT = "present"
 def load(path: Path = DEFAULT_PROFILE_PATH) -> Profile:
     """Load and validate the profile at ``path``."""
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig for symmetry with the Markdown reader. PyYAML strips a BOM on its own, so
+        # this is belt-and-braces here; it is load-bearing in exporter.read_source.
+        text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         msg = f"cannot read {path}: {exc.strerror or exc}"
         raise ProfileError(msg) from exc
+    except UnicodeDecodeError as exc:
+        msg = f"{path} is not UTF-8 text — re-save it as UTF-8"
+        raise ProfileError(msg) from exc
     return loads(text)
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """A safe loader that refuses a duplicated key instead of keeping the last one.
+
+    PyYAML's default silently discards the earlier value, so a copy-paste slip in a long profile
+    can delete whole employers and still report success.
+    """
+
+    @override
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                msg = f"duplicate key {key!r}"
+                raise yaml.constructor.ConstructorError(None, None, msg, key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 def loads(text: str) -> Profile:
     """Load and validate a profile from YAML source."""
     try:
-        data = yaml.safe_load(text)
+        data = yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - _StrictLoader extends SafeLoader
     except yaml.YAMLError as exc:
         msg = f"invalid YAML: {exc}"
         raise ProfileError(msg) from exc
@@ -114,18 +140,28 @@ def _coerce_tuple(item_type: object, value: object, path: str) -> tuple[object, 
 
 
 def _coerce_str(value: object, path: str) -> str:
-    # Strict, so the generated JSON Schema's "type": "string" tells the truth. YAML turns a bare
-    # 2018 into an int, hence the hint — silently coercing it would make the schema a lie.
+    """Accept only real text, exactly as written.
+
+    Strict, so the generated JSON Schema's ``"type": "string"`` tells the truth: YAML turns a
+    bare 2018 into an int, hence the hint. Padding is rejected rather than trimmed, because the
+    schema's patterns see the raw value — silently normalising ``" 2020-01 "`` would make the
+    loader accept a profile that the user's editor flags as invalid against the same schema.
+    """
     if not isinstance(value, str):
-        hint = (
-            " — quote it" if isinstance(value, int | float) and not isinstance(value, bool) else ""
-        )
+        quotable = (bool, int, float, datetime.date, datetime.datetime)
+        hint = " — quote it" if isinstance(value, quotable) else ""
         msg = f"expected text, got {_kind(value)}{hint}"
         raise ProfileError(msg, path)
-    return value.strip()
+    if value != value.strip():
+        msg = "remove the leading or trailing whitespace"
+        raise ProfileError(msg, path)
+    return value
 
 
 def _coerce_int(value: object, path: str) -> int:
+    # A float with no fractional part is an integer to JSON Schema, so it must be one here too.
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     if isinstance(value, bool) or not isinstance(value, int):
         msg = f"expected a whole number, got {_kind(value)}"
         raise ProfileError(msg, path)
@@ -135,6 +171,10 @@ def _coerce_int(value: object, path: str) -> int:
 def _coerce_float(value: object, path: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         msg = f"expected a number, got {_kind(value)}"
+        raise ProfileError(msg, path)
+    # NaN slips past every comparison, and neither it nor infinity is valid JSON.
+    if not math.isfinite(value):
+        msg = f"expected a finite number, got {value}"
         raise ProfileError(msg, path)
     return float(value)
 
@@ -163,9 +203,7 @@ def _check_semantics(profile: Profile) -> None:
         msg = f"unsupported schema_version {profile.schema_version}; this build understands 1"
         raise ProfileError(msg, "schema_version")
 
-    _require(profile.contact.name, "contact.name")
-    _require(profile.contact.email, "contact.email")
-    _require(profile.summary, "summary")
+    _check_identity(profile)
     if not profile.experience:
         msg = "at least one employer is required"
         raise ProfileError(msg, "experience")
@@ -180,6 +218,7 @@ def _check_semantics(profile: Profile) -> None:
         _check_date(education.completed, f"education[{index}].completed")
     for section in ("certifications", "awards"):
         for index, credential in enumerate(getattr(profile, section)):
+            _require(credential.name, f"{section}[{index}].name")
             if credential.year and not _YEAR.match(credential.year):
                 msg = f"expected a 4-digit year, got {credential.year!r}"
                 raise ProfileError(msg, f"{section}[{index}].year")
@@ -189,6 +228,20 @@ def _check_semantics(profile: Profile) -> None:
         _require(group.group, f"technologies[{group_index}].group")
         for item_index, item in enumerate(group.items):
             _check_technology(item, f"technologies[{group_index}].items[{item_index}]", ids)
+
+
+def _check_identity(profile: Profile) -> None:
+    """Every field the schema marks required must actually carry content."""
+    _require(profile.contact.name, "contact.name")
+    _require(profile.contact.headline, "contact.headline")
+    _require(profile.contact.email, "contact.email")
+    for index, link in enumerate(profile.contact.links):
+        _require(link.label, f"contact.links[{index}].label")
+        _require(link.url, f"contact.links[{index}].url")
+    _require(profile.summary, "summary")
+    for index, project in enumerate(profile.projects):
+        _require(project.name, f"projects[{index}].name")
+        _require(project.description, f"projects[{index}].description")
 
 
 def _check_tenure(tenure: Tenure, path: str, seen: set[str]) -> None:

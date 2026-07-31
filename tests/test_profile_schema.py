@@ -162,3 +162,22 @@ def test_a_model_is_only_defined_once() -> None:
     first = definitions["Link"]
     schema_module._type_schema(Annotated[Link, Doc("x")], definitions)
     assert definitions["Link"] is first
+
+
+def test_the_schema_publishes_the_emptiness_rules_the_loader_enforces() -> None:
+    """Without these an editor calls a document valid that `profile validate` rejects."""
+    assert SCHEMA["properties"]["summary"]["minLength"] == 1
+    assert SCHEMA["properties"]["experience"]["minItems"] == 1
+    assert SCHEMA["$defs"]["Tenure"]["properties"]["roles"]["minItems"] == 1
+    assert SCHEMA["$defs"]["Contact"]["properties"]["name"]["minLength"] == 1
+    assert SCHEMA["$defs"]["Highlight"]["properties"]["text"]["minLength"] == 1
+
+
+def test_used_at_entries_are_constrained_to_the_slug_shape() -> None:
+    items = SCHEMA["$defs"]["Technology"]["properties"]["used_at"]["items"]
+    assert items["pattern"] == r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+
+
+def test_the_rules_no_keyword_can_express_are_still_written_down() -> None:
+    for phrase in ("unique", "must not precede its start", "used_at", "whitespace"):
+        assert phrase in SCHEMA["description"]

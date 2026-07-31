@@ -71,9 +71,9 @@ def test_technology_names_include_aliases() -> None:
     assert profile.technology_names() == ("Kubernetes", "K8s")
 
 
-def test_text_is_stripped() -> None:
-    profile = loader.load_mapping(_with(summary="  spaced  "))
-    assert profile.summary == "spaced"
+def test_text_is_kept_exactly_as_written() -> None:
+    profile = loader.load_mapping(_with(summary="a summary"))
+    assert profile.summary == "a summary"
 
 
 def test_years_accepts_an_integer() -> None:
@@ -196,11 +196,11 @@ def test_an_unsupported_schema_version_is_rejected() -> None:
     [("name", "contact.name"), ("email", "contact.email")],
 )
 def test_required_contact_fields_must_not_be_blank(field: str, path: str) -> None:
-    _expect({**MINIMAL, "contact": {**MINIMAL["contact"], field: "  "}}, path, "must not be empty")
+    _expect({**MINIMAL, "contact": {**MINIMAL["contact"], field: ""}}, path, "must not be empty")
 
 
 def test_a_blank_summary_is_rejected() -> None:
-    _expect(_with(summary=" "), "summary", "must not be empty")
+    _expect(_with(summary=""), "summary", "must not be empty")
 
 
 def test_at_least_one_employer_is_required() -> None:
@@ -315,7 +315,7 @@ def test_a_blank_highlight_is_rejected() -> None:
                         "title": "T",
                         "start": "2020",
                         "end": "2021",
-                        "highlights": [{"text": "ok"}, {"text": " "}],
+                        "highlights": [{"text": "ok"}, {"text": ""}],
                     }
                 ],
             }
@@ -347,7 +347,7 @@ def test_negative_years_are_rejected() -> None:
 
 
 def test_a_blank_technology_group_is_rejected() -> None:
-    _expect(_with(technologies=[{"group": " ", "items": []}]), "technologies[0].group", "empty")
+    _expect(_with(technologies=[{"group": "", "items": []}]), "technologies[0].group", "empty")
 
 
 def test_a_blank_technology_name_is_rejected() -> None:
@@ -436,3 +436,123 @@ def test_a_non_ascii_digit_is_not_a_credential_year() -> None:
         "certifications[0].year",
         "expected a 4-digit year",
     )
+
+
+def test_a_yaml_boolean_gets_the_quoting_hint() -> None:
+    """`location: NO` parses as False — the classic YAML gotcha deserves the same hint."""
+    _expect(
+        {**MINIMAL, "contact": {**MINIMAL["contact"], "location": False}},
+        "contact.location",
+        "expected text, got bool — quote it",
+    )
+
+
+def test_a_profile_saved_with_a_utf8_bom_loads(tmp_path: Path) -> None:
+    """Windows editors write one. PyYAML strips it, so this pins behaviour, not the encoding."""
+    import yaml
+
+    path = tmp_path / "profile.yaml"
+    path.write_bytes(b"\xef\xbb\xbf" + yaml.safe_dump(MINIMAL).encode("utf-8"))
+    assert loader.load(path).contact.name == "Ada"
+
+
+def test_a_non_utf8_profile_is_reported_cleanly(tmp_path: Path) -> None:
+    path = tmp_path / "profile.yaml"
+    path.write_bytes("summary: s\n".encode("utf-16"))
+    with pytest.raises(ProfileError, match="not UTF-8"):
+        loader.load(path)
+
+
+# --- strictness the published schema also promises ---------------------------------------------
+@pytest.mark.parametrize("value", ["  Ada  ", "Ada\n", "\tAda", "Ada\xa0"])
+def test_padded_text_is_rejected_rather_than_trimmed(value: str) -> None:
+    """Trimming would let the loader accept what the schema's patterns reject."""
+    _expect(
+        {**MINIMAL, "contact": {**MINIMAL["contact"], "name": value}},
+        "contact.name",
+        "remove the leading or trailing whitespace",
+    )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_year_count_is_rejected(value: float) -> None:
+    """NaN slips past every comparison, and none of these is valid JSON."""
+    _expect(
+        _with(technologies=[{"group": "G", "items": [{"name": "Go", "years": value}]}]),
+        "technologies[0].items[0].years",
+        "expected a finite number",
+    )
+
+
+def test_a_whole_float_counts_as_an_integer() -> None:
+    """JSON Schema calls 1.0 an integer, so the loader must agree with its own schema."""
+    assert loader.load_mapping(_with(schema_version=1.0)).schema_version == 1
+
+
+def test_a_duplicate_key_is_an_error_not_a_silent_overwrite() -> None:
+    """PyYAML keeps the last one, so a copy-paste slip can delete whole employers."""
+    source = textwrap.dedent("""\
+        contact: {name: Ada, headline: E, email: a@b.c}
+        summary: s
+        experience:
+          - id: one
+            company: One
+            roles: [{title: T, start: '2020', end: '2021'}]
+        experience:
+          - id: two
+            company: Two
+            roles: [{title: T, start: '2020', end: '2021'}]
+    """)
+    with pytest.raises(ProfileError, match="duplicate key"):
+        loader.loads(source)
+
+
+@pytest.mark.parametrize(
+    ("payload", "path"),
+    [
+        ({"contact": {"name": "A", "headline": "", "email": "a@b.c"}}, "contact.headline"),
+        (
+            {
+                "contact": {
+                    "name": "A",
+                    "headline": "H",
+                    "email": "a@b.c",
+                    "links": [{"label": "", "url": "u"}],
+                }
+            },
+            "contact.links[0].label",
+        ),
+        (
+            {
+                "contact": {
+                    "name": "A",
+                    "headline": "H",
+                    "email": "a@b.c",
+                    "links": [{"label": "L", "url": ""}],
+                }
+            },
+            "contact.links[0].url",
+        ),
+        ({"projects": [{"name": "", "description": "d"}]}, "projects[0].name"),
+        ({"projects": [{"name": "n", "description": ""}]}, "projects[0].description"),
+        ({"certifications": [{"name": ""}]}, "certifications[0].name"),
+    ],
+)
+def test_every_schema_required_field_must_carry_content(payload: dict[str, Any], path: str) -> None:
+    _expect({**MINIMAL, **payload}, path, "must not be empty")
+
+
+def test_an_unquoted_iso_date_gets_the_quoting_hint() -> None:
+    """YAML turns 2022-06-01 into a date object; it is the likeliest date mistake."""
+    import datetime
+
+    data = _with(
+        experience=[
+            {
+                "id": "e",
+                "company": "E",
+                "roles": [{"title": "T", "start": datetime.date(2022, 6, 1), "end": "2023"}],
+            }
+        ]
+    )
+    _expect(data, "experience[0].roles[0].start", "expected text, got date — quote it")

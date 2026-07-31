@@ -9,6 +9,7 @@ import pytest
 
 from resume_tailor import __version__, cli
 from resume_tailor.render import exporter
+from resume_tailor.render.pdf import NO_BROWSER, PdfResult
 from tests.conftest import REPO_ROOT, RESUME_MD
 
 if TYPE_CHECKING:
@@ -19,9 +20,9 @@ EXAMPLE_PROFILE = str(REPO_ROOT / "templates" / "master-profile.example.yaml")
 
 @pytest.fixture(autouse=True)
 def _pdf_always_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake(_: str, out: Path) -> bool:
+    def fake(_: str, out: Path) -> PdfResult:
         out.write_bytes(b"%PDF-1.4\n")
-        return True
+        return PdfResult(ok=True)
 
     monkeypatch.setattr(exporter, "html_to_pdf", fake)
 
@@ -116,19 +117,22 @@ def test_a_malformed_markdown_file_reports_cleanly(
     bad = tmp_path / "resume.md"
     bad.write_text("## No name here\n", encoding="utf-8")
     assert cli.main(["build", str(bad)]) == 1
-    assert "error: no '# Name' line" in capsys.readouterr().err
+    captured = capsys.readouterr().err
+    assert "no '# Name' line" in captured
+    assert str(bad) in captured
 
 
 def test_a_pdf_fallback_is_flagged_in_the_output(
     source: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def fails(html: str, out: Path) -> bool:
+    def fails(html: str, out: Path) -> PdfResult:
         out.with_suffix(".html").write_text(html, encoding="utf-8")
-        return False
+        return PdfResult(ok=False, reason=NO_BROWSER)
 
     monkeypatch.setattr(exporter, "html_to_pdf", fails)
-    assert cli.main(["build", str(source), "--layout", "ats"]) == 0
-    assert "no Chrome found" in capsys.readouterr().out
+    # A failed PDF is a failed build, so `make export` and CI can see it.
+    assert cli.main(["build", str(source), "--layout", "ats"]) == 1
+    assert NO_BROWSER in capsys.readouterr().out
 
 
 # --- profile --------------------------------------------------------------------------------------
@@ -200,3 +204,175 @@ def test_the_same_stems_are_fine_without_an_out_dir(tmp_path: Path) -> None:
     assert cli.main([*argv, "--no-pdf"]) == 0
     assert (tmp_path / "a" / "resume.docx").is_file()
     assert (tmp_path / "b" / "resume.docx").is_file()
+
+
+def test_a_source_named_like_another_s_polished_output_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`resume.md` renders `resume-polished.docx`, which `resume-polished.md` also claims."""
+    (tmp_path / "resume.md").write_text(RESUME_MD, encoding="utf-8")
+    (tmp_path / "resume-polished.md").write_text(RESUME_MD, encoding="utf-8")
+    argv = ["build", str(tmp_path / "resume.md"), str(tmp_path / "resume-polished.md")]
+    assert cli.main([*argv, "--no-pdf"]) == 1
+    assert "resume-polished would be written twice" in capsys.readouterr().err
+    assert not (tmp_path / "resume-polished.docx").exists()
+
+
+def test_that_pair_is_fine_when_only_the_ats_layout_is_built(tmp_path: Path) -> None:
+    (tmp_path / "resume.md").write_text(RESUME_MD, encoding="utf-8")
+    (tmp_path / "resume-polished.md").write_text(RESUME_MD, encoding="utf-8")
+    argv = ["build", str(tmp_path / "resume.md"), str(tmp_path / "resume-polished.md")]
+    assert cli.main([*argv, "--layout", "ats", "--no-pdf"]) == 0
+
+
+def test_the_same_file_listed_twice_is_not_a_clash(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    assert cli.main(["build", str(source), str(source), "--no-pdf"]) == 0
+
+
+def test_a_directory_is_reported_as_such_not_as_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "adir").mkdir()
+    assert cli.main(["build", str(tmp_path / "adir")]) == 1
+    assert "not a file:" in capsys.readouterr().err
+
+
+def test_one_unparseable_file_does_not_abandon_the_rest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "bad.md").write_text("no name line\n", encoding="utf-8")
+    (tmp_path / "good.md").write_text(RESUME_MD, encoding="utf-8")
+    argv = ["build", str(tmp_path / "bad.md"), str(tmp_path / "good.md"), "--no-pdf"]
+    assert cli.main(argv) == 1
+    assert "no '# Name' line" in capsys.readouterr().err
+    assert (tmp_path / "good.docx").is_file()
+
+
+def test_an_unmatched_sidebar_name_is_flagged(
+    source: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo like --sidebar Skils would otherwise silently produce the wrong design."""
+    assert cli.main(["build", str(source), "--sidebar", "Skills,Skils", "--no-pdf"]) == 0
+    assert "--sidebar Skils matched no section" in capsys.readouterr().err
+
+
+def test_no_sidebar_warning_for_the_ats_layout(
+    source: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["build", str(source), "--layout", "ats", "--sidebar", "Nope", "--no-pdf"]) == 0
+    assert "matched no section" not in capsys.readouterr().err
+
+
+def test_the_same_file_named_two_ways_is_not_a_clash(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    out = tmp_path / "out"
+    argv = ["build", str(source), str(source.absolute()), "--out-dir", str(out), "--no-pdf"]
+    assert cli.main(argv) == 0
+
+
+def test_two_cover_letters_are_not_refused_for_an_impossible_clash(tmp_path: Path) -> None:
+    """`build` downgrades a section-less document to ATS, so no -polished file is ever written."""
+    letter = "# Ada\nada@example.com\n\nDear Hiring Manager,\n"
+    for name in ("letter.md", "letter-polished.md"):
+        folder = tmp_path / name.removesuffix(".md")
+        folder.mkdir()
+        (folder / name).write_text(letter, encoding="utf-8")
+    argv = [
+        "build",
+        str(tmp_path / "letter" / "letter.md"),
+        str(tmp_path / "letter-polished" / "letter-polished.md"),
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--no-pdf",
+    ]
+    assert cli.main(argv) == 0
+
+
+def test_a_clash_is_caught_regardless_of_letter_case(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On macOS and Windows `Resume.docx` and `resume.docx` are the same file."""
+    for name in ("alice", "bob"):
+        folder = tmp_path / name
+        folder.mkdir()
+    (tmp_path / "alice" / "resume.md").write_text(RESUME_MD, encoding="utf-8")
+    (tmp_path / "bob" / "Resume.md").write_text(RESUME_MD, encoding="utf-8")
+    out = tmp_path / "out"
+    argv = [
+        "build",
+        str(tmp_path / "alice" / "resume.md"),
+        str(tmp_path / "bob" / "Resume.md"),
+        "--out-dir",
+        str(out),
+        "--no-pdf",
+    ]
+    assert cli.main(argv) == 1
+    assert "would be written twice" in capsys.readouterr().err
+
+
+def test_profile_render_reports_an_unwritable_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "adir").mkdir()
+    argv = ["profile", "render", EXAMPLE_PROFILE, "-o", str(tmp_path / "adir")]
+    assert cli.main(argv) == 1
+    assert "error: cannot write" in capsys.readouterr().err
+
+
+def test_the_sidebar_warning_fires_for_the_polished_layout_too(
+    source: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["build", str(source), "--layout", "polished", "--sidebar", "Skils", "--no-pdf"]
+    assert cli.main(argv) == 0
+    assert "--sidebar Skils matched no section" in capsys.readouterr().err
+
+
+def test_the_clash_check_survives_an_unreadable_argument(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It runs over every argument, including one that turns out to be a directory."""
+    (tmp_path / "resume.md").mkdir()
+    (tmp_path / "other.md").write_text(RESUME_MD, encoding="utf-8")
+    argv = ["build", str(tmp_path / "resume.md"), str(tmp_path / "other.md"), "--no-pdf"]
+    assert cli.main(argv) == 1
+    assert "not a file:" in capsys.readouterr().err
+    assert (tmp_path / "other.docx").is_file()
+
+
+def test_the_clash_guard_reads_sections_the_way_the_parser_does(tmp_path: Path) -> None:
+    """A `## ` inside the template's leading comment is not a section to either of them."""
+    from resume_tailor.cli import _has_sections
+
+    commented = tmp_path / "letter.md"
+    commented.write_text("<!--\n## Not a section\n-->\n# Ada\n\nDear sir,\n", encoding="utf-8")
+    assert _has_sections(commented) is False
+
+    indented = tmp_path / "resume.md"
+    indented.write_text("# Ada\n\n  ## Skills\n- x\n", encoding="utf-8")
+    assert _has_sections(indented) is True
+
+
+def test_validate_counts_technologies_not_aliases(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`technology_names()` includes aliases by design; a headcount must not use it."""
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "contact: {name: Ada, headline: E, email: a@b.c}\n"
+        "summary: s\n"
+        "technologies:\n"
+        "  - group: G\n"
+        "    items:\n"
+        "      - {name: Kubernetes, aliases: [K8s, k8s, kube]}\n"
+        "      - {name: Go, aliases: [Golang]}\n"
+        "experience:\n"
+        "  - id: e\n"
+        "    company: E\n"
+        "    roles: [{title: T, start: '2020', end: '2021'}]\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["profile", "validate", str(profile)]) == 0
+    assert "2 technologies" in capsys.readouterr().out

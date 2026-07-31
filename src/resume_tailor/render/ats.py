@@ -23,13 +23,14 @@ from resume_tailor.documents.blocks import (
     SkillLine,
     Span,
 )
-from resume_tailor.render.docx_common import add_spans, set_bottom_border
+from resume_tailor.render.docx_common import add_spans, set_bottom_border, set_indent, set_spacing
 from resume_tailor.render.html_common import page, spans_to_html
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from docx.document import Document as DocxDocument
+    from docx.text.paragraph import Paragraph as DocxParagraph
 
     from resume_tailor.documents.blocks import Block, Document
 
@@ -42,6 +43,22 @@ NAME_PT = 20.0
 SECTION_PT = 12.0
 ENTRY_PT = 11.0
 MUTED = "444444"
+
+# Absolute, so Word and the browser agree. GAP_PT is the space ABOVE each block: Word sums
+# adjacent spacing while CSS collapses it, so the whole gap lives in one property on both sides.
+LINE_PT = 13.5
+GAP_PT = {
+    "name": 0.0,
+    "header": 1.0,
+    "section": 12.0,
+    "entry": 8.0,
+    "meta": 1.0,
+    "skill": 1.0,
+    "bullet": 1.0,
+    "para": 5.0,
+}
+BULLET_INDENT_IN = 0.25
+BULLET_HANGING_IN = 0.15
 
 
 def render_docx(document: Document, out: Path) -> None:
@@ -65,60 +82,60 @@ def _configure(docx: DocxDocument) -> None:
 def _add_block(docx: DocxDocument, block: Block) -> None:
     match block:
         case Name(spans):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph = _paragraph(docx, "name")
             add_spans(paragraph, spans, font=FONT, size=NAME_PT, bold=True)
         case HeaderLine(spans):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(1)
+            paragraph = _paragraph(docx, "header")
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, color=MUTED)
         case Section(title):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_before = Pt(10)
-            paragraph.paragraph_format.space_after = Pt(3)
+            paragraph = _paragraph(docx, "section")
             add_spans(paragraph, (Span(title.upper()),), font=FONT, size=SECTION_PT, bold=True)
             set_bottom_border(paragraph)
         case Entry(spans):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_before = Pt(7)
-            paragraph.paragraph_format.space_after = Pt(0)
+            paragraph = _paragraph(docx, "entry")
             add_spans(paragraph, spans, font=FONT, size=ENTRY_PT, bold=True)
         case Meta(spans):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph = _paragraph(docx, "meta")
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, italic=True, color=MUTED)
         case SkillLine(label, items):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(1)
+            paragraph = _paragraph(docx, "skill")
             add_spans(paragraph, (Span(f"{label}: "),), font=FONT, size=BODY_PT, bold=True)
             add_spans(paragraph, items, font=FONT, size=BODY_PT)
         case Bullet(spans):
-            paragraph = docx.add_paragraph(style="List Bullet")
-            paragraph.paragraph_format.space_after = Pt(1)
+            paragraph = _paragraph(docx, "bullet", style="List Bullet")
+            set_indent(paragraph, left=BULLET_INDENT_IN, right=0, hanging=BULLET_HANGING_IN)
             add_spans(paragraph, spans, font=FONT, size=BODY_PT)
         case Paragraph(spans):
-            paragraph = docx.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph = _paragraph(docx, "para")
             add_spans(paragraph, spans, font=FONT, size=PROSE_PT)
         case _:  # pragma: no cover - mypy proves the block union is exhaustive
             assert_never(block)
 
 
-CSS = """
-@page { size: Letter; margin: 0.6in 0.7in; }
-* { box-sizing: border-box; }
-body { font-family: Calibri, Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.3;
-       color: #111; margin: 0; }
-h1 { font-size: 20pt; margin: 0 0 2pt 0; }
-.header { color: #444; font-size: 10pt; margin: 0 0 1pt 0; }
-h2 { font-size: 12pt; text-transform: uppercase; border-bottom: 1px solid #999;
-     margin: 12pt 0 4pt 0; padding-bottom: 2pt; }
-h3 { font-size: 11pt; margin: 8pt 0 0 0; }
-.meta { color: #444; font-size: 10pt; margin: 0 0 2pt 0; }
-.skill { font-size: 10pt; margin: 0 0 1pt 0; }
-p { margin: 0 0 5pt 0; }
-ul { margin: 2pt 0 4pt 0; padding-left: 18pt; font-size: 10pt; }
-li { margin: 0 0 1pt 0; }
+def _paragraph(docx: DocxDocument, kind: str, *, style: str | None = None) -> DocxParagraph:
+    paragraph = docx.add_paragraph(style=style)
+    set_spacing(paragraph, before=GAP_PT[kind], line=LINE_PT)
+    return paragraph
+
+
+CSS = f"""
+@page {{ size: Letter; margin: 0.6in 0.7in; }}
+* {{ box-sizing: border-box; }}
+/* Every gap is a margin-TOP and every bottom margin is 0, so CSS collapsing and Word's additive
+   spacing produce the same number. line-height is absolute for the same reason. */
+body {{ font-family: Calibri, Helvetica, Arial, sans-serif; font-size: {PROSE_PT}pt;
+        line-height: {LINE_PT}pt; color: #111; margin: 0; }}
+h1, h2, h3, p, ul, li, div {{ margin: 0; }}
+h1 {{ font-size: {NAME_PT}pt; margin-top: {GAP_PT["name"]}pt; }}
+.header {{ color: #444; font-size: {BODY_PT}pt; margin-top: {GAP_PT["header"]}pt; }}
+h2 {{ font-size: {SECTION_PT}pt; text-transform: uppercase; border-bottom: 0.75pt solid #999;
+      margin-top: {GAP_PT["section"]}pt; padding-bottom: 2pt; }}
+h3 {{ font-size: {ENTRY_PT}pt; margin-top: {GAP_PT["entry"]}pt; }}
+.meta {{ color: #444; font-size: {BODY_PT}pt; margin-top: {GAP_PT["meta"]}pt; }}
+.skill {{ font-size: {BODY_PT}pt; margin-top: {GAP_PT["skill"]}pt; }}
+p {{ margin-top: {GAP_PT["para"]}pt; }}
+ul {{ padding-left: {BULLET_INDENT_IN}in; font-size: {BODY_PT}pt; list-style-position: outside; }}
+li {{ margin-top: {GAP_PT["bullet"]}pt; }}
 """
 
 

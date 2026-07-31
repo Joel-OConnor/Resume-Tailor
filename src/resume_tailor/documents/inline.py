@@ -16,15 +16,23 @@ from resume_tailor.documents.blocks import Span
 
 __all__ = ["parse_spans", "spans_to_text"]
 
-# Order matters: an escape wins over everything, then the longest delimiter — ``***`` before ``**``
-# before ``*``. Every delimiter requires non-space inner edges, so "a ** b ** c" stays literal.
+# Order matters: an escape wins over everything, then the longest delimiter — ``***`` before
+# ``**`` before ``*``. Notes on the parts that are not obvious:
+#
+# * ``(?!\s)`` / ``(?<![\s\\])`` require non-space inner edges, so "a ** b ** c" stays literal,
+#   and stop a closer landing on an escaped ``\*``.
+# * ``\\.`` is listed first in each body so an escape is consumed atomically.
+# * ``\*(?=\*\*(?!\*))`` lets a bold body end in a single star, so the trailing italic in
+#   "**Cut latency by *38%***" closes against the last two stars rather than the first two.
+# * ``{1,400}?`` is lazy and bounded: greedy swallows the closer, and unbounded backtracks
+#   quadratically on a long line of ``**``.
 _INLINE = re.compile(
     r"""
     \\(?P<escape>[*_\\])
-  | \*\*\*(?P<both>[^*\s](?:.*?[^*\s])?)\*\*\*
-  | \*\*(?P<bold>[^*\s](?:.*?[^*\s])?)\*\*
-  | \*(?!\*)(?P<star>[^*\s](?:(?:[^*]|\*\*)*?[^*\s])?)\*(?!\*)
-  | (?<![\w\\])_(?P<under>[^_\s](?:[^_]*[^_\s])?)_(?!\w)
+  | \*\*\*(?!\s)(?P<both>(?:\\.|[^*]){1,400}?)(?<![\s\\])\*\*\*
+  | \*\*(?!\s)(?P<bold>(?:\\.|\*(?!\*)|\*(?=\*\*(?!\*))|[^*]){1,400}?)(?<![\s\\])\*\*(?!\*)
+  | \*(?!\*)(?!\s)(?P<star>(?:\\.|\*\*|[^*]){1,400}?)(?<![\s\\])\*(?!\*)
+  | (?<!\w)_(?!\s)(?P<under>(?:\\.|[^_]){1,400}?)(?<![\s\\])_(?!\w)
     """,
     re.VERBOSE,
 )

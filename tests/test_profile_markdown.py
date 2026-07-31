@@ -233,3 +233,29 @@ def test_a_multi_line_value_is_flattened_onto_one_line() -> None:
     assert "**Scope:** one two" in markdown
     assert "- **A B:** first second" in markdown
     assert "\n\nsecond" not in markdown
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["```", "~~~", "# PWNED", "## Work experience", "---", "- item", "1. item", "> quote"],
+)
+def test_a_value_cannot_inject_a_markdown_block(payload: str) -> None:
+    """A bare ``` in the summary used to open a fence that swallowed the rest of the document."""
+    markdown = _render(summary=payload)
+    body = markdown.split("## Professional summary", 1)[1]
+    assert body.lstrip().startswith("\\")
+    assert "## Work experience" in markdown
+    assert markdown.count("## ") >= 3
+
+
+def test_a_role_without_highlights_does_not_double_a_blank_line() -> None:
+    markdown = _render(
+        experience=[
+            {
+                "id": "e",
+                "company": "E",
+                "roles": [{"title": "T", "start": "2020", "end": "2021", "highlights": []}],
+            }
+        ]
+    )
+    assert "\n\n\n" not in markdown

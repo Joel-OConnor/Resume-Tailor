@@ -31,7 +31,36 @@ _CONSTRAINTS: dict[tuple[str, str], dict[str, Any]] = {
     ("Technology", "level"): {"enum": ["", *LEVELS]},
     ("Technology", "years"): {"minimum": 0},
     ("Profile", "schema_version"): {"const": 1},
+    # The loader rejects an empty value for each of these; without minLength an editor
+    # validating against this file would call the same document valid.
+    ("Contact", "name"): {"minLength": 1},
+    ("Contact", "headline"): {"minLength": 1},
+    ("Contact", "email"): {"minLength": 1},
+    ("Link", "label"): {"minLength": 1},
+    ("Link", "url"): {"minLength": 1},
+    ("Profile", "summary"): {"minLength": 1},
+    ("Profile", "experience"): {"minItems": 1},
+    ("Tenure", "company"): {"minLength": 1},
+    ("Tenure", "roles"): {"minItems": 1},
+    ("Role", "title"): {"minLength": 1},
+    ("Highlight", "text"): {"minLength": 1},
+    ("TechnologyGroup", "group"): {"minLength": 1},
+    ("Technology", "name"): {"minLength": 1},
+    ("Technology", "used_at"): {"items": {"pattern": r"^[a-z0-9]+(?:-[a-z0-9]+)*$"}},
+    ("Education", "credential"): {"minLength": 1},
+    ("Education", "institution"): {"minLength": 1},
+    ("Credential", "name"): {"minLength": 1},
+    ("Project", "name"): {"minLength": 1},
+    ("Project", "description"): {"minLength": 1},
 }
+
+# Rules no JSON Schema keyword can express; stated in the schema so a reader still learns them.
+_CROSS_FIELD_RULES = (
+    "Each experience[].id must be unique.",
+    "A role's end must not precede its start.",
+    "Every technologies[].items[].used_at entry must match an experience[].id in this file.",
+    "Text values must not carry leading or trailing whitespace.",
+)
 
 
 def build_schema() -> dict[str, Any]:
@@ -45,7 +74,8 @@ def build_schema() -> dict[str, Any]:
         "title": "Master profile",
         "description": (
             "The machine-readable superset of a career. Resume tailoring selects and reframes "
-            "from this file; it never adds anything absent from it."
+            "from this file; it never adds anything absent from it. Rules this schema cannot "
+            "express, enforced by `resume-tailor profile validate`: " + " ".join(_CROSS_FIELD_RULES)
         ),
         **root,
         "$defs": definitions,
