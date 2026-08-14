@@ -6,7 +6,15 @@ into a clean one-line message instead of a traceback.
 
 from __future__ import annotations
 
-__all__ = ["DocumentError", "ProfileError", "RenderError", "ResumeTailorError"]
+__all__ = [
+    "ConfigError",
+    "DocumentError",
+    "FabricationError",
+    "ModelError",
+    "ProfileError",
+    "RenderError",
+    "ResumeTailorError",
+]
 
 
 class ResumeTailorError(Exception):
@@ -28,6 +36,22 @@ class ProfileError(ResumeTailorError):
         """Record ``path`` and prefix it onto ``message``."""
         self.path = path
         super().__init__(f"{path}: {message}" if path else message)
+
+
+class ConfigError(ResumeTailorError):
+    """The standalone path is not configured — usually a missing API key."""
+
+
+class ModelError(ResumeTailorError):
+    """The language model could not be reached, or returned something unusable."""
+
+
+class FabricationError(ResumeTailorError):
+    """Generated content made a claim the profile does not support.
+
+    Raised rather than warned: a resume with an invented claim is the one outcome this project
+    exists to prevent.
+    """
 
 
 class RenderError(ResumeTailorError):

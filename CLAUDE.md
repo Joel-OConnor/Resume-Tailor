@@ -52,9 +52,23 @@ When the user provides a job description (pasted, or dropped in a file):
    *and* `aliases` when matching the posting's wording, `highlights[].tags` to find evidence for a
    requirement, and `notes` to see what the user still has to confirm.
 
-3. **Map fit and find gaps.** For each must-have, find the strongest *real* evidence in the profile.
-   Build three lists: **strong matches**, **partial/adjacent matches**, and **genuine gaps** (things
-   the JD wants that the profile doesn't support).
+3. **Map fit and find gaps.** Start with the deterministic pass:
+
+   ```bash
+   .venv/bin/resume-tailor match <job-description.md> --format markdown
+   ```
+
+   It reports, with evidence, which of the profile's technologies the posting asks for and what it
+   asks for that the profile does not support. Treat it as the floor, not the ceiling: it only
+   reads `technologies[]`, so read `highlights[]` yourself for everything it cannot see.
+
+   **Never promote one of its `qualified` matches to a confirmed claim without asking the user.** A
+   match is qualified precisely because it is a category alias, a stem match, an unconfirmed
+   `notes[]` entry, or a technology with no accomplishment behind it.
+
+   Then, from that plus your own reading, build three lists: **strong matches**,
+   **partial/adjacent matches**, and **genuine gaps** (things the JD wants that the profile
+   doesn't support).
 
 4. **Select and reframe (truthfully).** Compose the resume by:
    - **Leading with what matches.** Order experience and skills so the most relevant items are seen
@@ -84,6 +98,19 @@ When the user provides a job description (pasted, or dropped in a file):
 
 7. **Summarize for the user**: the match strength, what you emphasized and why, any gaps they should
    be aware of, which file to submit where, and where everything lives.
+
+## Checking your own work
+
+The standalone path enforces truthfulness mechanically, and you are held to the same standard.
+After writing `resume.md`, verify it the way the agent path does:
+
+```bash
+.venv/bin/python -c "from resume_tailor.profile import load; from resume_tailor.verify import verify_resume, format_violations; import pathlib; v = verify_resume(pathlib.Path('applications/<slug>/resume.md').read_text(), load()); print(format_violations(v) or 'clean')"
+```
+
+It checks every employer, title, date, education entry, technology and **metric** against the
+profile. If it reports a violation, fix the resume — do not argue with it and do not hand over a
+document it rejects.
 
 ## Truthfulness — non-negotiable
 

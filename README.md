@@ -38,13 +38,47 @@ or use the shortcut `/tailor <paste the posting>`.
 | `resume.md` | The tailored resume source — edit here, then re-export |
 | `resume.docx` / `resume.pdf` | **ATS-safe**, single column — upload this to application portals |
 | `resume-polished.docx` / `.pdf` | **Two-column design** — email this to a person |
-| `fit-report.md` | How well you match, keywords covered vs. missed, and honest ways to close gaps |
+| `fit-report.md` (see `resume-tailor match`) | How well you match, keywords covered vs. missed, and honest ways to close gaps |
 | `cover-letter.md` / `.docx` / `.pdf` | A matching one-page cover letter |
 | `linkedin.md` | A headline and "About" section tuned to this kind of role |
 
 Two layouts because a resume has to win twice: once with a parser, once with a person. The
 single-column file is what survives a screener; the two-column one is what looks good in an inbox.
 [Which to send when →](reference/RESUME-FORMATS.md)
+
+## Two ways to run it
+
+**Standalone** — no Claude Code needed. Bring your own Anthropic API key.
+
+```bash
+git clone <this repo> && cd Resume-Tailor
+make setup
+cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp templates/master-profile.example.yaml profile/master-profile.yaml
+
+# drop old resumes / a LinkedIn export into profile/raw/, then:
+.venv/bin/resume-tailor profile build      # drafts master-profile.yaml from them
+.venv/bin/resume-tailor tailor path/to/job-description.md
+```
+
+That writes `applications/<company>-<role>/` with a resume, fit report, cover letter and LinkedIn
+text, exported to `.docx` and `.pdf`.
+
+Or run it as an HTTP API — the same code behind endpoints, ready for a UI:
+
+```bash
+.venv/bin/resume-tailor serve      # http://127.0.0.1:8000/docs
+```
+
+`GET /health`, `GET /profile`, `POST /match` need **no API key**. `POST /tailor` and
+`GET /applications` do the generation.
+
+**In Claude Code** — open the folder and talk to it. `/tailor <paste a job description>` runs the
+same method conversationally, and you can correct the profile as you go.
+
+Either way, **nothing is invented**: generated resumes are checked against your profile and
+regenerated if they make a claim it does not support. See
+[reference/ARCHITECTURE.md](reference/ARCHITECTURE.md).
 
 ## Quickstart
 

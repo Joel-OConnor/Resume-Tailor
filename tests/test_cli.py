@@ -376,3 +376,128 @@ def test_validate_counts_technologies_not_aliases(
     )
     assert cli.main(["profile", "validate", str(profile)]) == 0
     assert "2 technologies" in capsys.readouterr().out
+
+
+# --- the standalone path ---------------------------------------------------------------------
+class _StubModel:
+    """Stands in for a language model; the agent layer only ever calls .complete()."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def complete(self, system: str, prompt: str) -> object:
+        from resume_tailor.llm import Reply
+
+        assert system and prompt
+        return Reply(self.text, 1, 2, "end_turn")
+
+
+def _profile_file(tmp_path: Path) -> Path:
+    path = tmp_path / "profile.yaml"
+    path.write_text(
+        "contact: {name: Ada Lovelace, headline: Engineer, email: a@b.c}\n"
+        "summary: An engineer.\n"
+        "experience:\n"
+        "  - id: acme\n"
+        "    company: Acme\n"
+        "    roles: [{title: Engineer, start: '2020', end: present}]\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_tailor_writes_an_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    posting = tmp_path / "jd.md"
+    posting.write_text("# Acme — Engineer\n\n## Requirements\n- Work.\n", encoding="utf-8")
+
+    called: dict[str, object] = {}
+
+    def fake_tailor(_posting: str, **kwargs: object) -> object:
+        from resume_tailor.service import Application
+
+        called.update(kwargs)
+        directory = tmp_path / "applications" / "acme-engineer"
+        directory.mkdir(parents=True)
+        written = directory / "resume.md"
+        written.write_text("# Ada\n", encoding="utf-8")
+        return Application("acme-engineer", directory, (written,), "Acme", "Engineer")
+
+    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+
+    argv = [
+        "tailor",
+        str(posting),
+        "--profile",
+        str(_profile_file(tmp_path)),
+        "--applications",
+        str(tmp_path / "applications"),
+        "--no-export",
+    ]
+    assert cli.main(argv) == 0
+    assert called["export"] is False
+    assert "resume.md" in capsys.readouterr().out
+
+
+def test_tailor_reports_a_missing_posting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["tailor", str(tmp_path / "absent.md")]) == 1
+    assert "not a file" in capsys.readouterr().err
+
+
+def test_tailor_surfaces_a_missing_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The commonest first-run failure must name the fix, not raise."""
+    from resume_tailor.errors import ConfigError
+
+    posting = tmp_path / "jd.md"
+    posting.write_text("# Acme — Engineer\n\n- Work.\n", encoding="utf-8")
+
+    def no_key() -> None:
+        msg = "no ANTHROPIC_API_KEY found. Copy .env.example to .env"
+        raise ConfigError(msg)
+
+    monkeypatch.setattr(cli, "load_settings", no_key)
+    assert cli.main(["tailor", str(posting)]) == 1
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_profile_build_writes_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    out = tmp_path / "master-profile.yaml"
+
+    from resume_tailor.agent import Usage
+
+    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: s\n", Usage(1, 2, 1)))
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+
+    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 0
+    assert out.read_text(encoding="utf-8") == "summary: s\n"
+    assert "1 document(s)" in capsys.readouterr().out
+
+
+def test_profile_build_reports_an_empty_raw_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["profile", "build", "--raw", str(tmp_path / "empty")]) == 1
+    assert "no readable documents" in capsys.readouterr().err
+
+
+def test_serve_starts_the_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    started: dict[str, object] = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: started.update(kw, app=app))
+    assert cli.main(["serve", "--port", "9999", "--profile", str(_profile_file(tmp_path))]) == 0
+    assert started["port"] == 9999
+    assert "http://127.0.0.1:9999/docs" in capsys.readouterr().out

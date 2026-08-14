@@ -57,6 +57,13 @@ example:  ## Render the bundled demo application
 	$(PY) -m resume_tailor build applications/example-acme-backend/cover-letter.md --layout ats
 
 # --- profile --------------------------------------------------------------------------------------
+serve:  ## Run the HTTP API on http://127.0.0.1:8000
+	$(PY) -m resume_tailor serve
+
+match:
+	@test -n "$(APP)" || { echo "usage: make match APP=<folder under applications/>"; exit 1; }
+	$(PY) -m resume_tailor match applications/$(APP)/job-description.md
+
 profile-check:  ## Validate the master profile
 	$(PY) -m resume_tailor profile validate $(PROFILE)
 

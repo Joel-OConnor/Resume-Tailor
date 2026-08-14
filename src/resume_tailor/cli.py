@@ -1,6 +1,7 @@
 """Command-line interface.
 
 resume-tailor build applications/acme-staff-engineer/resume.md
+resume-tailor match applications/acme-staff-engineer/job-description.md
 resume-tailor profile validate
 resume-tailor profile render -o profile/MASTER_PROFILE.md
 resume-tailor profile schema -o schema/master-profile.schema.json
@@ -15,11 +16,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from resume_tailor import __version__
+from resume_tailor.agent import build_profile
+from resume_tailor.api import create_app
 from resume_tailor.errors import RenderError, ResumeTailorError
+from resume_tailor.llm import build_model, load_settings
+from resume_tailor.match import match_posting, read_posting
+from resume_tailor.match import render_json as match_json
+from resume_tailor.match import render_markdown as match_markdown
+from resume_tailor.match import render_text as match_text
 from resume_tailor.profile import DEFAULT_PROFILE_PATH, build_schema, load, render_markdown
 from resume_tailor.render import Layout, build
 from resume_tailor.render.exporter import is_sectioned, read_source
 from resume_tailor.render.polished import DEFAULT_SIDEBAR_SECTIONS
+from resume_tailor.service import read_raw_documents, tailor_application
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,6 +71,36 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--no-pdf", action="store_true", help="write only the .docx files")
     export.set_defaults(handler=_build)
 
+    coverage = commands.add_parser(
+        "match", help="check a job posting against the profile, with evidence"
+    )
+    coverage.add_argument("posting", type=Path, help="the job description to check")
+    coverage.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    coverage.add_argument("--company", default="", help="the hiring company, if the file omits it")
+    coverage.add_argument(
+        "--format",
+        choices=("text", "markdown", "json"),
+        default="text",
+        help="text for the terminal, markdown to paste into a fit report, json for tooling",
+    )
+    coverage.set_defaults(handler=_match)
+
+    apply_ = commands.add_parser(
+        "tailor", help="generate a tailored application from a job posting (needs an API key)"
+    )
+    apply_.add_argument("posting", type=Path, help="the job description to tailor for")
+    apply_.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    apply_.add_argument("--applications", type=Path, default=Path("applications"))
+    apply_.add_argument("--no-export", action="store_true", help="skip the .docx/.pdf render")
+    apply_.set_defaults(handler=_tailor)
+
+    serve = commands.add_parser("serve", help="run the HTTP API")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    serve.add_argument("--applications", type=Path, default=Path("applications"))
+    serve.set_defaults(handler=_serve)
+
     profile = commands.add_parser("profile", help="work with the structured master profile")
     actions = profile.add_subparsers(dest="action", required=True)
 
@@ -73,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("path", nargs="?", type=Path, default=DEFAULT_PROFILE_PATH)
     render.add_argument("-o", "--out", type=Path, default=_DEFAULT_MARKDOWN_VIEW)
     render.set_defaults(handler=_render)
+
+    generate = actions.add_parser(
+        "build", help="draft the profile from profile/raw/ with a model (needs an API key)"
+    )
+    generate.add_argument("--raw", type=Path, default=Path("profile/raw"))
+    generate.add_argument("-o", "--out", type=Path, default=DEFAULT_PROFILE_PATH)
+    generate.set_defaults(handler=_build_profile)
 
     schema = actions.add_parser("schema", help="write the JSON Schema for the profile")
     schema.add_argument("-o", "--out", type=Path, default=_DEFAULT_SCHEMA_PATH)
@@ -219,6 +265,56 @@ def _has_sections(path: Path) -> bool:
         # directory. Assume a resume so the guard stays conservative; _report_unusable has
         # already told the user the real problem.
         return True
+
+
+def _match(args: argparse.Namespace) -> int:
+    if not args.posting.is_file():
+        print(f"error: not a file: {args.posting}", file=sys.stderr)
+        return 1
+    report = match_posting(read_posting(args.posting), load(args.profile), args.company)
+    renderer = {"text": match_text, "markdown": match_markdown, "json": match_json}
+    print(renderer[args.format](report), end="")
+    return 0
+
+
+def _tailor(args: argparse.Namespace) -> int:
+    if not args.posting.is_file():
+        print(f"error: not a file: {args.posting}", file=sys.stderr)
+        return 1
+    application = tailor_application(
+        read_posting(args.posting),
+        profile_path=args.profile,
+        applications_dir=args.applications,
+        model=build_model(load_settings()),
+        export=not args.no_export,
+    )
+    print(f"{application.directory}:")
+    for path in application.files:
+        print(f"  ✓ {path.name}")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn  # noqa: PLC0415 - deferred so the base install needs no web stack
+
+    app = create_app(profile_path=args.profile, applications_dir=args.applications)
+    print(f"  → http://{args.host}:{args.port}/docs")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def _build_profile(args: argparse.Namespace) -> int:
+    documents = read_raw_documents(args.raw)
+    if not documents:
+        print(f"error: no readable documents in {args.raw}", file=sys.stderr)
+        return 1
+    print(f"  reading {len(documents)} document(s) from {args.raw}")
+    yaml_text, usage = build_profile(documents, build_model(load_settings()))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(yaml_text, encoding="utf-8")
+    print(f"  ✓ {args.out}  ({usage.attempts} attempt(s))")
+    print("  review it, then run: make profile-check")
+    return 0
 
 
 def _validate(args: argparse.Namespace) -> int:
