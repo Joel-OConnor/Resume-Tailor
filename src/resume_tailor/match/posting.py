@@ -188,6 +188,36 @@ def parse_posting(text: str, company: str = "") -> Posting:
     return Posting(tuple(clauses), company, title)
 
 
+#: Words marking a heading half as the role rather than the employer. Both orders are
+#: published — "Acme — Staff Engineer" and "Staff Engineer — Acme" — so position alone gets
+#: it wrong half the time, and a swapped header makes the whole report look untrustworthy.
+_ROLE_WORDS = frozenset(
+    {
+        "administrator",
+        "analyst",
+        "architect",
+        "consultant",
+        "designer",
+        "developer",
+        "director",
+        "engineer",
+        "engineering",
+        "head",
+        "lead",
+        "manager",
+        "officer",
+        "president",
+        "principal",
+        "programmer",
+        "scientist",
+        "specialist",
+        "staff",
+        "technician",
+        "vp",
+    }
+)
+
+
 def _identify(lines: list[str]) -> tuple[str, str]:
     """Take the role title and company from the first heading, if there is one."""
     for line in lines:
@@ -196,9 +226,17 @@ def _identify(lines: list[str]) -> tuple[str, str]:
             heading = stripped.lstrip("#").strip()
             parts = _TITLE_SPLIT.split(heading, maxsplit=1)
             if len(parts) == _TITLE_PARTS:
-                return parts[1].strip(), parts[0].strip()
+                first, second = parts[0].strip(), parts[1].strip()
+                if _names_a_role(first) and not _names_a_role(second):
+                    return first, second
+                return second, first
             return heading, ""
     return "", ""
+
+
+def _names_a_role(text: str) -> bool:
+    """Report whether this half of a heading reads as a job title."""
+    return any(word.strip(",.()").casefold() in _ROLE_WORDS for word in text.split())
 
 
 def _suppression(company: str, title: str) -> tuple[str, ...]:

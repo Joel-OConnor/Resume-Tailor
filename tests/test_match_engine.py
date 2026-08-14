@@ -415,3 +415,47 @@ def test_a_clause_with_no_tokens_is_dropped() -> None:
 def test_a_lowercase_dotted_name_is_mined_as_a_gap(profile: Profile) -> None:
     """The socket.io case: no capital and no acronym shape, only punctuation."""
     assert "socket.io" in _match("## Requirements\n- Realtime with socket.io.\n", profile)["gaps"]
+
+
+def test_the_role_is_found_on_either_side_of_the_separator() -> None:
+    """Both orders are published; position alone gets it wrong half the time."""
+    role_first = parse_posting("# Staff Data Platform Engineer — Northwind Freight\n\nBody.\n")
+    assert role_first.title == "Staff Data Platform Engineer"
+    assert role_first.company == "Northwind Freight"
+
+    company_first = parse_posting("# Granite Telecom — Staff Engineer\n\nBody.\n")
+    assert company_first.title == "Staff Engineer"
+    assert company_first.company == "Granite Telecom"
+
+
+def test_a_heading_with_no_role_word_keeps_the_company_first_reading() -> None:
+    posting = parse_posting("# Northwind Freight — Widgets Division\n\nBody.\n")
+    assert posting.company == "Northwind Freight"
+
+
+def test_generic_prose_is_not_reported_as_a_missing_technology() -> None:
+    """Generic prose must not be reported as a technology the profile lacks."""
+    posting = parse_posting(
+        "# Staff Engineer — Acme\n\n## Requirements\n"
+        "- Production experience with Apache Kafka at scale.\n"
+        "- Strong ownership and a quality mindset across the platform.\n"
+    )
+    lexicon = build_lexicon(_profile())
+    gaps = {gap.term.casefold() for gap in find_gaps(posting, lexicon, frozenset())}
+    for noise in ("production", "ownership", "quality", "platform", "scale"):
+        assert noise not in gaps, f"{noise} reported as a missing technology"
+
+
+def test_a_bare_name_and_its_fuller_form_are_one_gap() -> None:
+    """A posting naming both "Apache Kafka" and "Kafka" is missing one thing, not two."""
+    posting = parse_posting(
+        "# Staff Engineer — Acme\n\n## Requirements\n"
+        "- Production experience with Apache Kafka.\n"
+        "- Kafka tuning at scale.\n"
+    )
+    gaps = find_gaps(posting, build_lexicon(_profile()), frozenset())
+    terms = [gap.term for gap in gaps]
+    assert "Apache Kafka" in terms
+    assert "Kafka" not in terms
+    kafka = next(gap for gap in gaps if gap.term == "Apache Kafka")
+    assert len(kafka.lines) == 2, "the absorbed term keeps its line reference"

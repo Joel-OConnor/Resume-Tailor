@@ -302,16 +302,124 @@ def find_gaps(posting: Posting, lexicon: Lexicon, covered: frozenset[str]) -> tu
 
     gaps = [
         Gap(term=term, lines=tuple(sorted(lines)), near_miss=_near_miss(term, lexicon))
-        for term, lines in seen.items()
+        for term, lines in _absorb_partials(seen).items()
     ]
     gaps.sort(key=lambda gap: (-len(gap.lines), gap.term.casefold()))
     return tuple(gaps)
+
+
+def _absorb_partials(seen: dict[str, set[int]]) -> dict[str, set[int]]:
+    """Fold a bare term into the fuller name of the same thing.
+
+    A posting that writes both "Apache Kafka" and "Kafka" names one gap, not two. Reporting it
+    twice inflates the count the user reads as "how much am I missing", so the shorter form is
+    absorbed into the longer and keeps its line references.
+    """
+    kept = dict(seen)
+    for term in sorted(seen, key=len):
+        words = term.casefold().split()
+        fuller = next(
+            (
+                other
+                for other in kept
+                if other != term and _contains_words(other.casefold().split(), words)
+            ),
+            None,
+        )
+        if fuller is not None:
+            kept[fuller] = kept[fuller] | kept.pop(term)
+    return kept
+
+
+def _contains_words(haystack: list[str], needle: list[str]) -> bool:
+    """Report whether ``needle`` appears in ``haystack`` as a run of whole words."""
+    return any(
+        haystack[start : start + len(needle)] == needle
+        for start in range(len(haystack) - len(needle) + 1)
+    )
+
+
+#: Prose a posting capitalises but which names no technology. Filtered after candidate terms
+#: are assembled, not during: as a token-level rule these would split "Data Platform" into
+#: fragments, and reporting "Production" as a skill you lack buries the gaps that are real.
+_GENERIC_TERMS = frozenset(
+    {
+        "accountability",
+        "agile",
+        "analysis",
+        "analytics",
+        "automation",
+        "best",
+        "collaboration",
+        "communication",
+        "complex",
+        "craft",
+        "culture",
+        "delivery",
+        "detail",
+        "distributed",
+        "diverse",
+        "documentation",
+        "domain",
+        "excellence",
+        "execution",
+        "fast",
+        "growth",
+        "hands",
+        "high",
+        "impact",
+        "improvement",
+        "individual",
+        "industry",
+        "infrastructure",
+        "innovation",
+        "integration",
+        "leadership",
+        "learning",
+        "mentoring",
+        "mindset",
+        "modern",
+        "monitoring",
+        "observability",
+        "operations",
+        "ownership",
+        "partnership",
+        "performance",
+        "pipeline",
+        "pipelines",
+        "platform",
+        "practices",
+        "production",
+        "productivity",
+        "proven",
+        "quality",
+        "reliability",
+        "requirements",
+        "resilience",
+        "scalability",
+        "scale",
+        "security",
+        "services",
+        "solutions",
+        "stakeholders",
+        "standards",
+        "strategy",
+        "systems",
+        "teams",
+        "technologies",
+        "testing",
+        "tooling",
+        "velocity",
+    }
+)
 
 
 def _is_gap(term: str, known: frozenset[str], covered: frozenset[str]) -> bool:
     """Report whether a term is a gap: neither it nor an alternation branch is accounted for."""
     key = term.casefold()
     if key in known or key in covered:
+        return False
+    if " " not in key and key in _GENERIC_TERMS:
         return False
     # "PostgreSQL/MySQL" is not a gap when PostgreSQL is covered — the posting offered a choice.
     return not any(part in known or part in covered for part in key.split("/") if part)
