@@ -159,6 +159,32 @@ def _quote(text: str, figure: _Figure) -> str:
     return figure.raw + (match.group() if match else "")
 
 
+#: Words that follow a version rather than a quantity — "Java 17 and", "SOC 2 in scope".
+_FUNCTION_WORDS = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+        "across",
+        "under",
+        "over",
+        "via",
+    ]
+)
+
+
 # --- exemptions -----------------------------------------------------------------------------------
 def _dated_spans(line: Line) -> tuple[tuple[int, int], ...]:
     """Return the characters the date check already owns, so no figure is read from them twice."""
@@ -208,7 +234,21 @@ def _version_position(figure: _Figure, tokens: list[Token], index: int, lexicon:
     if not figure.plain or not index:
         return False
     previous = tokens[index - 1]
-    if _form_spanning(tokens, index - 1, lexicon):
+    if (
+        _form_spanning(tokens, index - 1, lexicon)
+        or previous.all_caps
+        or previous.has_inner_capital
+    ):
         return True
+    # Ordinary capitalisation alone is not enough: a resume bullet opens with a capitalised verb,
+    # so "Mentored 30 junior engineers" would exempt itself from the one check that stops an
+    # inflated headcount. What separates it from "Java 17" is what comes after — a quantity is
+    # followed by the thing it counts, a version is followed by punctuation or a function word.
     capitalised = previous.surface[:1].isupper() and not previous.sentence_initial
-    return previous.all_caps or previous.has_inner_capital or capitalised
+    return capitalised and not _counts_something(tokens, index)
+
+
+def _counts_something(tokens: list[Token], index: int) -> bool:
+    """Report whether a word the figure could be quantifying follows it."""
+    following = tokens[index + 1] if index + 1 < len(tokens) else None
+    return following is not None and following.lower not in _FUNCTION_WORDS

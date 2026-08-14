@@ -862,3 +862,21 @@ def test_a_promotion_matches_the_exact_title_not_the_longer_one() -> None:
         "### Charter Communications — Software Engineer\nMarch 2020 – June 2021\n"
     )
     assert verify_resume(resume, profile).ok
+
+
+def test_a_capitalised_verb_does_not_exempt_an_inflated_headcount(profile: Profile) -> None:
+    """A bullet opens with a capitalised verb; that alone cannot mean "version"."""
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Experience
+
+        ### Northwind Payments — Senior Backend Engineer
+        Mar 2021 – Present
+        - Mentored 30 junior engineers across three squads.
+        """,
+        profile,
+    )
+    assert not verdict.ok
+    assert "30" in verdict.violations[0].text
