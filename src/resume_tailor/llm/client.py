@@ -7,6 +7,7 @@ so a second provider is a new file rather than a refactor.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 __all__ = ["AnthropicModel", "LanguageModel", "Reply", "build_model"]
 
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+_KEY_SHAPED = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,14 +62,21 @@ class AnthropicModel:
             self._client = _make_client(self.settings.api_key)
 
     def complete(self, system: str, prompt: str) -> Reply:
-        """Send one turn and return the reply as text."""
+        """Send one turn and return the reply as text.
+
+        Streamed rather than sent as one blocking call: a whole master profile or a four-document
+        application can take longer than the SDK's non-streaming ceiling, and it refuses such a
+        request outright rather than waiting. The reply is still assembled and returned whole —
+        nothing upstream sees a stream.
+        """
         try:
-            message = self._client.messages.create(
+            with self._client.messages.stream(
                 model=self.settings.model,
                 max_tokens=self.settings.max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
-            )
+            ) as stream:
+                message = stream.get_final_message()
         except Exception as exc:  # the SDK raises a wide family; all of them mean 'no reply'
             raise ModelError(_describe(exc)) from exc
         return _to_reply(message)
@@ -106,7 +115,15 @@ def _describe(exc: Exception) -> str:
         return "rate limited by the API — wait a moment and try again"
     if status in _RETRYABLE_STATUS:
         return f"the API is temporarily unavailable (HTTP {status}) — try again"
-    return f"could not reach the model: {type(exc).__name__}"
+    # The type alone named the failure but never what to do about it — "ValueError" was the whole
+    # report for a config the SDK rejects by name. Carry the message, with any key redacted from
+    # it: a URL or an argument the SDK echoes back is exactly the actionable part.
+    return f"could not reach the model: {type(exc).__name__}: {_redact(str(exc))}".rstrip(": ")
+
+
+def _redact(text: str) -> str:
+    """Blank out anything shaped like an API key before it reaches a terminal or a log."""
+    return _KEY_SHAPED.sub("sk-ant-***", text)
 
 
 def build_model(settings: Settings) -> LanguageModel:

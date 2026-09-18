@@ -14,24 +14,44 @@ applicant tracking system, one designed for a human to read.
 
 ## How to use it
 
-**1. Add your background.** Drop anything into [`profile/raw/`](profile/raw/) — old resumes, a
-LinkedIn export, brag docs, performance reviews, project write-ups. More is better.
+```bash
+git clone <this repo> && cd Resume-Tailor
+make setup                       # creates .venv and installs everything
+cp .env.example .env             # then put your ANTHROPIC_API_KEY in it
+```
 
-**2. Build your master profile.** Open this folder in Claude Code and say:
+**1. Add your background.** Drop anything into [`profile/raw/`](profile/raw/) — old resumes
+(**PDF**, Word or text), a LinkedIn export, brag docs, performance reviews, project write-ups.
+More is better.
 
-> "Build my master profile from the files in profile/raw."
+**2. Build your master profile.**
 
-Claude writes [`profile/master-profile.yaml`](templates/master-profile.example.yaml) — the single
-source of truth. (You can also start from `templates/master-profile.example.yaml` by hand; see
-[the guide](profile/HOW-TO-BUILD-YOUR-PROFILE.md).) Check it with `make profile-check`.
+```bash
+make profile
+```
 
-**3. Tailor to a job.** Paste a job description and say:
+That writes [`profile/master-profile.yaml`](templates/master-profile.example.yaml) — the single
+source of truth. It names every file it read and every file it could not, so nothing goes missing
+quietly, and it refuses to overwrite a profile you have already corrected (`make profile
+FORCE=--force` replaces it, keeping a timestamped backup). Check it with `make profile-check`.
 
-> "Tailor my resume for this job: \<paste the posting\>"
+In Claude Code you can instead say *"Build my master profile from the files in profile/raw"*, or
+start from `templates/master-profile.example.yaml` by hand — see
+[the guide](profile/HOW-TO-BUILD-YOUR-PROFILE.md).
 
-or use the shortcut `/tailor <paste the posting>`.
+**3. Add the jobs.** Save each posting as a `.md` or `.txt` file in [`jobs/`](jobs/) — as many as
+you like — then:
 
-**4. Get your documents.** Claude creates a folder under `applications/` with:
+```bash
+make tailor
+```
+
+Every posting is tailored in turn, each into its own folder. One failing does not stop the rest.
+To do a single one: `make tailor JOB=jobs/stripe-staff-backend.md`.
+
+In Claude Code, `/tailor <paste the posting>` runs the same method conversationally.
+
+**4. Get your documents.** You get a folder under `applications/` per job, with:
 
 | File | What it is |
 |------|-----------|
@@ -51,18 +71,19 @@ single-column file is what survives a screener; the two-column one is what looks
 **Standalone** — no Claude Code needed. Bring your own Anthropic API key.
 
 ```bash
-git clone <this repo> && cd Resume-Tailor
-make setup
-cp .env.example .env          # add your ANTHROPIC_API_KEY
-cp templates/master-profile.example.yaml profile/master-profile.yaml
-
-# drop old resumes / a LinkedIn export into profile/raw/, then:
-.venv/bin/resume-tailor profile build      # drafts master-profile.yaml from them
-.venv/bin/resume-tailor tailor path/to/job-description.md
+.venv/bin/resume-tailor profile build              # drafts master-profile.yaml from profile/raw/
+.venv/bin/resume-tailor tailor                     # every posting in jobs/
+.venv/bin/resume-tailor tailor path/to/posting.md  # or just one
 ```
 
-That writes `applications/<company>-<role>/` with a resume, fit report, cover letter and LinkedIn
-text, exported to `.docx` and `.pdf`.
+That writes `applications/<company>-<role>/` per posting, with a resume, fit report, cover letter
+and LinkedIn text, exported to `.docx` and `.pdf`.
+
+Want to know how you match *before* spending a generation? That needs no API key at all:
+
+```bash
+.venv/bin/resume-tailor match jobs/stripe-staff-backend.md
+```
 
 Or run it as an HTTP API — the same code behind endpoints, ready for a UI:
 
@@ -83,10 +104,10 @@ regenerated if they make a claim it does not support. See
 ## Quickstart
 
 ```bash
-make setup
+make setup && cp .env.example .env    # add your key to .env
+make profile                          # after dropping files into profile/raw/
+make tailor                           # after dropping postings into jobs/
 ```
-
-Then, in Claude Code: add files → "build my master profile" → "tailor for this job: …"
 
 Export a resume or letter to Word + PDF anytime:
 
@@ -130,6 +151,7 @@ experience:
 
 | Command | What it does |
 |---|---|
+| `make profile` | Draft it from `profile/raw/` (add `FORCE=--force` to replace one) |
 | `make profile-check` | Validate it, and list anything still marked unconfirmed |
 | `make profile-md` | Render a readable Markdown view at `profile/MASTER_PROFILE.md` |
 | `make profile-schema` | Regenerate `schema/master-profile.schema.json` from the models |
@@ -139,9 +161,10 @@ autocomplete and inline validation while you edit.
 
 ## Your privacy
 
-Your actual data — `profile/` and `applications/` — is **gitignored** and never leaves your machine.
-Only the templates, tooling, schema, and docs are tracked, so you can safely put this under version
-control or share it without exposing your history or drafts.
+Your actual data — `profile/`, `jobs/` and `applications/` — is **gitignored** and never leaves your
+machine, and so is `.env` with your API key. Only the templates, tooling, schema, and docs are
+tracked, so you can fork this, push it, or share it without exposing your history, the jobs you are
+looking at, or your drafts.
 
 ## Developing
 
@@ -158,4 +181,5 @@ Source is in `src/resume_tailor/`, tests mirror it in `tests/`. All three gates 
 - [reference/RESUME-FORMATS.md](reference/RESUME-FORMATS.md) — the two layouts and when to send which
 - [reference/ATS-PLAYBOOK.md](reference/ATS-PLAYBOOK.md) — how resume screeners work and how to pass them
 - [profile/HOW-TO-BUILD-YOUR-PROFILE.md](profile/HOW-TO-BUILD-YOUR-PROFILE.md) — filling in your profile
+- [jobs/README.md](jobs/README.md) — dropping in postings to tailor against
 - [templates/](templates/) — the resume, cover-letter, and profile formats

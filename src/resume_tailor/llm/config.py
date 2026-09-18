@@ -18,7 +18,10 @@ __all__ = ["DEFAULT_ENV_FILE", "Settings", "load_settings", "read_env_file"]
 
 DEFAULT_ENV_FILE = Path(".env")
 _DEFAULT_MODEL = "claude-opus-5"
-_DEFAULT_MAX_TOKENS = 8000
+# A complete master profile for a long career runs well past 8,000 tokens — the first version of
+# this default truncated one mid-file, and the retry then asked the model to *cut* career history
+# to fit. max_tokens is a ceiling, not a target: raising it changes no cost, only what fits.
+_DEFAULT_MAX_TOKENS = 32000
 _KEY = "ANTHROPIC_API_KEY"
 _VISIBLE_KEY_CHARS = 4
 

@@ -13,7 +13,7 @@ from resume_tailor.errors import DocumentError, FabricationError, ProfileError, 
 from resume_tailor.llm import LanguageModel, Reply
 from resume_tailor.render import exporter
 from resume_tailor.render.pdf import PdfResult
-from tests.conftest import LETTER_MD, REPO_ROOT, RESUME_MD
+from tests.conftest import LETTER_MD, REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -374,13 +374,13 @@ def test_raw_documents_are_extracted_from_docx_and_text(tmp_path: Path) -> None:
     table.rows[0].cells[0].text = "Charter Communications"
     document.save(str(raw / "old.docx"))
 
-    found = read_raw_documents(raw)
+    found = read_raw_documents(raw).documents
     assert set(found) == {"notes.md", "old.docx", "resume.txt"}
     assert "Charter Communications" in found["old.docx"], "table cells carry the real content"
 
 
-def test_unreadable_and_hidden_files_are_skipped_not_fatal(tmp_path: Path) -> None:
-    """A stray .DS_Store or a PDF must not stop a profile build."""
+def test_unreadable_and_hidden_files_are_reported_not_fatal(tmp_path: Path) -> None:
+    """A stray .DS_Store must not stop a build — but a file that yielded nothing is named."""
     from resume_tailor.service import read_raw_documents
 
     raw = tmp_path / "raw"
@@ -388,17 +388,71 @@ def test_unreadable_and_hidden_files_are_skipped_not_fatal(tmp_path: Path) -> No
     (raw / ".DS_Store").write_bytes(b"\x00\x01")
     (raw / "scan.pdf").write_bytes(b"%PDF-1.4 binary")
     (raw / "broken.docx").write_bytes(b"not really a docx")
+    (raw / "portfolio.rtf").write_text("{\\rtf1 An unsupported format.}", encoding="utf-8")
     (raw / "empty.md").write_text("   \n", encoding="utf-8")
     (raw / "good.md").write_text("Real content.\n", encoding="utf-8")
     (raw / "nested").mkdir()
 
-    assert set(read_raw_documents(raw)) == {"good.md"}
+    found = read_raw_documents(raw)
+    assert set(found.documents) == {"good.md"}
+    # Hidden files and folders are noise; a document the user meant to add is not.
+    assert found.skipped == ("broken.docx", "empty.md", "portfolio.rtf", "scan.pdf")
+
+
+def test_the_projects_own_raw_readme_is_never_career_history(tmp_path: Path) -> None:
+    """Feeding the instructions to the model invites the model to write from them."""
+    from resume_tailor.service import read_raw_documents
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "README.md").write_text("# Drop your background materials here\n", encoding="utf-8")
+    (raw / "notes.md").write_text("Real content.\n", encoding="utf-8")
+
+    found = read_raw_documents(raw)
+    assert set(found.documents) == {"notes.md"}
+    assert found.skipped == (), "skipping it deliberately is not something to warn about"
+
+
+def test_a_pdf_resume_is_read(tmp_path: Path) -> None:
+    """Most people's only resume is a PDF; silently ignoring it built half a profile."""
+    from resume_tailor.service import read_raw_documents
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "resume.pdf").write_bytes(pdf_bytes("Lead Engineer at Charter Communications"))
+
+    found = read_raw_documents(raw)
+    assert "Charter Communications" in found.documents["resume.pdf"]
+    assert found.skipped == ()
+
+
+def test_a_scanned_pdf_with_no_text_layer_is_reported(tmp_path: Path) -> None:
+    """A scan yields nothing; saying so is the whole point of the skipped list."""
+    from resume_tailor.service import read_raw_documents
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "scan.pdf").write_bytes(pdf_bytes(""))
+
+    found = read_raw_documents(raw)
+    assert found.documents == {}
+    assert found.skipped == ("scan.pdf",)
+
+
+def test_a_corrupt_pdf_is_reported_not_fatal(tmp_path: Path) -> None:
+    from resume_tailor.service import read_raw_documents
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "broken.pdf").write_bytes(b"%PDF-1.4 truncated nonsense")
+    assert read_raw_documents(raw).skipped == ("broken.pdf",)
 
 
 def test_a_missing_raw_directory_is_empty(tmp_path: Path) -> None:
     from resume_tailor.service import read_raw_documents
 
-    assert read_raw_documents(tmp_path / "absent") == {}
+    found = read_raw_documents(tmp_path / "absent")
+    assert (found.documents, found.skipped) == ({}, ())
 
 
 def test_undecodable_text_is_skipped(tmp_path: Path) -> None:
@@ -407,4 +461,4 @@ def test_undecodable_text_is_skipped(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "bad.txt").write_bytes(b"\xff\xfe\x00\x80invalid")
-    assert read_raw_documents(raw) == {}
+    assert read_raw_documents(raw).documents == {}

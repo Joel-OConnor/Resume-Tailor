@@ -10,7 +10,7 @@ import pytest
 from resume_tailor import __version__, cli
 from resume_tailor.render import exporter
 from resume_tailor.render.pdf import NO_BROWSER, PdfResult
-from tests.conftest import REPO_ROOT, RESUME_MD
+from tests.conftest import REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -446,7 +446,121 @@ def test_tailor_reports_a_missing_posting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["tailor", str(tmp_path / "absent.md")]) == 1
-    assert "not a file" in capsys.readouterr().err
+    assert "not found" in capsys.readouterr().err
+
+
+def test_tailor_reports_a_posting_that_is_not_a_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path that exists but is neither a file nor a folder cannot be a posting."""
+    import os
+
+    pipe = tmp_path / "pipe"
+    os.mkfifo(pipe)
+    assert cli.main(["tailor", str(pipe)]) == 1
+    assert "not a file or folder" in capsys.readouterr().err
+
+
+def _inbox(tmp_path: Path, *names: str) -> Path:
+    """Build a jobs inbox holding one posting per name."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir(exist_ok=True)
+    for name in names:
+        (jobs / name).write_text(f"# {name} — Engineer\n\n- Work.\n", encoding="utf-8")
+    return jobs
+
+
+def _fake_tailoring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every posting tailored, writing a plausible application folder for each."""
+    seen: list[str] = []
+
+    def fake_tailor(posting: str, **_kwargs: object) -> object:
+        from resume_tailor.service import Application
+
+        seen.append(posting.splitlines()[0])
+        slug = f"app-{len(seen)}"
+        directory = tmp_path / "applications" / slug
+        directory.mkdir(parents=True)
+        written = directory / "resume.md"
+        written.write_text("# Ada\n", encoding="utf-8")
+        return Application(slug, directory, (written,), "Acme", "Engineer")
+
+    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+    return seen
+
+
+def test_tailor_runs_every_posting_in_the_inbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dropping several postings in and running once is the whole point of the inbox."""
+    jobs = _inbox(tmp_path, "acme.md", "beta.txt", "README.md")
+    (jobs / "screenshot.png").write_bytes(b"\x89PNG")
+    (jobs / ".hidden.md").write_text("# Nope\n", encoding="utf-8")
+    seen = _fake_tailoring(tmp_path, monkeypatch)
+
+    assert cli.main(["tailor", "--jobs", str(jobs), "--no-export"]) == 0
+    # The inbox's own README, a hidden file and a non-posting are all left alone.
+    assert seen == ["# acme.md — Engineer", "# beta.txt — Engineer"]
+
+
+def test_tailor_keeps_going_after_one_posting_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A posting the profile cannot honestly satisfy must not cost the user the other three."""
+    from resume_tailor.errors import FabricationError
+    from resume_tailor.service import Application
+
+    jobs = _inbox(tmp_path, "one.md", "two.md")
+    calls: list[str] = []
+
+    def fake_tailor(posting: str, **_kwargs: object) -> object:
+        calls.append(posting.splitlines()[0])
+        if "one.md" in posting:
+            msg = "claimed Kubernetes, which the profile does not support"
+            raise FabricationError(msg)
+        directory = tmp_path / "applications" / "two"
+        directory.mkdir(parents=True)
+        return Application("two", directory, (), "Acme", "Engineer")
+
+    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+
+    assert cli.main(["tailor", "--jobs", str(jobs), "--no-export"]) == 1
+    assert len(calls) == 2, "the second posting still ran"
+    assert "does not support" in capsys.readouterr().err
+
+
+def test_tailor_names_a_folder_and_drops_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same posting given twice must not tailor twice over the same folder."""
+    jobs = _inbox(tmp_path, "acme.md")
+    seen = _fake_tailoring(tmp_path, monkeypatch)
+    argv = ["tailor", str(jobs), str(jobs / "acme.md"), "--no-export"]
+    assert cli.main(argv) == 0
+    assert seen == ["# acme.md — Engineer"]
+
+
+def test_an_empty_inbox_says_where_to_put_a_posting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Told before an API key is ever asked for, so the message is the one that helps."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    assert cli.main(["tailor", "--jobs", str(jobs)]) == 1
+    assert "no job descriptions in" in capsys.readouterr().err
+
+
+def test_an_empty_named_folder_is_reported_in_its_own_terms(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    empty = tmp_path / "postings"
+    empty.mkdir()
+    assert cli.main(["tailor", str(empty)]) == 1
+    assert "no job descriptions found in the folders given" in capsys.readouterr().err
 
 
 def test_tailor_surfaces_a_missing_api_key(
@@ -491,6 +605,80 @@ def test_profile_build_reports_an_empty_raw_directory(
 ) -> None:
     assert cli.main(["profile", "build", "--raw", str(tmp_path / "empty")]) == 1
     assert "no readable documents" in capsys.readouterr().err
+
+
+def test_profile_build_names_what_it_could_not_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silence here is the failure that matters: a scan nobody knows was never read."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "scan.pdf").write_bytes(pdf_bytes(""))
+    assert cli.main(["profile", "build", "--raw", str(raw)]) == 1
+    assert "scan.pdf" in capsys.readouterr().err
+
+
+def test_profile_build_refuses_to_replace_a_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Weeks of hand corrections must not vanish because a command was re-run."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    out = tmp_path / "master-profile.yaml"
+    out.write_text("summary: hand written\n", encoding="utf-8")
+
+    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 1
+    assert out.read_text(encoding="utf-8") == "summary: hand written\n"
+    assert "--force" in capsys.readouterr().err
+
+
+def test_profile_build_forced_keeps_a_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from resume_tailor.agent import Usage
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    out = tmp_path / "master-profile.yaml"
+    out.write_text("summary: hand written\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: fresh\n", Usage(1, 2, 1)))
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+
+    argv = ["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]
+    assert cli.main(argv) == 0
+    assert out.read_text(encoding="utf-8") == "summary: fresh\n"
+    backups = list(tmp_path.glob("master-profile.yaml.*.bak"))
+    assert [b.read_text(encoding="utf-8") for b in backups] == ["summary: hand written\n"]
+    assert "previous profile" in capsys.readouterr().out
+
+
+def test_a_backup_that_cannot_be_written_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from resume_tailor.agent import Usage
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    out = tmp_path / "master-profile.yaml"
+    out.write_text("summary: hand written\n", encoding="utf-8")
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: fresh\n", Usage(1, 2, 1)))
+    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+    monkeypatch.setattr("resume_tailor.cli.shutil.copy2", refuse)
+
+    argv = ["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]
+    assert cli.main(argv) == 1
+    assert "cannot back up" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == "summary: hand written\n", "the original survives"
 
 
 def test_serve_starts_the_api(

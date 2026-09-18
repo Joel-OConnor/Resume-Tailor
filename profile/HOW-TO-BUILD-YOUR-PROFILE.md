@@ -11,8 +11,18 @@ your technology aliases — instead of re-reading paragraphs and guessing.
 ## The fastest path
 
 1. Drop whatever you have into [`raw/`](raw/) — see [raw/README.md](raw/README.md) for ideas. Old
-   resumes and a LinkedIn export alone are a great start.
-2. In Claude Code, say: **"Build my master profile from the files in profile/raw."**
+   resumes (PDF, Word or text) and a LinkedIn export alone are a great start.
+2. Build it:
+
+   ```bash
+   make profile
+   ```
+
+   It names every file it read, and every file it could **not** read — a scanned PDF has no text
+   in it, so add a text or Word version of that one instead. It will not overwrite a profile you
+   already have; `make profile FORCE=--force` replaces one, keeping a timestamped backup beside it.
+
+   In Claude Code you can instead say: **"Build my master profile from the files in profile/raw."**
    Claude reads everything, writes `master-profile.yaml`, and asks about anything unclear.
 3. Check it and read it over:
 

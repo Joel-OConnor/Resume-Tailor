@@ -14,6 +14,7 @@ Three properties are computed here because they gate what a match is allowed to 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Form", "Lexicon", "Provenance", "Tier", "build_lexicon"]
 
+_PARENTHETICAL = re.compile(r"^(?P<head>[^()]+?)\s*\((?P<inner>[^()\s,]+)\)$")
 _ACRONYM_MAX = 6
 _SHORT_FORM_MAX = 3
 _SAFE_MIN_LENGTH = 4
@@ -156,8 +158,8 @@ def build_lexicon(profile: Profile) -> Lexicon:
             employers[item.name] = item.used_at
             forms.append(_form(item.name, item.name, Provenance.NAME, group.group))
             forms += [
-                _form(item.name, alias, _provenance(item.name, alias), group.group)
-                for alias in item.aliases
+                _form(item.name, surface, _provenance(item.name, surface), group.group)
+                for surface in _other_spellings(item.name, item.aliases)
             ]
 
     by_tokens: dict[tuple[str, ...], Form] = {}
@@ -176,6 +178,37 @@ def build_lexicon(profile: Profile) -> Lexicon:
         evidence=_evidence(profile, levels),
         unconfirmed=_unconfirmed(profile, levels),
     )
+
+
+def _other_spellings(name: str, aliases: tuple[str, ...]) -> list[str]:
+    """Every spelling of a technology besides its canonical name, in order and without repeats."""
+    seen = {name.casefold()}
+    ordered: list[str] = []
+    candidates = [
+        *_expand(name),
+        *aliases,
+        *(part for alias in aliases for part in _expand(alias)),
+    ]
+    for surface in candidates:
+        if (key := surface.casefold()) not in seen:
+            seen.add(key)
+            ordered.append(surface)
+    return ordered
+
+
+def _expand(surface: str) -> list[str]:
+    """Split ``Expansion (ACRONYM)`` into the two halves it is also written as.
+
+    The profile spells technologies the way a screener wants to read them — "Amazon Web Services
+    (AWS)", "Artificial Intelligence (AI)" — and a resume then prints the expansion alone, the
+    acronym alone, or both. All three are one claim, so registering only the joined form made the
+    profile's own convention read as a fabricated skill. A parenthetical holding anything but a
+    single word is left alone: "AWS (ECS, Lambda, RDS)" names other products, not other spellings.
+    """
+    match = _PARENTHETICAL.match(surface.strip())
+    if match is None:
+        return []
+    return [part for part in (match["head"].strip(), match["inner"].strip()) if part]
 
 
 def _form(technology: str, surface: str, provenance: Provenance, group: str) -> Form:

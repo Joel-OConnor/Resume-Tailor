@@ -36,6 +36,13 @@ class Token:
     start: int
     end: int
     sentence_initial: bool
+    break_before: bool = False
+    """True when punctuation, not just space, separates this token from the one before it.
+
+    Phrase building reads this. Without it a comma, a semicolon or a parenthesis is invisible,
+    and "Strong Go (Python a plus)" reads as one requirement named "Go Python" — a phantom the
+    profile can never match, reported next to the real Python it contradicts.
+    """
 
     @property
     def lower(self) -> str:
@@ -64,6 +71,7 @@ def normalise(text: str) -> str:
 def tokenise(text: str) -> list[Token]:
     """Split ``text`` into tokens, keeping technology punctuation inside them."""
     tokens: list[Token] = []
+    previous_end = 0
     for match in _WORD.finditer(text):
         raw = match.group()
         lead = len(raw) - len(_strip_leading(raw))
@@ -78,8 +86,12 @@ def tokenise(text: str) -> list[Token]:
                 start=start,
                 end=start + len(surface),
                 sentence_initial=not before.strip() or bool(_SENTENCE_END.search(before)),
+                # Whitespace joins; anything else separates. Punctuation trimmed off the end of
+                # the previous token lands in this span too, so "Node.js, React" breaks here.
+                break_before=bool(tokens) and bool(text[previous_end:start].strip()),
             )
         )
+        previous_end = start + len(surface)
     return tokens
 
 

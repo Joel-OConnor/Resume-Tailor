@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_APPLICATIONS_DIR",
     "Application",
+    "RawDocuments",
     "check_profile",
     "list_applications",
     "match_only",
@@ -50,9 +51,23 @@ FIT_REPORT_FILE = "fit-report.md"
 COVER_LETTER_FILE = "cover-letter.md"
 LINKEDIN_FILE = "linkedin.md"
 
+_RAW_GUIDE = "README.md"
+"""The project's own instructions in profile/raw/ — not the user's career history."""
+
 _FALLBACK_SLUG = "application"
 _MAX_SLUG = 80
 _NOT_SLUG = re.compile(r"[^a-z0-9]+")
+
+
+@dataclass(frozen=True, slots=True)
+class RawDocuments:
+    """What a profile build found to read, and what it could not."""
+
+    documents: dict[str, str]
+    """Filename to extracted text, for every file that yielded any."""
+
+    skipped: tuple[str, ...] = ()
+    """Files that produced no text — an unsupported format, or a PDF that is only a scan."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,34 +267,65 @@ def _files(directory: Path) -> tuple[Path, ...]:
     return tuple(sorted(path for path in directory.iterdir() if path.is_file()))
 
 
-def read_raw_documents(raw_dir: Path) -> dict[str, str]:
+def read_raw_documents(raw_dir: Path) -> RawDocuments:
     """Extract text from every readable file in ``raw_dir``.
 
-    Old resumes arrive as ``.docx``, exports as ``.md`` or ``.txt``. Anything unreadable is
-    skipped rather than fatal — a stray ``.DS_Store`` or a PDF should not stop a profile build,
-    and the caller reports how many documents were actually understood.
+    Old resumes arrive as ``.pdf`` or ``.docx``, exports and notes as ``.md`` or ``.txt``.
+    Anything that yields no text is *reported* rather than dropped: a scanned PDF with no text
+    layer and an unsupported format both look identical to a user who was told to drop in
+    "anything", and silently building a profile from half their career is the worst outcome
+    this function can produce.
+
+    The folder's own ``README.md`` — the instructions that ship with the project — is skipped.
+    It is not career history, and feeding it to a model invites the model to write from it.
     """
     documents: dict[str, str] = {}
+    skipped: list[str] = []
     if not raw_dir.is_dir():
-        return documents
+        return RawDocuments({}, ())
     for path in sorted(raw_dir.iterdir()):
-        if not path.is_file() or path.name.startswith("."):
+        if not path.is_file() or path.name.startswith(".") or path.name == _RAW_GUIDE:
             continue
         text = _extract(path)
         if text.strip():
             documents[path.name] = text
-    return documents
+        else:
+            skipped.append(path.name)
+    return RawDocuments(documents, tuple(skipped))
 
 
 def _extract(path: Path) -> str:
-    if path.suffix.lower() == ".docx":
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _extract_pdf(path)
+    if suffix == ".docx":
         return _extract_docx(path)
-    if path.suffix.lower() in {".md", ".txt", ".markdown", ".text"}:
+    if suffix in {".md", ".txt", ".markdown", ".text"}:
         try:
             return path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return ""
     return ""
+
+
+def _extract_pdf(path: Path) -> str:
+    """Pull the text layer out of a PDF.
+
+    A PDF that is a scan carries no text layer, so this returns nothing and the caller reports
+    the file as unread — which is the truth, and far better than a profile quietly missing the
+    resume the user cared most about.
+    """
+    from pypdf import PdfReader  # noqa: PLC0415 - only needed for this branch
+    from pypdf.errors import PyPdfError  # noqa: PLC0415
+
+    # An encrypted, truncated or malformed PDF raises from anywhere in this block, including
+    # lazily while pages are read. All of it means the same thing: no text came out.
+    try:
+        reader = PdfReader(str(path))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except (OSError, ValueError, KeyError, PyPdfError):
+        return ""
+    return "\n".join(page.strip() for page in pages if page.strip())
 
 
 def _extract_docx(path: Path) -> str:

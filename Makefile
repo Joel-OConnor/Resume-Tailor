@@ -1,19 +1,24 @@
 # Resume-Tailor — see README.md
 #
 #   make setup                 one-time: create .venv and install everything
+#   make profile               draft profile/master-profile.yaml from profile/raw/
+#   make tailor                tailor every posting in jobs/ into applications/
 #   make check                 lint + types + tests (what CI runs)
 #   make export APP=<folder>   render applications/<folder> to .docx + .pdf
 #
 .DEFAULT_GOAL := help
 
+# The interpreter used to create .venv when uv is not installed. macOS ships an old python3,
+# so this is overridable: make setup PYTHON=python3.12
+PYTHON  ?= python3
 PY      := .venv/bin/python
 RUFF    := .venv/bin/ruff
 MYPY    := .venv/bin/mypy
 PYTEST  := .venv/bin/pytest
 PROFILE ?= profile/master-profile.yaml
 
-.PHONY: help setup lint format typecheck test check export example \
-        profile-check profile-md profile-schema clean
+.PHONY: help setup lint format typecheck test check export example serve match tailor \
+        profile profile-check profile-md profile-schema clean
 
 help:  ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
@@ -23,8 +28,16 @@ setup:  ## Create .venv and install the package plus dev tools (uv if present, e
 	@if command -v uv >/dev/null 2>&1; then \
 	  uv sync --all-groups; \
 	else \
-	  echo "uv not found — falling back to python3 -m venv + pip"; \
-	  python3 -m venv .venv && .venv/bin/pip install -q -e . pytest pytest-cov ruff mypy types-PyYAML; \
+	  echo "uv not found — falling back to $(PYTHON) -m venv + pip"; \
+	  $(PYTHON) -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' || { \
+	    echo "error: $(PYTHON) is `$(PYTHON) -V 2>&1`, and this project needs Python 3.12 or newer."; \
+	    echo "  Easiest fix: install uv (https://docs.astral.sh/uv/) — it fetches the right Python itself."; \
+	    echo "  Or point this at your own: make setup PYTHON=python3.12"; \
+	    exit 1; \
+	  }; \
+	  $(PYTHON) -m venv .venv; \
+	  .venv/bin/python -m pip install -q --upgrade pip; \
+	  .venv/bin/python -m pip install -q -e '.[agent]' pytest pytest-cov ruff mypy types-PyYAML httpx; \
 	fi
 
 # --- quality gates --------------------------------------------------------------------------------
@@ -60,9 +73,15 @@ example:  ## Render the bundled demo application
 serve:  ## Run the HTTP API on http://127.0.0.1:8000
 	$(PY) -m resume_tailor serve
 
-match:
+match:  ## Score applications/$(APP)/job-description.md against the profile (no API key)
 	@test -n "$(APP)" || { echo "usage: make match APP=<folder under applications/>"; exit 1; }
 	$(PY) -m resume_tailor match applications/$(APP)/job-description.md
+
+tailor:  ## Tailor every posting in jobs/ (or JOB=<file>) into applications/
+	$(PY) -m resume_tailor tailor $(JOB)
+
+profile:  ## Draft the master profile from profile/raw/ (add FORCE=--force to replace one)
+	$(PY) -m resume_tailor profile build $(FORCE)
 
 profile-check:  ## Validate the master profile
 	$(PY) -m resume_tailor profile validate $(PROFILE)

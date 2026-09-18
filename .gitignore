@@ -8,6 +8,10 @@
 /profile/raw/*
 !/profile/raw/README.md
 
+# Job postings you drop in to tailor against — yours, and often under an NDA
+/jobs/*
+!/jobs/README.md
+
 # Applications are your data too; only the README and the demo example are tracked
 /applications/*
 !/applications/README.md

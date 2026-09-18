@@ -15,8 +15,10 @@ to produce a tailored resume plus supporting docs, then export them to Word and 
    `schema/master-profile.schema.json`, and `make profile-md` renders a readable Markdown view at
    `profile/MASTER_PROFILE.md` (generated — never edit it by hand).
 
-2. **`applications/<company>-<role>/` — one folder per job.** Each tailoring run writes its outputs
-   here (job description, tailored resume, fit report, cover letter, LinkedIn text, exports).
+2. **`jobs/` — the inbox, and `applications/<company>-<role>/` — one folder per job.** The user
+   drops postings into `jobs/` as `.md` or `.txt` files (as many as they like); each tailoring run
+   writes its outputs to `applications/<slug>/` (job description, tailored resume, fit report,
+   cover letter, LinkedIn text, exports). Both are gitignored.
 
 3. **`src/resume_tailor/` — the tooling.** A tested Python package that parses the tailored Markdown
    and renders it into two layouts (below). Run `make check` after touching it.
@@ -37,7 +39,10 @@ anything submitted through a form, and say which is which when you hand over bot
 
 ## The tailoring method (follow every step)
 
-When the user provides a job description (pasted, or dropped in a file):
+When the user provides a job description — pasted, dropped in a file, or sitting in `jobs/`. If
+they say "tailor my resume" without naming one, look in `jobs/` and tell them what you found. For
+several postings, do each one in full before starting the next; a failure on one is reported and
+the rest still run.
 
 1. **Analyze the job description.** Extract and note:
    - the exact **job title** and seniority level;
@@ -47,8 +52,10 @@ When the user provides a job description (pasted, or dropped in a file):
    - the **top responsibilities** — what this person will actually do day to day;
    - the **company/industry** context and any values/tone signals.
 
-2. **Read `profile/master-profile.yaml` in full.** (If it doesn't exist, tell the user to build it
-   from `profile/raw/` first — see `profile/HOW-TO-BUILD-YOUR-PROFILE.md`.) Use `technologies[].name`
+2. **Read `profile/master-profile.yaml` in full.** (If it doesn't exist, tell the user to run
+   `make profile` to build it from `profile/raw/` — see `profile/HOW-TO-BUILD-YOUR-PROFILE.md`.
+   Never regenerate an existing profile without asking: it may hold corrections made by hand, and
+   `profile build` refuses to replace one without `--force` for exactly that reason.) Use `technologies[].name`
    *and* `aliases` when matching the posting's wording, `highlights[].tags` to find evidence for a
    requirement, and `notes` to see what the user still has to confirm.
 
@@ -95,6 +102,10 @@ When the user provides a job description (pasted, or dropped in a file):
 
 6. **Export** with `make export APP=<company>-<role>`. The resume renders in both layouts; the
    cover letter renders single-column only.
+
+   (The standalone path does all of steps 5 and 6 in one command: `make tailor`, or
+   `.venv/bin/resume-tailor tailor <posting>`. Use it when the user wants the whole inbox done at
+   once; work through the method by hand when they want to shape the result as you go.)
 
 7. **Summarize for the user**: the match strength, what you emphasized and why, any gaps they should
    be aware of, which file to submit where, and where everything lives.
@@ -155,8 +166,9 @@ make check     # ruff + mypy --strict + pytest with 100% coverage — all three 
 
 ## Conventions
 
-- The user's real data lives only in `profile/` and `applications/` — both are **gitignored** so
-  personal info and drafts never get committed. Templates, tooling, schema, and docs are tracked.
+- The user's real data lives only in `profile/`, `jobs/` and `applications/` — all three are
+  **gitignored** (as is `.env`) so personal info, the jobs they are looking at, and drafts never get
+  committed. Templates, tooling, schema, and docs are tracked.
 - Application folder slugs: lowercase `company-role`, e.g. `stripe-staff-backend-engineer`.
 - Resume Markdown must follow `templates/resume.md`'s structure so the renderers work. When in
   doubt, copy the template and fill it in.

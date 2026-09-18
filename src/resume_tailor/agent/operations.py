@@ -73,6 +73,7 @@ def tailor(
         system=prompts.TAILOR_SYSTEM,
         prompt=prompts.tailor_prompt(posting, profile),
         artefact="the tailored resume",
+        truncated=_TRUNCATED_RESUME,
     )
     draft, usage = _generate(model, ask, check=check, max_attempts=max_attempts)
     return TailorResult(
@@ -101,6 +102,7 @@ def build_profile(
         system=prompts.PROFILE_SYSTEM,
         prompt=prompts.profile_prompt(documents),
         artefact="the master profile",
+        truncated=_TRUNCATED_PROFILE,
     )
     return _generate(model, ask, check=_check_profile, max_attempts=max_attempts)
 
@@ -113,6 +115,8 @@ class _Ask:
     system: str
     prompt: str
     artefact: str
+    truncated: _Rejection
+    """How to retry after a cut-off reply — the right advice differs per operation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,12 +128,20 @@ class _Rejection:
     """True when the answer claimed something the profile cannot support, not merely malformed."""
 
 
-_TRUNCATED = _Rejection(
+_TRUNCATED_RESUME = _Rejection(
     "Your previous answer stopped mid-document because it hit the length limit. A resume that is "
     "missing its last section is worse than a shorter one: cut the least relevant content and "
     "return every section complete."
 )
 """A cut-off reply is a failure, not a short answer: it reads as plausible and has no ending."""
+
+_TRUNCATED_PROFILE = _Rejection(
+    "Your previous answer stopped mid-file because it hit the length limit. Do not drop roles, "
+    "highlights or technologies to fit — the profile is the only record of them, and tailoring "
+    "can never surface what is missing here. Write the same content more compactly instead: one "
+    "line per highlight, no commentary, no blank lines between entries."
+)
+"""Truncating a *profile* loses career history for good, so the advice is the opposite one."""
 
 
 def _generate[T](
@@ -147,7 +159,7 @@ def _generate[T](
         reply = model.complete(ask.system, prompt)
         input_tokens += reply.input_tokens
         output_tokens += reply.output_tokens
-        outcome = _TRUNCATED if reply.truncated else check(reply.text)
+        outcome = ask.truncated if reply.truncated else check(reply.text)
         if not isinstance(outcome, _Rejection):
             return outcome, Usage(input_tokens, output_tokens, attempt)
         if attempt == max_attempts:

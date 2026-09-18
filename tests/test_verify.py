@@ -880,3 +880,46 @@ def test_a_capitalised_verb_does_not_exempt_an_inflated_headcount(profile: Profi
     )
     assert not verdict.ok
     assert "30" in verdict.violations[0].text
+
+
+# --- the profile's own acronym convention ------------------------------------------------------
+@pytest.mark.parametrize(
+    "spelling",
+    ["Artificial Intelligence (AI)", "Artificial Intelligence", "AI"],
+)
+def test_either_half_of_an_acronym_name_is_the_same_claim(spelling: str) -> None:
+    """The profile writes "Name (ACRONYM)"; a resume prints either half, and both are true."""
+    profile = load_mapping(
+        _mapping(
+            technologies=[{"group": "AI", "items": [{"name": "Artificial Intelligence (AI)"}]}]
+        )
+    )
+    verdict = _verify(
+        f"""\
+        # Jordan Rivera
+
+        ## Skills
+        **AI:** {spelling}
+        """,
+        profile,
+    )
+    assert verdict.ok, format_violations(verdict)
+
+
+def test_a_parenthetical_list_still_claims_each_product_separately() -> None:
+    """A bracketed list names other products, not other spellings of the one before it."""
+    profile = load_mapping(
+        _mapping(
+            technologies=[{"group": "Cloud", "items": [{"name": "Amazon Web Services (AWS)"}]}]
+        )
+    )
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Skills
+        **Cloud:** AWS (ECS, Lambda)
+        """,
+        profile,
+    )
+    assert _texts(verdict) == ["ECS", "Lambda"], "the services still have to be real"

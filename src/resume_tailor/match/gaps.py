@@ -433,15 +433,24 @@ def _known_tokens(lexicon: Lexicon) -> frozenset[str]:
 
 
 def _candidates(tokens: list[Token]) -> list[str]:
-    """Merge runs of technology-shaped tokens into candidate terms."""
+    """Merge runs of technology-shaped tokens into candidate terms.
+
+    A run is broken by a token that is not technology-shaped *and* by punctuation between two
+    that are. Only whitespace may join them, so "Amazon Web Services" survives as one name while
+    "AWS, Kubernetes" and "Go (Python a plus)" stay two — a comma or a bracket separates two
+    requirements, and welding them produced a term no profile could ever match.
+    """
     terms: list[str] = []
     run: list[str] = []
     for token in tokens:
-        if _is_term_shaped(token):
-            run.append(token.surface)
-        else:
+        if not _is_term_shaped(token):
             terms += _flush(run)
             run = []
+            continue
+        if token.break_before:
+            terms += _flush(run)
+            run = []
+        run.append(token.surface)
     return terms + _flush(run)
 
 
@@ -462,7 +471,10 @@ def _is_term_shaped(token: Token) -> bool:
     # written. So suppress only the words postings actually open sentences with.
     if not surface[:1].isupper():
         return False
-    return not (token.sentence_initial and surface.isalpha() and token.lower in _SENTENCE_STARTERS)
+    # Read the lead word, not the whole surface: "Hands-on with AWS" opens a requirement the same
+    # way "Hands on with AWS" does, and reporting "Hands-on" as a skill you lack is noise.
+    lead = surface.split("-", 1)[0].casefold()
+    return not (token.sentence_initial and lead.isalpha() and lead in _SENTENCE_STARTERS)
 
 
 def _prose(tokens: list[Token]) -> list[str]:

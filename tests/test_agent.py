@@ -352,6 +352,19 @@ def test_invalid_yaml_is_retried_with_the_loader_s_own_message() -> None:
     assert "'Jan 2021'" in model.prompts[1]
 
 
+def test_a_truncated_profile_is_told_to_compact_not_to_cut() -> None:
+    """Cutting a resume loses a bullet; cutting the profile loses the career it came from."""
+    cut_off = Reply(PROFILE_YAML, stop_reason="max_tokens")
+    model = FakeModel([cut_off, PROFILE_YAML])
+
+    _, usage = build_profile({"notes.md": "Ada worked on the engine."}, model)
+
+    assert usage.attempts == 2
+    retry = model.prompts[1]
+    assert "Do not drop roles, highlights or technologies" in retry
+    assert "cut the least relevant content" not in retry, "that is the resume's advice, not this"
+
+
 def test_yaml_that_never_loads_raises_a_model_error() -> None:
     model = FakeModel(["not: [a, profile", "still: not: a profile"])
 

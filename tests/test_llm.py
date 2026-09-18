@@ -7,7 +7,7 @@ mapping can be exercised for every failure a real key would eventually produce.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import pytest
 
@@ -38,16 +38,36 @@ class _Message:
         self.stop_reason = stop_reason
 
 
+class _Stream:
+    """The SDK's streaming context manager, reduced to what the adapter actually uses."""
+
+    def __init__(self, outcome: Any) -> None:
+        self._outcome = outcome
+        self.closed = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.closed = True
+
+    def get_final_message(self) -> Any:
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
 class _Messages:
     def __init__(self, outcome: Any) -> None:
         self._outcome = outcome
         self.calls: list[dict[str, Any]] = []
+        self.streams: list[_Stream] = []
 
-    def create(self, **kwargs: Any) -> Any:
+    def stream(self, **kwargs: Any) -> _Stream:
         self.calls.append(kwargs)
-        if isinstance(self._outcome, Exception):
-            raise self._outcome
-        return self._outcome
+        opened = _Stream(self._outcome)
+        self.streams.append(opened)
+        return opened
 
 
 class _Client:
@@ -149,6 +169,20 @@ def test_a_truncated_reply_is_flagged() -> None:
     assert _model(_Message("partial", "max_tokens")).complete("s", "p").truncated
 
 
+def test_the_reply_is_streamed_and_the_stream_is_closed() -> None:
+    """A long generation exceeds the SDK's non-streaming ceiling, which it refuses outright."""
+    model = _model(_Message("hi"))
+    model.complete("s", "p")
+    assert [stream.closed for stream in model._client.messages.streams] == [True]
+
+
+def test_a_key_in_an_error_message_is_redacted() -> None:
+    """SDK messages quote arguments back; one must never carry the key into a log."""
+    with pytest.raises(ModelError, match=re.escape("sk-ant-***")) as caught:
+        _model(RuntimeError("bad header x-api-key: sk-ant-abc123DEF")).complete("s", "p")
+    assert "abc123DEF" not in str(caught.value)
+
+
 def test_an_empty_reply_is_an_error() -> None:
     with pytest.raises(ModelError, match="no text"):
         _model(_Message("")).complete("s", "p")
@@ -160,14 +194,15 @@ def test_an_empty_reply_is_an_error() -> None:
         (401, "API key was rejected"),
         (429, "rate limited"),
         (503, "temporarily unavailable"),
-        (None, "could not reach the model"),
+        # The type alone said nothing actionable; the SDK's own message names the cause.
+        (None, "could not reach the model: RuntimeError: boom"),
     ],
 )
 def test_api_failures_become_actionable_messages(status: int | None, expected: str) -> None:
     error = RuntimeError("boom")
     if status is not None:
         error.status_code = status  # type: ignore[attr-defined]
-    with pytest.raises(ModelError, match=expected) as caught:
+    with pytest.raises(ModelError, match=re.escape(expected)) as caught:
         _model(error).complete("s", "p")
     assert "sk-test" not in str(caught.value), "the key must never appear in an error"
 

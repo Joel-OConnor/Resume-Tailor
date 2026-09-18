@@ -339,6 +339,37 @@ def test_find_gaps_accepts_an_empty_covered_set(profile: Profile) -> None:
     assert find_gaps(posting, build_lexicon(profile), frozenset())
 
 
+def test_punctuation_separates_two_requirements_instead_of_welding_them() -> None:
+    """A bracket splits two requirements; welded they became a gap nothing can ever match."""
+    profile = _profile(
+        technologies=[{"group": "Languages", "items": [{"name": "Python", "used_at": ["acme"]}]}]
+    )
+    report = match_posting("## Requirements\n- Strong Go (Python a plus).\n", profile)
+    terms = {gap.term for gap in report.gaps}
+    assert "Go" in terms
+    assert "Go Python" not in terms, "a bracket separates two requirements"
+    assert "Python" not in terms, "matched elsewhere, so it cannot also be a gap"
+
+
+def test_a_comma_separated_list_is_one_gap_per_item() -> None:
+    text = "## Requirements\n- Hands-on with Kafka, Terraform, and Rust.\n"
+    terms = {gap.term for gap in match_posting(text, _profile()).gaps}
+    assert {"Kafka", "Terraform", "Rust"} <= terms
+    assert not any(" " in term for term in terms), "commas must not weld names together"
+
+
+def test_a_multi_word_product_name_survives_as_one_term() -> None:
+    """The break is punctuation, not every space — "Amazon Web Services" is one name."""
+    text = "## Requirements\n- Deep experience with Amazon Web Services.\n"
+    assert "Amazon Web Services" in {gap.term for gap in match_posting(text, _profile()).gaps}
+
+
+def test_a_hyphenated_sentence_opener_is_not_a_missing_skill() -> None:
+    """A hyphenated opener reads like the plain one, and neither of them is a skill."""
+    text = "## Requirements\n- Hands-on with Kafka.\n"
+    assert "Hands-on" not in {gap.term for gap in match_posting(text, _profile()).gaps}
+
+
 # --- remaining edges -----------------------------------------------------------------------
 def test_a_lowercase_category_alias_says_broader_not_vendor() -> None:
     profile = _profile(
@@ -459,3 +490,20 @@ def test_a_bare_name_and_its_fuller_form_are_one_gap() -> None:
     assert "Kafka" not in terms
     kafka = next(gap for gap in gaps if gap.term == "Apache Kafka")
     assert len(kafka.lines) == 2, "the absorbed term keeps its line reference"
+
+
+def test_a_posting_may_spell_out_an_acronym_the_profile_joined() -> None:
+    """The profile's "Name (ACRONYM)" convention is one claim written three ways."""
+    profile = _profile(
+        technologies=[
+            {
+                "group": "AI",
+                "items": [{"name": "Artificial Intelligence (AI)", "used_at": ["acme"]}],
+            }
+        ]
+    )
+    for wording in ("Artificial Intelligence", "AI", "Artificial Intelligence (AI)"):
+        report = match_posting(f"## Requirements\n- Deep {wording} experience.\n", profile)
+        assert not [gap for gap in report.gaps if "ntelligence" in gap.term or gap.term == "AI"], (
+            f"the profile records this, however the posting spells it: {wording}"
+        )

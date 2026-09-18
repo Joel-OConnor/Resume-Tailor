@@ -7,8 +7,8 @@ deterministic half before it reaches a file.
 ```mermaid
 flowchart TB
     subgraph inputs [" "]
-        raw["profile/raw/<br/>old resumes, LinkedIn export"]
-        jd["job description"]
+        raw["profile/raw/<br/>old resumes (PDF/Word/text), LinkedIn export"]
+        jd["jobs/<br/>one or more job descriptions"]
     end
 
     yaml[("profile/master-profile.yaml<br/><i>the single source of truth</i>")]

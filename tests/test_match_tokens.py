@@ -78,3 +78,16 @@ def test_punctuated_and_short_words_are_never_stemmed(word: str) -> None:
 
 def test_stemming_never_eats_a_word_whole() -> None:
     assert stem("ceded") == "ceded"
+
+
+def test_punctuation_between_tokens_is_recorded_as_a_break() -> None:
+    """Phrase building reads this: only whitespace may join two tokens into one name."""
+    amazon, web, services, node = tokenise("Amazon Web Services, Node.js")
+    assert [t.break_before for t in (amazon, web, services)] == [False, False, False]
+    assert node.break_before, "a comma separates two names"
+
+
+def test_punctuation_trimmed_off_a_token_still_breaks_the_next_one() -> None:
+    """The dot ending a sentence is stripped from the token, not from the gap after it."""
+    _, second = tokenise("scale. Kafka")
+    assert second.break_before

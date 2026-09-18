@@ -2,6 +2,8 @@
 
 resume-tailor build applications/acme-staff-engineer/resume.md
 resume-tailor match applications/acme-staff-engineer/job-description.md
+resume-tailor tailor                       every posting in jobs/
+resume-tailor tailor path/to/posting.md    one named posting
 resume-tailor profile validate
 resume-tailor profile render -o profile/MASTER_PROFILE.md
 resume-tailor profile schema -o schema/master-profile.schema.json
@@ -11,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +41,12 @@ __all__ = ["main"]
 
 _DEFAULT_MARKDOWN_VIEW = Path("profile/MASTER_PROFILE.md")
 _DEFAULT_SCHEMA_PATH = Path("schema/master-profile.schema.json")
+DEFAULT_JOBS_DIR = Path("jobs")
+POSTING_SUFFIXES = (".md", ".markdown", ".txt", ".text")
+"""What counts as a posting inside an inbox folder — everything else there is the user's notes."""
+
+INBOX_GUIDE = "README.md"
+"""The inbox's own instructions, which ship with the project and are never a job posting."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,11 +96,22 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.set_defaults(handler=_match)
 
     apply_ = commands.add_parser(
-        "tailor", help="generate a tailored application from a job posting (needs an API key)"
+        "tailor", help="generate tailored applications from job postings (needs an API key)"
     )
-    apply_.add_argument("posting", type=Path, help="the job description to tailor for")
+    apply_.add_argument(
+        "postings",
+        nargs="*",
+        type=Path,
+        help=f"job descriptions, or folders of them (default: everything in {DEFAULT_JOBS_DIR}/)",
+    )
     apply_.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
     apply_.add_argument("--applications", type=Path, default=Path("applications"))
+    apply_.add_argument(
+        "--jobs",
+        type=Path,
+        default=DEFAULT_JOBS_DIR,
+        help=f"the inbox scanned when no posting is named (default: {DEFAULT_JOBS_DIR})",
+    )
     apply_.add_argument("--no-export", action="store_true", help="skip the .docx/.pdf render")
     apply_.set_defaults(handler=_tailor)
 
@@ -118,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--raw", type=Path, default=Path("profile/raw"))
     generate.add_argument("-o", "--out", type=Path, default=DEFAULT_PROFILE_PATH)
+    generate.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing profile, keeping a timestamped backup beside it",
+    )
     generate.set_defaults(handler=_build_profile)
 
     schema = actions.add_parser("schema", help="write the JSON Schema for the profile")
@@ -278,20 +304,82 @@ def _match(args: argparse.Namespace) -> int:
 
 
 def _tailor(args: argparse.Namespace) -> int:
-    if not args.posting.is_file():
-        print(f"error: not a file: {args.posting}", file=sys.stderr)
+    """Tailor every named posting, or the whole inbox when none is named.
+
+    One posting per application, and one failure does not end the batch: a posting the model
+    cannot honestly satisfy is reported and the rest still run, because the alternative is a user
+    who applied to four jobs getting documents for none of them.
+    """
+    named: list[Path] = args.postings
+    postings, failed = _collect_postings(named or [args.jobs])
+    if not postings:
+        if not failed:
+            print(_nothing_to_tailor(named, args.jobs), file=sys.stderr)
         return 1
-    application = tailor_application(
-        read_posting(args.posting),
-        profile_path=args.profile,
-        applications_dir=args.applications,
-        model=build_model(load_settings()),
-        export=not args.no_export,
+
+    # Resolved first, so "there are no postings" never costs an API key to discover.
+    model = build_model(load_settings())
+    for path in postings:
+        print(f"{path}:")
+        try:
+            application = tailor_application(
+                read_posting(path),
+                profile_path=args.profile,
+                applications_dir=args.applications,
+                model=model,
+                export=not args.no_export,
+            )
+        except ResumeTailorError as exc:
+            print(f"error: {path}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        print(f"  → {application.directory}")
+        for artefact in application.files:
+            print(f"    ✓ {artefact.name}")
+    return 1 if failed else 0
+
+
+def _collect_postings(paths: list[Path]) -> tuple[list[Path], bool]:
+    """Expand files and inbox folders into postings, reporting anything unusable.
+
+    A named file is taken as a posting whatever it is called; only a *folder* is filtered, so a
+    deliberate ``tailor notes.rtf`` still runs while a stray export sitting in the inbox does not
+    become an application on its own. The inbox's own README is never a posting — tailoring
+    against the instructions that ship with the project is nobody's intent.
+    """
+    postings: list[Path] = []
+    failed = False
+    for path in paths:
+        if path.is_file():
+            postings.append(path)
+        elif path.is_dir():
+            postings += sorted(
+                child
+                for child in path.iterdir()
+                if child.is_file()
+                and not child.name.startswith(".")
+                and child.name != INBOX_GUIDE
+                and child.suffix.lower() in POSTING_SUFFIXES
+            )
+        elif path.exists():
+            print(f"error: not a file or folder: {path}", file=sys.stderr)
+            failed = True
+        else:
+            print(f"error: not found: {path}", file=sys.stderr)
+            failed = True
+    # The same posting named twice would tailor twice and write the folder twice over.
+    return list(dict.fromkeys(postings)), failed
+
+
+def _nothing_to_tailor(named: list[Path], jobs: Path) -> str:
+    """Explain an empty run, in terms of how the user asked for it."""
+    if named:
+        return "error: no job descriptions found in the folders given"
+    suffixes = ", ".join(POSTING_SUFFIXES)
+    return (
+        f"error: no job descriptions in {jobs}/ — save a posting there as a {suffixes} file, "
+        f"or name one: resume-tailor tailor path/to/posting.md"
     )
-    print(f"{application.directory}:")
-    for path in application.files:
-        print(f"  ✓ {path.name}")
-    return 0
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -304,17 +392,62 @@ def _serve(args: argparse.Namespace) -> int:
 
 
 def _build_profile(args: argparse.Namespace) -> int:
-    documents = read_raw_documents(args.raw)
-    if not documents:
+    """Draft the master profile from the raw folder, without ever silently replacing one."""
+    raw = read_raw_documents(args.raw)
+    if not raw.documents:
         print(f"error: no readable documents in {args.raw}", file=sys.stderr)
+        _report_skipped(raw.skipped)
         return 1
-    print(f"  reading {len(documents)} document(s) from {args.raw}")
-    yaml_text, usage = build_profile(documents, build_model(load_settings()))
+    if args.out.exists() and not args.force:
+        print(
+            f"error: {args.out} already exists. Building would replace it, losing any correction "
+            f"made by hand. Re-run with --force to replace it (a timestamped backup is kept), or "
+            f"use -o to write the draft somewhere else.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"  reading {len(raw.documents)} document(s) from {args.raw}")
+    for name in raw.documents:
+        print(f"    · {name}")
+    _report_skipped(raw.skipped)
+
+    yaml_text, usage = build_profile(raw.documents, build_model(load_settings()))
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if backup := _back_up(args.out):
+        print(f"  ✓ {backup}  (previous profile)")
     args.out.write_text(yaml_text, encoding="utf-8")
     print(f"  ✓ {args.out}  ({usage.attempts} attempt(s))")
     print("  review it, then run: make profile-check")
     return 0
+
+
+def _report_skipped(skipped: tuple[str, ...]) -> None:
+    """Name every raw file that produced no text.
+
+    Silence here is the failure mode that matters: a user who dropped in a scanned resume and was
+    told "reading 2 documents" has no way to know the one they cared about was never read.
+    """
+    for name in skipped:
+        print(
+            f"  ! {name}: no text could be read from it — if it is a scan, add a text or Word "
+            f"version instead",
+            file=sys.stderr,
+        )
+
+
+def _back_up(out: Path) -> Path | None:
+    """Copy an existing profile aside before it is replaced, returning where it went."""
+    if not out.exists():
+        return None
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+    backup = out.with_name(f"{out.name}.{stamp}.bak")
+    try:
+        shutil.copy2(out, backup)
+    except OSError as exc:
+        msg = f"cannot back up {out}: {exc.strerror or exc}"
+        raise RenderError(msg) from exc
+    return backup
 
 
 def _validate(args: argparse.Namespace) -> int:
