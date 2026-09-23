@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
-from resume_tailor.agent.operations import TailorResult, Usage, build_profile, tailor
+from resume_tailor.agent.operations import (
+    RefineResult,
+    TailorResult,
+    Usage,
+    build_profile,
+    refine_resume,
+    tailor,
+)
 
-__all__ = ["TailorResult", "Usage", "build_profile", "tailor"]
+__all__ = ["RefineResult", "TailorResult", "Usage", "build_profile", "refine_resume", "tailor"]

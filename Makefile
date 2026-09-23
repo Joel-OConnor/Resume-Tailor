@@ -2,9 +2,11 @@
 #
 #   make setup                 one-time: create .venv and install everything
 #   make profile               draft profile/master-profile.yaml from profile/raw/
+#   make resume                render the whole profile as an untailored resume (no API key)
 #   make tailor                tailor every posting in jobs/ into applications/
 #   make check                 lint + types + tests (what CI runs)
 #   make export APP=<folder>   render applications/<folder> to .docx + .pdf
+#   make review APP=<folder>   fix the easy things in a resume, then ask about the rest
 #
 .DEFAULT_GOAL := help
 
@@ -17,8 +19,8 @@ MYPY    := .venv/bin/mypy
 PYTEST  := .venv/bin/pytest
 PROFILE ?= profile/master-profile.yaml
 
-.PHONY: help setup lint format typecheck test check export example serve match tailor \
-        profile profile-check profile-md profile-schema clean
+.PHONY: help setup lint format typecheck test check export example serve match tailor resume \
+        review profile profile-check profile-md profile-schema clean
 
 help:  ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
@@ -65,6 +67,10 @@ export:  ## Render applications/$(APP)/*.md to .docx + .pdf
 	  $(PY) -m resume_tailor build applications/$(APP)/cover-letter.md --layout ats; \
 	fi
 
+review:  ## Review applications/$(APP)/resume.md: fix the easy things, re-export, then ask about the rest
+	@test -n "$(APP)" || { echo "usage: make review APP=<folder under applications/>"; exit 1; }
+	$(PY) -m resume_tailor review applications/$(APP)/resume.md --export
+
 example:  ## Render the bundled demo application
 	$(PY) -m resume_tailor build applications/example-acme-backend/resume.md
 	$(PY) -m resume_tailor build applications/example-acme-backend/cover-letter.md --layout ats
@@ -79,6 +85,9 @@ match:  ## Score applications/$(APP)/job-description.md against the profile (no 
 
 tailor:  ## Tailor every posting in jobs/ (or JOB=<file>) into applications/
 	$(PY) -m resume_tailor tailor $(JOB)
+
+resume:  ## Render the whole profile as an untailored resume in applications/general/ (RESUME_ARGS=...)
+	$(PY) -m resume_tailor general $(RESUME_ARGS)
 
 profile:  ## Draft the master profile from profile/raw/ (add FORCE=--force to replace one)
 	$(PY) -m resume_tailor profile build $(FORCE)

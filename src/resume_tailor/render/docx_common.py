@@ -65,7 +65,6 @@ def _successors(tag: str) -> tuple[str, ...]:
 
 __all__ = [
     "add_spans",
-    "set_bottom_border",
     "set_cell_border",
     "set_cell_margins",
     "set_indent",
@@ -94,26 +93,6 @@ def add_spans(  # noqa: PLR0913 - every argument is one independent text attribu
         run.font.size = Pt(size)
         if color is not None:
             run.font.color.rgb = RGBColor.from_string(color)
-
-
-def set_bottom_border(paragraph: DocxParagraph, *, color: str = "999999", size: int = 6) -> None:
-    """Draw a thin rule under a heading.
-
-    A paragraph border, not a table — parsers read the text either way.
-
-    ``w:pBdr`` has a fixed position in ``CT_PPrBase``; appending it after ``w:spacing`` produces
-    a document Word may refuse to open, so it is inserted ahead of everything that follows it in
-    the schema sequence.
-    """
-    borders = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), str(size))
-    bottom.set(qn("w:space"), "2")
-    bottom.set(qn("w:color"), color)
-    borders.append(bottom)
-    properties = paragraph._p.get_or_add_pPr()  # noqa: SLF001
-    properties.insert_element_before(borders, *_successors("w:pBdr"))
 
 
 def set_cell_border(cell: _Cell, edge: str, *, color: str = "000000", size: int = 8) -> None:

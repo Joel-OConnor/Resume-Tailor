@@ -1,19 +1,20 @@
 <!--
-  RESUME FORMAT CONTRACT — this exact structure renders into both layouts:
-    resume.docx / resume.pdf                    ATS-safe, single column     → submit this
-    resume-polished.docx / resume-polished.pdf  two-column design           → send to a person
+  RESUME FORMAT CONTRACT — this exact structure renders into:
+    resume.docx / resume.pdf                    single column, parser-safe, designed → send anywhere
+    resume-polished.docx / resume-polished.pdf  the two-column version, only with --layout polished
 
   Syntax:
     # Full Name                     the name (one, first line)
     lines until the first blank     header lines — a target title, then the contact line
-    a header line with any "|"      treated as contact details (polished puts these in the rail)
+    a header line with any "|"      treated as contact details (small and semibold; the rail
+                                    in the two-column version)
                                     so keep pipes out of the target-title line
     ## Section                      section heading (Summary, Skills, Experience, Education, …)
     ### Entry Title                 a role, degree, project, or certification
     a plain line right after ###    the dates/location line (italic)
     **Label:** a, b, c              a skills line: bold label + comma-separated items
     - bullet  (or * bullet)         a bullet point
-    - **Lead-in:** text             a bullet with a bold lead-in — polished drops the glyph
+    - **Lead-in:** text             a bullet with a bold lead-in (both layouts keep the glyph)
     *Tech Stack — a, b, c*          a plain line after the bullets: an italic note, no bullet glyph
     a line ending in "\"            a hard line break (prose lines are otherwise joined)
     --- or ___ or ***               a horizontal rule; dropped on export, so use it only as a
@@ -25,8 +26,8 @@
   Rules:
     - Single column, standard headings, no tables/images/columns of your own.
     - Contact details on ONE line separated by " | ". Real text, no icons.
-    - In the polished layout, Skills / Education / Certifications go in the left rail; keep those
-      entries short so they don't wrap badly in a 2.42in column.
+    - In the two-column version, Skills / Education / Certifications go in the left rail; keep
+      those entries short so they don't wrap badly in a 2.42in column.
     - Order everything most-relevant-first. The top third of page one is what gets read.
 
   This file is a valid example — copy it and fill in real data. Comments are stripped on export.

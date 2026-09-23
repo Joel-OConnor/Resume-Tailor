@@ -23,6 +23,8 @@ __all__ = [
     "SectionGroup",
     "SkillLine",
     "Span",
+    "is_contact_line",
+    "is_note",
 ]
 
 
@@ -90,6 +92,22 @@ class Paragraph:
     """Body prose — the summary, or a cover-letter paragraph."""
 
     spans: tuple[Span, ...]
+
+
+def is_contact_line(spans: tuple[Span, ...]) -> bool:
+    """Report whether a header line is the contact line rather than a target-title subtitle.
+
+    Any pipe counts, not just the documented ``" | "``, so a contact line written without spaces
+    is still recognised. The cost is that a target title containing a pipe is misread as contact
+    details — write the title without one.
+    """
+    return "|" in "".join(span.text for span in spans)
+
+
+def is_note(spans: tuple[Span, ...]) -> bool:
+    """Report whether a paragraph is set entirely in italics: a closing ``*Tech Stack*`` note."""
+    written = [span for span in spans if span.text.strip()]
+    return bool(written) and all(span.italic for span in written)
 
 
 GroupBlock = Name | HeaderLine | Entry | Meta | SkillLine | Bullet | Paragraph

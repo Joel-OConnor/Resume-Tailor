@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from resume_tailor import service
-from resume_tailor.agent import TailorResult, Usage
+from resume_tailor.agent import RefineResult, TailorResult, Usage
 from resume_tailor.errors import DocumentError, FabricationError, ProfileError, RenderError
 from resume_tailor.llm import LanguageModel, Reply
 from resume_tailor.render import exporter
 from resume_tailor.render.pdf import PdfResult
+from resume_tailor.review import Review
 from tests.conftest import LETTER_MD, REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
@@ -56,12 +57,18 @@ class FakeModel:
 
 
 def install_agent(monkeypatch: pytest.MonkeyPatch, generate: Callable[..., TailorResult]) -> None:
-    """Replace the generation call with a stub.
+    """Replace the generation call with a stub, and the editor pass with a pass-through.
 
     Everything above ``agent.tailor`` is deterministic, so the whole service can be exercised
     without a model, a key, or a network — which is also why the API tests can drive it.
     """
     monkeypatch.setattr(service, "tailor", generate)
+    monkeypatch.setattr(service, "refine_resume", pass_through)
+
+
+def pass_through(resume: str, *_: object, **__: object) -> RefineResult:
+    """Return the resume unchanged and ask nothing."""
+    return RefineResult(resume, (), Usage())
 
 
 def draft_of(**overrides: str) -> Callable[..., TailorResult]:
@@ -191,16 +198,15 @@ def test_the_fit_report_carries_the_computed_coverage_under_the_models_prose(
     assert "Kubernetes" in coverage
 
 
-def test_exporting_renders_both_resume_layouts_and_a_single_column_letter(
+def test_exporting_renders_the_resume_and_the_letter_single_column(
     monkeypatch: pytest.MonkeyPatch, applications: Path
 ) -> None:
     install_agent(monkeypatch, draft_of())
     application = tailor(applications, export=True)
 
     names = {path.name for path in application.files}
-    assert {"resume.docx", "resume.pdf", "resume-polished.docx", "resume-polished.pdf"} <= names
-    assert {"cover-letter.docx", "cover-letter.pdf"} <= names
-    assert "cover-letter-polished.docx" not in names
+    assert {"resume.docx", "resume.pdf", "cover-letter.docx", "cover-letter.pdf"} <= names
+    assert not any("polished" in name for name in names), "the two-column design is opt-in"
 
 
 def test_tailoring_the_same_job_twice_replaces_the_folder(
@@ -462,3 +468,125 @@ def test_undecodable_text_is_skipped(tmp_path: Path) -> None:
     raw.mkdir()
     (raw / "bad.txt").write_bytes(b"\xff\xfe\x00\x80invalid")
     assert read_raw_documents(raw).documents == {}
+
+
+# --- general_resume -------------------------------------------------------------------------------
+def general(applications_dir: Path, **options: object) -> service.Application:
+    """Render the untailored resume from the bundled example profile."""
+    return service.general_resume(
+        profile_path=EXAMPLE_PROFILE,
+        applications_dir=applications_dir,
+        **options,  # type: ignore[arg-type]
+    )
+
+
+def test_the_general_resume_lands_in_its_own_folder_holding_only_the_resume(
+    applications: Path,
+) -> None:
+    application = general(applications, export=False)
+    assert application.slug == "general"
+    assert application.company == ""
+    assert application.role == ""
+    assert application.directory == applications / "general"
+    assert [path.name for path in application.files] == ["resume.md"]
+    text = (application.directory / "resume.md").read_text(encoding="utf-8")
+    assert text.startswith("# Jordan Rivera\n")
+    assert text.endswith("\n")
+
+
+def test_the_general_resume_exports_word_and_pdf_by_default(applications: Path) -> None:
+    application = general(applications)
+    assert [path.name for path in application.files] == ["resume.docx", "resume.md", "resume.pdf"]
+
+
+def test_the_general_resume_takes_its_shape_from_the_caller(applications: Path) -> None:
+    from resume_tailor.profile import ResumeShape
+
+    shape = ResumeShape(title="Engineer", since="2022")
+    application = general(applications, shape=shape, export=False)
+    text = (application.directory / "resume.md").read_text(encoding="utf-8")
+    assert text.splitlines()[1] == "Engineer"
+    assert "Northwind Payments" in text
+    assert "Cedar Analytics" not in text
+
+
+def test_regenerating_the_general_resume_replaces_the_folder_whole(applications: Path) -> None:
+    """The profile is the place to edit: the Markdown is regenerated, not merged."""
+    first = general(applications, export=False)
+    (first.directory / "resume.md").write_text("edited by hand\n", encoding="utf-8")
+    (first.directory / "stale.txt").write_text("old", encoding="utf-8")
+
+    second = general(applications, export=False)
+    assert second.directory == first.directory
+    assert [path.name for path in second.files] == ["resume.md"]
+    assert (second.directory / "resume.md").read_text(encoding="utf-8").startswith("# Jordan")
+
+
+def test_the_general_resume_rejects_an_invalid_profile_before_writing_anything(
+    applications: Path, tmp_path: Path
+) -> None:
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("summary: []\n", encoding="utf-8")
+    with pytest.raises(ProfileError):
+        service.general_resume(profile_path=broken, applications_dir=applications)
+    assert not applications.exists()
+
+
+# --- the second read ------------------------------------------------------------------------------
+def test_tailoring_gives_the_draft_a_second_read(
+    monkeypatch: pytest.MonkeyPatch, applications: Path
+) -> None:
+    """Mechanical fixes land in the file, the editor's questions land in the report and result."""
+    flawed = RESUME_MD.replace("Jan 1843 – Present", "Jan 1843 - Present")
+    install_agent(monkeypatch, draft_of(resume=flawed))
+
+    def editor(resume: str, *_: object, **__: object) -> RefineResult:
+        return RefineResult(
+            resume.replace("Corresponded with", "Wrote to"), ("Which year?",), Usage()
+        )
+
+    monkeypatch.setattr(service, "refine_resume", editor)
+    application = tailor(applications)
+
+    written = (application.directory / "resume.md").read_text(encoding="utf-8")
+    assert "Jan 1843 – Present" in written
+    assert "Wrote to Babbage" in written
+    assert [finding.rule for finding in application.review.applied] == ["dates"]
+    assert "Which year?" in [finding.message for finding in application.review.questions]
+    report = (application.directory / "fit-report.md").read_text(encoding="utf-8")
+    assert "## Readability review" in report
+    assert "- Which year?" in report or "editor: Which year?" in report
+
+
+def test_tailoring_can_skip_the_editor(monkeypatch: pytest.MonkeyPatch, applications: Path) -> None:
+    install_agent(monkeypatch, draft_of())
+
+    def never(*_: object, **__: object) -> RefineResult:
+        msg = "the editor must not be consulted"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(service, "refine_resume", never)
+    application = service.tailor_application(
+        POSTING,
+        profile_path=EXAMPLE_PROFILE,
+        applications_dir=applications,
+        model=FakeModel(),
+        export=False,
+        refine=False,
+    )
+    assert isinstance(application.review, Review)
+    assert application.review.applied == ()
+
+
+def test_the_general_resume_carries_its_review(applications: Path) -> None:
+    application = general(applications, export=False)
+    assert isinstance(application.review, Review)
+    assert application.review.fixes == ()
+
+
+def test_a_listed_application_has_an_empty_review(
+    monkeypatch: pytest.MonkeyPatch, applications: Path
+) -> None:
+    install_agent(monkeypatch, draft_of())
+    tailor(applications)
+    assert service.list_applications(applications)[0].review == Review()

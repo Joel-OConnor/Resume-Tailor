@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from resume_tailor.profile.models import Profile, Role, Tenure
 
-__all__ = ["format_period", "render_markdown"]
+__all__ = ["format_date", "format_period", "render_markdown"]
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -62,7 +62,7 @@ _MONTHS = (
 )
 
 
-def _month_name(value: str) -> str:
+def format_date(value: str) -> str:
     """Turn ``2022-06`` into ``June 2022``; leave ``2022`` and ``present`` alone."""
     if value == "present":
         return "Present"
@@ -74,7 +74,7 @@ def _month_name(value: str) -> str:
 
 def format_period(start: str, end: str) -> str:
     """Render a date range the way a resume prints it."""
-    return f"{_month_name(start)} – {_month_name(end)}"
+    return f"{format_date(start)} – {format_date(end)}"
 
 
 def render_markdown(profile: Profile) -> str:
@@ -188,7 +188,7 @@ def _education(profile: Profile, out: list[str]) -> None:
         details = [
             part
             for part in (
-                _month_name(entry.completed) if entry.completed else "",
+                format_date(entry.completed) if entry.completed else "",
                 _line(entry.location),
                 _line(entry.notes),
             )

@@ -4,7 +4,10 @@ resume-tailor build applications/acme-staff-engineer/resume.md
 resume-tailor match applications/acme-staff-engineer/job-description.md
 resume-tailor tailor                       every posting in jobs/
 resume-tailor tailor path/to/posting.md    one named posting
+resume-tailor general                      the whole profile as one untailored resume
+resume-tailor review applications/x/resume.md   fix the easy things, then ask about the rest
 resume-tailor profile validate
+resume-tailor profile review               the profile's open questions, one by one
 resume-tailor profile render -o profile/MASTER_PROFILE.md
 resume-tailor profile schema -o schema/master-profile.schema.json
 """
@@ -13,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from datetime import UTC, datetime
@@ -20,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from resume_tailor import __version__
-from resume_tailor.agent import build_profile
+from resume_tailor.agent import build_profile, refine_resume
 from resume_tailor.api import create_app
 from resume_tailor.errors import RenderError, ResumeTailorError
 from resume_tailor.llm import build_model, load_settings
@@ -28,11 +32,31 @@ from resume_tailor.match import match_posting, read_posting
 from resume_tailor.match import render_json as match_json
 from resume_tailor.match import render_markdown as match_markdown
 from resume_tailor.match import render_text as match_text
-from resume_tailor.profile import DEFAULT_PROFILE_PATH, build_schema, load, render_markdown
+from resume_tailor.profile import (
+    DEFAULT_PROFILE_PATH,
+    ResumeShape,
+    build_schema,
+    load,
+    render_markdown,
+)
 from resume_tailor.render import Layout, build
 from resume_tailor.render.exporter import is_sectioned, read_source
 from resume_tailor.render.polished import DEFAULT_SIDEBAR_SECTIONS
-from resume_tailor.service import read_raw_documents, tailor_application
+from resume_tailor.review import (
+    Finding,
+    Level,
+    Review,
+    format_review,
+    review_and_fix,
+    review_profile,
+    review_resume,
+)
+from resume_tailor.service import (
+    Application,
+    general_resume,
+    read_raw_documents,
+    tailor_application,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,6 +65,8 @@ __all__ = ["main"]
 
 _DEFAULT_MARKDOWN_VIEW = Path("profile/MASTER_PROFILE.md")
 _DEFAULT_SCHEMA_PATH = Path("schema/master-profile.schema.json")
+DEFAULT_ANSWERS_PATH = Path("profile/raw/answers.md")
+"""Where the prompt cycle keeps the candidate's answers: in the raw folder, as source material."""
 DEFAULT_JOBS_DIR = Path("jobs")
 POSTING_SUFFIXES = (".md", ".markdown", ".txt", ".text")
 """What counts as a posting inside an inbox folder — everything else there is the user's notes."""
@@ -67,8 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--layout",
         type=Layout,
         choices=list(Layout),
-        default=Layout.BOTH,
-        help="ats = single column for screeners, polished = two column for people (default: both)",
+        default=Layout.ATS,
+        help=(
+            "ats = the single-column resume for screeners and people alike (default), "
+            "polished = the two-column design for people only, both = the pair"
+        ),
     )
     export.add_argument(
         "--sidebar",
@@ -113,7 +142,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"the inbox scanned when no posting is named (default: {DEFAULT_JOBS_DIR})",
     )
     apply_.add_argument("--no-export", action="store_true", help="skip the .docx/.pdf render")
+    apply_.add_argument(
+        "--no-refine", action="store_true", help="skip the model's readability edit of the draft"
+    )
     apply_.set_defaults(handler=_tailor)
+
+    check = commands.add_parser(
+        "review", help="fix a resume's easy problems, flag the rest, and ask about the gaps"
+    )
+    _add_review_arguments(check)
+
+    general = commands.add_parser(
+        "general", help="write one untailored resume from the whole profile (no API key)"
+    )
+    _add_general_arguments(general)
 
     serve = commands.add_parser("serve", help="run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -123,11 +165,23 @@ def build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(handler=_serve)
 
     profile = commands.add_parser("profile", help="work with the structured master profile")
+    _add_profile_actions(profile)
+
+    return parser
+
+
+def _add_profile_actions(profile: argparse.ArgumentParser) -> None:
+    """Declare the ``profile`` sub-commands: validate, render, review, build and schema."""
     actions = profile.add_subparsers(dest="action", required=True)
 
     validate = actions.add_parser("validate", help="check the profile against the schema")
     validate.add_argument("path", nargs="?", type=Path, default=DEFAULT_PROFILE_PATH)
     validate.set_defaults(handler=_validate)
+
+    questions = actions.add_parser("review", help="answer the profile's open questions one by one")
+    questions.add_argument("path", nargs="?", type=Path, default=DEFAULT_PROFILE_PATH)
+    _add_prompt_arguments(questions)
+    questions.set_defaults(handler=_profile_review)
 
     render = actions.add_parser("render", help="write the readable Markdown view of the profile")
     render.add_argument("path", nargs="?", type=Path, default=DEFAULT_PROFILE_PATH)
@@ -150,7 +204,60 @@ def build_parser() -> argparse.ArgumentParser:
     schema.add_argument("-o", "--out", type=Path, default=_DEFAULT_SCHEMA_PATH)
     schema.set_defaults(handler=_schema)
 
-    return parser
+
+def _add_review_arguments(check: argparse.ArgumentParser) -> None:
+    """Declare the ``review`` command: what to read, how far to go, and where answers land."""
+    check.add_argument("resume", type=Path, help="the resume.md to review")
+    check.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    check.add_argument(
+        "--no-fix", action="store_true", help="report only; leave the file exactly as it is"
+    )
+    check.add_argument(
+        "--refine",
+        action="store_true",
+        help="also have the model edit it for readability (needs an API key)",
+    )
+    check.add_argument(
+        "--export", action="store_true", help="re-render the .docx and .pdf afterwards"
+    )
+    _add_prompt_arguments(check)
+    check.set_defaults(handler=_review)
+
+
+def _add_prompt_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declare the two flags every prompt cycle takes."""
+    parser.add_argument(
+        "--interactive",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="ask the open questions one by one (default: when run from a terminal)",
+    )
+    parser.add_argument(
+        "--answers",
+        type=Path,
+        default=DEFAULT_ANSWERS_PATH,
+        help=f"where answers are kept for the next profile build (default: {DEFAULT_ANSWERS_PATH})",
+    )
+
+
+def _add_general_arguments(general: argparse.ArgumentParser) -> None:
+    """Declare the ``general`` command: where to read and write, and how much to print."""
+    general.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    general.add_argument("--applications", type=Path, default=Path("applications"))
+    general.add_argument(
+        "--title", default="", help="the line under your name (default: your first target role)"
+    )
+    general.add_argument(
+        "--max-highlights", type=_count, default=0, help="bullets per role (default: all)"
+    )
+    general.add_argument(
+        "--max-skills", type=_count, default=0, help="items per skills group (default: all)"
+    )
+    general.add_argument(
+        "--since", type=_year, default="", help="omit employers left before this year, e.g. 2019"
+    )
+    general.add_argument("--no-export", action="store_true", help="skip the .docx/.pdf render")
+    general.set_defaults(handler=_general)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -328,6 +435,7 @@ def _tailor(args: argparse.Namespace) -> int:
                 applications_dir=args.applications,
                 model=model,
                 export=not args.no_export,
+                refine=not args.no_refine,
             )
         except ResumeTailorError as exc:
             print(f"error: {path}: {exc}", file=sys.stderr)
@@ -336,7 +444,167 @@ def _tailor(args: argparse.Namespace) -> int:
         print(f"  → {application.directory}")
         for artefact in application.files:
             print(f"    ✓ {artefact.name}")
+        _print_review(application)
     return 1 if failed else 0
+
+
+def _general(args: argparse.Namespace) -> int:
+    """Write the untailored resume: the whole profile, shaped only by the caps given."""
+    shape = ResumeShape(
+        title=args.title,
+        max_highlights=args.max_highlights,
+        max_skills=args.max_skills,
+        since=args.since,
+    )
+    application = general_resume(
+        profile_path=args.profile,
+        applications_dir=args.applications,
+        shape=shape,
+        export=not args.no_export,
+    )
+    print(f"  → {application.directory}")
+    for artefact in application.files:
+        print(f"    ✓ {artefact.name}")
+    _print_review(application)
+    return 0
+
+
+def _print_review(application: Application) -> None:
+    """Print what the second read found, and where to answer what it asked."""
+    review = application.review
+    if not (review.applied or review.advice or review.questions):
+        return
+    print(_indent(format_review(review), "    "), end="")
+    if review.questions:
+        resume = application.directory / "resume.md"
+        print(f"    → answer them: resume-tailor review {resume} --interactive")
+
+
+def _indent(text: str, prefix: str) -> str:
+    return "".join(f"{prefix}{line}\n" for line in text.splitlines())
+
+
+def _review(args: argparse.Namespace) -> int:
+    """Fix the easy things in a resume, flag the rest, and ask the candidate about the gaps."""
+    path: Path = args.resume
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        print(f"error: cannot read {path}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
+    if args.no_fix:
+        review = review_resume(text)
+    else:
+        fixed, review = _fix(text, args)
+        if fixed != text:
+            path.write_text(fixed, encoding="utf-8")
+            print(f"  ✓ {path}  (updated)")
+    print(format_review(review), end="")
+    if args.export and not args.no_fix:
+        for artifact in build(path):
+            print(f"  {'✓' if artifact.ok else '!'} {artifact.path}")
+    _cycle(review, args, str(path))
+    return 0
+
+
+def _fix(text: str, args: argparse.Namespace) -> tuple[str, Review]:
+    """Apply the mechanical fixes and, on request, the model's edit."""
+    fixed, review = review_and_fix(text)
+    if not args.refine:
+        return fixed, review
+    edited = refine_resume(fixed, load(args.profile), review, build_model(load_settings()))
+    fixed, again = review_and_fix(edited.resume)
+    asked = tuple(Finding("editor", Level.ASK, 0, "", question) for question in edited.questions)
+    return fixed, Review(again.findings + asked, review.applied + again.applied)
+
+
+def _profile_review(args: argparse.Namespace) -> int:
+    """Report what would print badly, then walk the profile's open notes as questions."""
+    review = review_profile(load(args.path))
+    print(format_review(review), end="")
+    _cycle(review, args, str(args.path))
+    return 0
+
+
+def _cycle(review: Review, args: argparse.Namespace, source: str) -> None:
+    """Run the prompt cycle over the open questions, or say how to."""
+    if not review.questions:
+        return
+    interactive = args.interactive if args.interactive is not None else sys.stdin.isatty()
+    if interactive:
+        _prompt_cycle(review.questions, args.answers, source)
+    else:
+        print(f"  → answer them: add --interactive (answers are kept in {args.answers})")
+
+
+def _prompt_cycle(questions: Sequence[Finding], answers: Path, source: str) -> None:
+    """Ask each open question, record every answer, and say what happens to them next.
+
+    Answers go into the raw folder as a dated Q&A log: the next ``profile build --force`` reads
+    them like any other document, and until then they are there to copy into the profile by hand.
+    Nothing is written into the profile itself — that is the candidate's file to change.
+    """
+    print("\nQuestions for you. Answer each, or press Enter to skip:")
+    saved: list[tuple[Finding, str]] = []
+    for finding in questions:
+        print(f"\n  ? {finding.message}")
+        if finding.text:
+            print(f'    "{finding.text}"')
+        try:
+            answer = input("  > ").strip()
+        except EOFError:
+            break
+        if answer:
+            saved.append((finding, answer))
+    if not saved:
+        print("\nNo answers recorded.")
+        return
+    _record_answers(answers, source, saved)
+    print(
+        f"\nSaved {len(saved)} answer(s) to {answers}. They become part of the profile on the next "
+        f"`make profile FORCE=--force` (or copy them into profile/master-profile.yaml by hand), "
+        f"then regenerate the resume."
+    )
+
+
+def _record_answers(path: Path, source: str, saved: list[tuple[Finding, str]]) -> None:
+    """Append the answers as a dated section of the Q&A log."""
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    lines = [f"## {stamp} · {source}", ""]
+    for finding, answer in saved:
+        about = f' (about: "{finding.text}")' if finding.text else ""
+        lines += [f"- **Q:** {finding.message}{about}", f"  **A:** {answer}", ""]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    except OSError as exc:
+        msg = f"cannot write {path}: {exc.strerror or exc}"
+        raise RenderError(msg) from exc
+
+
+def _count(text: str) -> int:
+    """Parse a cap for argparse: a whole number of at least 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        msg = f"expected a whole number, got {text!r}"
+        raise argparse.ArgumentTypeError(msg) from None
+    if value < 1:
+        msg = f"expected a number of at least 1, got {value}"
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
+def _year(text: str) -> str:
+    """Parse a year for argparse: four digits, exactly as the profile writes one.
+
+    Empty is allowed, and means no cut-off: argparse runs this over the flag's own default too.
+    """
+    if text and not re.fullmatch(r"[0-9]{4}", text):
+        msg = f"expected a four-digit year, got {text!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return text
 
 
 def _collect_postings(paths: list[Path]) -> tuple[list[Path], bool]:
@@ -419,6 +687,7 @@ def _build_profile(args: argparse.Namespace) -> int:
     args.out.write_text(yaml_text, encoding="utf-8")
     print(f"  ✓ {args.out}  ({usage.attempts} attempt(s))")
     print("  review it, then run: make profile-check")
+    print("  answer its open questions with: resume-tailor profile review")
     return 0
 
 

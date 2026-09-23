@@ -1,55 +1,40 @@
-# Two layouts, and when to send which
+# The resume file, and the optional two-column version
 
-Every resume in this project renders twice from the same Markdown source. They contain identical
-words. They differ only in how those words are arranged — and that difference decides whether a
-machine can read them.
+Every resume in this project renders from one Markdown source into `resume.docx` and `resume.pdf`.
+That pair is the product: one file that a resume parser reads cleanly and a person enjoys reading.
 
-## The ATS layout — `resume.docx` / `resume.pdf`
+## The resume — `resume.docx` / `resume.pdf`
 
 Single column, top to bottom. Standard section headings. Real bullet lists. Contact details in the
-document body, never in the header region. No tables, images, text boxes, or icons.
+document body, never in the header region. No tables, images, text boxes, or icons. Everything a
+parser needs, by construction (see [ATS-PLAYBOOK.md](ATS-PLAYBOOK.md)).
 
-**Send this to anything that isn't a person:** Workday, Greenhouse, Lever, Taleo, iCIMS, any
-"upload your resume" form, any job board apply button. When in doubt, this one.
+Its typography is the user's own "2026 Polished Resume": Roboto throughout, a large light name, a
+small semibold contact line, 15pt regular section headings, semibold role headings, an 11pt summary,
+and a bullet glyph with a hanging indent on every accomplishment. The sizes and spacing were
+measured from that PDF, so the export is that design with the current content, minus the columns.
 
-It looks plainer than the polished version. That is the point — a resume parser reads structure, not
-design, and everything a designer would add is something a parser can lose.
+**Send this one everywhere.** `resume.docx` is the most reliably parsed format, so it is the one to
+upload to Workday, Greenhouse, Lever, Taleo, iCIMS and any "upload your resume" form; `resume.pdf`
+is the same document for a form that only takes PDF, or for an email.
 
-## The polished layout — `resume-polished.docx` / `resume-polished.pdf`
+## The two-column version — `resume-polished.docx` / `resume-polished.pdf` (opt-in)
 
-Two columns divided by a hairline rule. A narrow left rail carries contact details, skills, and
-education; the wide right column carries the name, summary, and experience. The name is set large
-and light; accomplishments lead with a bold phrase rather than a bullet glyph.
-
-**Send this to a person:** attached to an email to a recruiter or hiring manager, handed to a
-referral, brought to a networking conversation, or posted somewhere a human will look at it.
-
-**Do not upload it to an application portal.** Its two columns are a Word table. Most parsers read a
-table in an order nobody intended — interleaving the rail into the middle of a job title, or
-dropping it entirely. A resume that looks better and parses worse is a net loss.
-
-## Which is "the real one"?
-
-Both. They say the same true things about the same career. The ATS version optimises for the first
-reader (software); the polished version optimises for the second (a person with ten seconds). Most
-applications only ever meet the first, which is why the ATS layout keeps the plain `resume.docx`
-name and the polished one is suffixed.
-
-## Choosing at export time
+The same design in its original two-column arrangement: a narrow left rail carrying contact
+details, skills and education beside a wide column carrying the name, summary and experience,
+divided by a hairline rule. It is not produced by default; ask for it:
 
 ```bash
-.venv/bin/resume-tailor build applications/<folder>/resume.md                    # both (default)
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout ats       # portal-safe
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout polished  # design only
+.venv/bin/resume-tailor build applications/<folder>/resume.md --layout polished   # two-column only
+.venv/bin/resume-tailor build applications/<folder>/resume.md --layout both       # the pair
 ```
 
-Cover letters render single-column: a document with no `## ` sections is a letter, so the
-default skips the polished pass entirely. Passing `--layout polished` still forces one if you
-really want it.
+**Do not upload it to an application portal.** Its two columns are a Word table. Most parsers read
+a table in an order nobody intended, interleaving the rail into the middle of a job title or
+dropping it entirely. Hand it to a person, if at all.
 
-By default the polished layout puts **Skills**, **Technical Core**, **Core Competencies**,
-**Education**, and **Certifications** in the left rail, and everything else in the main column.
-Override it per export:
+By default it puts **Skills**, **Technical Core**, **Core Competencies**, **Education** and
+**Certifications** in the left rail and everything else in the main column. Override it per export:
 
 ```bash
 .venv/bin/resume-tailor build resume.md --layout polished --sidebar "Skills,Education,Languages"
@@ -58,6 +43,12 @@ Override it per export:
 Keep rail entries short: the column is about 2.4 inches wide, so a long degree title will wrap
 across three lines.
 
+## Cover letters
+
+A document with no `## ` sections is a letter, and a letter always renders single-column; asking
+for `--layout both` still produces one file. Passing `--layout polished` explicitly forces a
+two-column letter if you really want one.
+
 ## PDF fidelity
 
 PDFs are produced by printing the layout's HTML through headless Chrome, so the text stays
@@ -65,6 +56,8 @@ selectable — an ATS can read the PDF as well as the Word file. If no Chromium-
 installed, the exporter writes the `.html` next to the source instead and tells you; open it and
 print to PDF by hand.
 
-The polished layout is designed in Roboto (what the original design used). Without Roboto installed
-it falls back to Helvetica Neue / Helvetica / Arial, which are metric-similar — the layout holds,
-the letterforms shift slightly.
+Both layouts are set in Roboto. The PDF pulls Roboto from Google Fonts while it prints, so it
+embeds the design face even on a machine that has never installed it; offline it falls back to
+Helvetica Neue / Helvetica / Arial, which are metric-similar — the layout holds, the letterforms
+shift slightly. Word draws the `.docx` in Roboto only where the font is installed (free from Google
+Fonts), and substitutes otherwise.

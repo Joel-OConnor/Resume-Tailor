@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from docx import Document as read_docx
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 
 from resume_tailor.documents import parse
 from resume_tailor.documents.blocks import Document as Blocks
@@ -180,16 +180,87 @@ def test_the_name_uses_the_light_display_face(resume: Document, tmp_path: Path) 
     assert run.font.size.pt == polished.NAME_PT
 
 
-def test_a_bold_lead_in_bullet_drops_the_glyph(resume: Document, tmp_path: Path) -> None:
+def test_every_bullet_keeps_the_glyph_lead_in_or_not(resume: Document, tmp_path: Path) -> None:
+    """The design bullets every accomplishment, bold lead-in included."""
     table = _table(resume, tmp_path)
-    paragraphs = [p for p in table.rows[0].cells[1].paragraphs if "first algorithm" in p.text]
-    assert [p.style.name for p in paragraphs] == ["Normal"]
+    main = table.rows[0].cells[1].paragraphs
+    lead = next(p for p in main if "first algorithm" in p.text)
+    plain = next(p for p in main if "Corresponded" in p.text)
+    assert lead.style.name == plain.style.name == "List Bullet"
+    assert lead.paragraph_format.first_line_indent == Pt(-polished.BULLET_HANGING_IN * 72)
+    assert lead.paragraph_format.left_indent == Pt(
+        (polished.MAIN_INDENT[0] + polished.BULLET_HANGING_IN) * 72
+    )
 
 
-def test_a_plain_bullet_keeps_the_glyph(resume: Document, tmp_path: Path) -> None:
+def test_the_first_bullet_of_a_run_stands_off_and_the_rest_sit_tight(
+    resume: Document, tmp_path: Path
+) -> None:
     table = _table(resume, tmp_path)
-    paragraphs = [p for p in table.rows[0].cells[1].paragraphs if "Corresponded" in p.text]
-    assert [p.style.name for p in paragraphs] == ["List Bullet"]
+    main = table.rows[0].cells[1].paragraphs
+    lead = next(p for p in main if "first algorithm" in p.text)
+    plain = next(p for p in main if "Corresponded" in p.text)
+    assert lead.paragraph_format.space_before == Pt(6.75)
+    assert plain.paragraph_format.space_before == Pt(2.25)
+
+
+def test_rail_skill_items_are_bulleted_with_the_rail_spacing(
+    resume: Document, tmp_path: Path
+) -> None:
+    table = _table(resume, tmp_path)
+    rail = table.rows[0].cells[0].paragraphs
+    first = next(p for p in rail if p.text.strip() == "Analytical Notation")
+    second = next(p for p in rail if p.text.strip() == "Mathematics")
+    label = next(p for p in rail if p.text.strip() == "Languages")
+    assert first.style.name == second.style.name == "List Bullet"
+    assert first.paragraph_format.space_before == Pt(3.75)
+    assert second.paragraph_format.space_before == Pt(1.5)
+    assert label.style.name == "Normal"
+    assert label.runs[0].bold is True
+
+
+def test_a_closing_note_is_body_size_italic_and_slightly_inset(
+    resume: Document, tmp_path: Path
+) -> None:
+    table = _table(resume, tmp_path)
+    note = next(p for p in table.rows[0].cells[1].paragraphs if "Tech Stack" in p.text)
+    assert note.runs[0].font.size.pt == polished.BODY_PT
+    assert note.paragraph_format.space_before == Pt(2.25)
+    assert note.paragraph_format.left_indent == Pt(
+        (polished.MAIN_INDENT[0] + polished.NOTE_INDENT_IN) * 72
+    )
+
+
+def test_prose_is_set_a_size_larger_than_the_bullets(resume: Document, tmp_path: Path) -> None:
+    table = _table(resume, tmp_path)
+    prose = next(p for p in table.rows[0].cells[1].paragraphs if "programs" in p.text)
+    assert prose.runs[0].font.size.pt == polished.PROSE_PT
+    assert prose.paragraph_format.line_spacing == Pt(polished.PROSE_LINE_PT)
+    assert prose.paragraph_format.space_before == Pt(5.25)
+
+
+def test_each_column_opens_at_the_page_margin(resume: Document, tmp_path: Path) -> None:
+    table = _table(resume, tmp_path)
+    rail, main = table.rows[0].cells
+    assert rail.paragraphs[0].paragraph_format.space_before == Pt(0)
+    assert rail.paragraphs[1].paragraph_format.space_before == Pt(4.5)
+    assert main.paragraphs[0].paragraph_format.space_before == Pt(0)
+
+
+def test_section_gaps_depend_on_what_precedes_them(resume: Document, tmp_path: Path) -> None:
+    table = _table(resume, tmp_path)
+    rail, main = table.rows[0].cells
+    skills = next(p for p in rail.paragraphs if p.text.strip() == "Skills")
+    summary = next(p for p in main.paragraphs if p.text.strip() == "Summary")
+    experience = next(p for p in main.paragraphs if p.text.strip() == "Experience")
+    assert skills.paragraph_format.space_before == Pt(15.75)
+    assert summary.paragraph_format.space_before == Pt(21.0), "follows the subtitle"
+    assert experience.paragraph_format.space_before == Pt(9.75), "follows the summary prose"
+
+    bare = parse("# Ada\n\n## Summary\nx")
+    heading = _table(bare, tmp_path).rows[0].cells[1].paragraphs[1]
+    assert heading.text.strip() == "Summary"
+    assert heading.paragraph_format.space_before == Pt(37.5), "directly under the name"
 
 
 def test_a_cover_letter_renders_entirely_in_the_main_column(
@@ -218,13 +289,32 @@ def test_html_places_content_in_the_matching_column(resume: Document) -> None:
     assert "<h1>Ada Lovelace</h1>" in main
     assert '<div class="subtitle">Principal Engineer</div>' in main
     assert "<h2>Experience</h2>" in main
-    assert '<div class="lead"><strong>Algorithm Design:</strong> Published' in main
+    assert "<li><strong>Algorithm Design:</strong> Published" in main
+    assert "<li>Analytical Notation</li>" in rail
 
 
-def test_html_bullets_and_leads_are_distinguished(resume: Document) -> None:
+def test_html_lists_open_and_close_in_pairs(resume: Document) -> None:
     html = polished.render_html(resume)
-    assert html.count("<ul>") == html.count("</ul>") == 2
+    # One list per run of bullets, one per rail skill group.
+    assert html.count("<ul>") == html.count("</ul>") == 4
     assert "<li>Corresponded with Babbage on engine semantics.</li>" in html
+
+
+def test_html_draws_every_bullet_glyph_at_the_column_edge(resume: Document) -> None:
+    html = polished.render_html(resume)
+    assert 'li::before { content: "\u2022"; position: absolute; left: 0; }' in html
+    assert f"li {{ position: relative; padding-left: {polished.BULLET_HANGING_IN}in" in html
+
+
+def test_html_pulls_the_design_face_from_google_fonts(resume: Document) -> None:
+    assert f"@import url('{polished.FONT_IMPORT_URL}');" in polished.render_html(resume)
+
+
+def test_html_marks_a_closing_note_and_sets_prose_larger(resume: Document) -> None:
+    html = polished.render_html(resume)
+    assert '<p class="note"><em>Tech Stack' in html
+    assert "<p>Engineer who writes" in html
+    assert f"p {{ font-size: {polished.PROSE_PT}pt; line-height: {polished.PROSE_LINE_PT}pt" in html
 
 
 def test_html_inline_skills_when_the_section_is_in_the_main_column(resume: Document) -> None:
@@ -303,3 +393,9 @@ def test_any_pipe_marks_a_contact_line_as_the_contract_now_says() -> None:
     assert [b.spans[0].text for b in main[0].blocks if isinstance(b, HeaderLine)] == [
         "Principal Engineer"
     ]
+
+
+def test_a_list_that_ends_a_section_is_closed_before_the_next_heading() -> None:
+    html = polished.render_html(parse("# A\n\n## Awards\n- one\n- two\n\n## Projects\n- three"))
+    assert html.count("<ul>") == html.count("</ul>") == 2
+    assert "<li>two</li></ul><h2>Projects</h2><ul><li>three</li></ul>" in html

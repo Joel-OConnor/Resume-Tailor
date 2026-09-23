@@ -11,7 +11,6 @@ from docx.shared import Pt
 from resume_tailor.documents.blocks import Span
 from resume_tailor.render.docx_common import (
     add_spans,
-    set_bottom_border,
     set_cell_border,
     set_cell_margins,
     set_indent,
@@ -48,13 +47,6 @@ def test_colour_is_left_alone_when_unset() -> None:
     assert paragraph.runs[0].font.color.rgb is None
 
 
-def test_a_bottom_border_is_a_paragraph_border() -> None:
-    paragraph = new_docx().add_paragraph("Heading")
-    set_bottom_border(paragraph)
-    assert "w:pBdr" in paragraph._p.xml
-    assert 'w:color="999999"' in paragraph._p.xml
-
-
 def _ppr_children(paragraph: DocxParagraph) -> list[str]:
     namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     properties = paragraph._p.find(f"{namespace}pPr")
@@ -62,13 +54,12 @@ def _ppr_children(paragraph: DocxParagraph) -> list[str]:
 
 
 def test_ppr_children_stay_in_schema_order() -> None:
-    """w:pBdr precedes w:spacing in CT_PPrBase; out of order, Word calls the file corrupt."""
+    """w:spacing, w:ind, w:contextualSpacing in that order; out of order, Word calls it corrupt."""
     paragraph = new_docx().add_paragraph("Heading")
     set_spacing(paragraph, before=10, line=13.5)
-    set_bottom_border(paragraph)
+    set_indent(paragraph, left=0.25, right=0, hanging=0.25)
     children = _ppr_children(paragraph)
-    assert children.index("pBdr") < children.index("spacing")
-    assert children.index("spacing") < children.index("contextualSpacing")
+    assert children.index("spacing") < children.index("ind") < children.index("contextualSpacing")
 
 
 def test_spacing_is_absolute_and_lives_above_the_paragraph() -> None:

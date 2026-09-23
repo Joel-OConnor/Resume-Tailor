@@ -31,7 +31,18 @@ your technology aliases — instead of re-reading paragraphs and guessing.
    make profile-md        # renders profile/MASTER_PROFILE.md to proofread
    ```
 
-4. Correct anything wrong, and add accomplishments the old resumes left out.
+4. Answer what it could not settle:
+
+   ```bash
+   .venv/bin/resume-tailor profile review
+   ```
+
+   It flags what would print badly (a highlight with no label, one that runs to a paragraph)
+   and asks the open questions from `notes` one by one. Answers are kept in
+   `profile/raw/answers.md`, so the next `make profile FORCE=--force` reads them like any other
+   document; or copy them into the YAML yourself.
+
+5. Correct anything wrong, and add accomplishments the old resumes left out.
 
 Starting by hand instead? Copy the worked example:
 

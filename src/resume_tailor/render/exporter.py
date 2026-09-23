@@ -26,10 +26,10 @@ class Layout(StrEnum):
     """Which visual treatment to export."""
 
     ATS = "ats"
-    """Single column, parser-safe. Submit this one."""
+    """Single column in the design's typography, parser-safe. The default, and the one to send."""
 
     POLISHED = "polished"
-    """Two-column typographic design. Send this to a human."""
+    """The two-column arrangement of the same design. Opt-in, for a human reader only."""
 
     BOTH = "both"
     """Export both, side by side."""
@@ -70,14 +70,15 @@ def build(
     source: Path,
     *,
     out_dir: Path | None = None,
-    layout: Layout = Layout.BOTH,
+    layout: Layout = Layout.ATS,
     sidebar_sections: tuple[str, ...] = polished.DEFAULT_SIDEBAR_SECTIONS,
     pdf: bool = True,
 ) -> list[Artifact]:
     """Render ``source`` into ``.docx`` (and optionally ``.pdf``) for each requested layout.
 
-    The ATS layout keeps the source's stem (``resume.docx``); the polished one is suffixed
-    (``resume-polished.docx``) so both can sit in the same application folder.
+    The default is the single-column layout alone, which keeps the source's stem
+    (``resume.docx``); the opt-in polished one is suffixed (``resume-polished.docx``) so both can
+    sit in the same application folder when both are asked for.
 
     ``Layout.BOTH`` skips the polished pass for a cover letter — a letter is prose with no
     sections, so the two-column rail would come out empty and the docs promise letters are always

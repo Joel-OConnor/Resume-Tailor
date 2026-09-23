@@ -23,19 +23,29 @@ to produce a tailored resume plus supporting docs, then export them to Word and 
 3. **`src/resume_tailor/` — the tooling.** A tested Python package that parses the tailored Markdown
    and renders it into two layouts (below). Run `make check` after touching it.
 
-## Two layouts, one source
+## One layout, one source
 
-Every resume renders twice from the same Markdown:
+Every resume renders from its Markdown into `resume.docx` and `resume.pdf`: a single column with
+standard headings, no tables, and the typography of the user's own designed resume (Roboto, a
+large light name, 15pt headings, glyph bullets). That one file goes to portals and to people alike.
 
-| Output | Layout | Send it to |
-|---|---|---|
-| `resume.docx` / `resume.pdf` | single column, standard headings, no tables | **an application portal / ATS** |
-| `resume-polished.docx` / `resume-polished.pdf` | two columns: contact, skills and education in a left rail; name, summary and experience on the right | **a human** — recruiter email, referral, networking |
+A two-column arrangement of the same design (`resume-polished.docx` / `.pdf`) exists for emailing
+a person and is opt-in: `--layout polished`. Its columns are a Word table, and resume parsers
+scramble tables, so **never point the user at a polished file for anything submitted through a
+form.** See `reference/RESUME-FORMATS.md`.
 
-The polished layout mirrors the user's own designed resume. It is deliberately *not* ATS-safe: its
-two columns are a table, and resume parsers scramble or drop tables. **Default to the ATS file for
-anything submitted through a form, and say which is which when you hand over both.** See
-`reference/RESUME-FORMATS.md`.
+## A general resume, untailored
+
+When the user wants a plain, well-rounded resume with no posting in mind, do not tailor: run
+
+```bash
+make resume            # or: .venv/bin/resume-tailor general [--title ..] [--max-highlights N] [--max-skills N] [--since YYYY]
+```
+
+It renders the whole profile into `applications/general/` (Word and PDF, no API key): every
+employer and bullet in profile order, and every technology recorded above `exposure`/`working`.
+It is deterministic and cannot invent anything, so it needs no verification pass. Shape it with
+the caps rather than by editing the output; anything worth keeping belongs in the profile.
 
 ## The tailoring method (follow every step)
 
@@ -100,15 +110,15 @@ the rest still run.
    - `cover-letter.md` — a focused one-page letter, following `templates/cover-letter.md`.
    - `linkedin.md` — a headline + "About" section tuned to this kind of role.
 
-6. **Export** with `make export APP=<company>-<role>`. The resume renders in both layouts; the
-   cover letter renders single-column only.
+6. **Export** with `make export APP=<company>-<role>`. The resume and the cover letter each render
+   to `.docx` and `.pdf`.
 
    (The standalone path does all of steps 5 and 6 in one command: `make tailor`, or
    `.venv/bin/resume-tailor tailor <posting>`. Use it when the user wants the whole inbox done at
    once; work through the method by hand when they want to shape the result as you go.)
 
 7. **Summarize for the user**: the match strength, what you emphasized and why, any gaps they should
-   be aware of, which file to submit where, and where everything lives.
+   be aware of, that `resume.docx` is the file to submit, and where everything lives.
 
 ## Checking your own work
 
@@ -121,7 +131,30 @@ After writing `resume.md`, verify it the way the agent path does:
 
 It checks every employer, title, date, education entry, technology and **metric** against the
 profile. If it reports a violation, fix the resume — do not argue with it and do not hand over a
-document it rejects.
+document it rejects. Then give it the second read described below.
+
+## Reviewing what you wrote
+
+Every generated resume gets a second read before it is handed over. After `resume.md` verifies
+clean, run:
+
+```bash
+.venv/bin/resume-tailor review applications/<slug>/resume.md --export
+```
+
+It applies the mechanical fixes itself (spacing, a missing full stop, a hyphen in a date range,
+a skill listed twice) and re-exports, then prints two lists. **Suggestions** are an editor's
+calls — a bullet over 40 words, bullets that switch tense within a role, a phrase repeated,
+"responsible for", filler — and in Claude Code *you* are the editor: rewrite for them, keeping
+every fact, and run the verifier again. **Questions** are gaps only the user can fill — an
+accomplishment with no outcome, a role with no numbers, missing dates. Ask them one at a time,
+put each answer into `profile/master-profile.yaml` (a highlight, a scope, a corrected date),
+then regenerate and review again. Never answer a question by guessing.
+
+The standalone path does the same mechanically: `tailor` applies the fixes and has the model
+edit the draft for readability under the same verifier, and `review --interactive` walks the
+questions with the user and keeps the answers in `profile/raw/answers.md`, where the next
+`make profile FORCE=--force` picks them up as source material.
 
 ## Truthfulness — non-negotiable
 

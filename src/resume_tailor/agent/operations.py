@@ -21,6 +21,7 @@ from resume_tailor.documents import parse
 from resume_tailor.errors import DocumentError, FabricationError, ModelError, ProfileError
 from resume_tailor.profile import loads
 from resume_tailor.verify import format_violations, verify_resume
+from resume_tailor.verify.source import scan
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -28,8 +29,9 @@ if TYPE_CHECKING:
     from resume_tailor.errors import ResumeTailorError
     from resume_tailor.llm import LanguageModel
     from resume_tailor.profile.models import Profile
+    from resume_tailor.review import Review
 
-__all__ = ["TailorResult", "Usage", "build_profile", "tailor"]
+__all__ = ["RefineResult", "TailorResult", "Usage", "build_profile", "refine_resume", "tailor"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,42 @@ def tailor(
         role=draft.role,
         usage=usage,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RefineResult:
+    """An edited resume: the same facts, better read, plus what only the candidate can add."""
+
+    resume: str
+    questions: tuple[str, ...]
+    usage: Usage
+
+
+def refine_resume(
+    resume: str, profile: Profile, review: Review, model: LanguageModel, *, max_attempts: int = 3
+) -> RefineResult:
+    """Have the model edit ``resume`` for readability without changing a fact.
+
+    The edit is held to three checks: it must still parse, it must keep every ``### `` entry in
+    place, and it must claim nothing ``profile`` does not support — the same verifier that
+    guards a tailored draft, because an editor that "clarifies" a number has invented one.
+
+    Raises:
+        FabricationError: if the last attempt still altered or invented a claim.
+        ModelError: if no attempt produced a usable edit for any other reason.
+    """
+
+    def check(text: str) -> _Edited | _Rejection:
+        return _check_edited(text, resume, profile)
+
+    ask = _Ask(
+        system=prompts.REFINE_SYSTEM,
+        prompt=prompts.refine_prompt(resume, profile, review),
+        artefact="the edited resume",
+        truncated=_TRUNCATED_RESUME,
+    )
+    edited, usage = _generate(model, ask, check=check, max_attempts=max_attempts)
+    return RefineResult(edited.resume, edited.questions, usage)
 
 
 def build_profile(
@@ -225,6 +263,56 @@ def _check_draft(text: str, profile: Profile) -> _Draft | _Rejection:
         fit_report=_unfence(sections["FIT REPORT"]),
         cover_letter=letter,
         linkedin=_unfence(sections["LINKEDIN"]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Edited:
+    """An editing answer that passed every check."""
+
+    resume: str
+    questions: tuple[str, ...]
+
+
+_NO_QUESTIONS = frozenset({"none", "nothing", "n/a", "no questions"})
+
+
+def _check_edited(text: str, original: str, profile: Profile) -> _Edited | _Rejection:
+    """Accept an edit only if it parses, keeps every entry, and claims nothing new."""
+    sections = _split_sections(text)
+    if missing := [name for name in prompts.REFINE_SECTIONS if not sections.get(name)]:
+        listed = ", ".join(missing)
+        return _Rejection(
+            f"The answer is missing these sections, or left them empty: {listed}. Return both "
+            f"sections, each opened by its own delimiter line."
+        )
+    resume = _unfence(sections["RESUME"])
+    try:
+        parse(resume)
+    except DocumentError as exc:
+        return _Rejection(f"The resume does not follow the format contract: {exc}")
+    if _entries(resume) != _entries(original):
+        kept = "; ".join(_entries(original))
+        return _Rejection(
+            f"The edit changed the ### entries. Keep every role and degree heading exactly as "
+            f"it was, in the same order: {kept}"
+        )
+    verdict = verify_resume(resume, profile)
+    if not verdict.ok:
+        return _Rejection(format_violations(verdict), fabricated=True)
+    return _Edited(resume, _questions(sections["QUESTIONS"]))
+
+
+def _entries(markdown: str) -> tuple[str, ...]:
+    """Every ``### `` heading in the document, in order."""
+    return tuple(entry.title for entry in scan(markdown).entries)
+
+
+def _questions(text: str) -> tuple[str, ...]:
+    """Read the QUESTIONS section as one question per line, dropping a "none"."""
+    lines = (line.strip().lstrip("-*• ").strip() for line in text.splitlines())
+    return tuple(
+        line for line in lines if line and line.casefold().rstrip(".") not in _NO_QUESTIONS
     )
 
 

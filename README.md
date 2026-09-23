@@ -6,8 +6,8 @@ of a true resume, and you get more interviews.
 
 You keep **one master profile** as machine-readable YAML. Paste in a job description, and Claude
 selects and reframes the most relevant parts into a focused resume — plus a fit report, a cover
-letter, and LinkedIn text — exported to **Word and PDF in two layouts**: one built to survive an
-applicant tracking system, one designed for a human to read.
+letter, and LinkedIn text — exported to **Word and PDF** in one layout that survives an applicant
+tracking system and still looks designed.
 
 > It never invents experience. Tailoring is about *emphasis and framing of real facts*. A resume
 > that wins an interview then falls apart in conversation helps no one.
@@ -39,6 +39,18 @@ In Claude Code you can instead say *"Build my master profile from the files in p
 start from `templates/master-profile.example.yaml` by hand — see
 [the guide](profile/HOW-TO-BUILD-YOUR-PROFILE.md).
 
+Want a plain, untailored resume to have on hand — for LinkedIn, a job board, or a recruiter who
+just says "send me your resume"? It needs no API key:
+
+```bash
+make resume
+```
+
+That renders the *whole* profile into `applications/general/` as Word and PDF: every employer,
+every bullet, every technology you record as proficient or better. Trim it with the caps
+(`.venv/bin/resume-tailor general --max-highlights 5 --max-skills 8 --since 2019`) or by
+correcting the profile and running it again.
+
 **3. Add the jobs.** Save each posting as a `.md` or `.txt` file in [`jobs/`](jobs/) — as many as
 you like — then:
 
@@ -56,15 +68,15 @@ In Claude Code, `/tailor <paste the posting>` runs the same method conversationa
 | File | What it is |
 |------|-----------|
 | `resume.md` | The tailored resume source — edit here, then re-export |
-| `resume.docx` / `resume.pdf` | **ATS-safe**, single column — upload this to application portals |
-| `resume-polished.docx` / `.pdf` | **Two-column design** — email this to a person |
-| `fit-report.md` (see `resume-tailor match`) | How well you match, keywords covered vs. missed, and honest ways to close gaps |
+| `resume.docx` / `resume.pdf` | **The resume** — single column, parser-safe, in the design's typography; send it anywhere |
+| `fit-report.md` (see `resume-tailor match`) | How well you match, keywords covered vs. missed, honest ways to close gaps, and the readability review |
 | `cover-letter.md` / `.docx` / `.pdf` | A matching one-page cover letter |
 | `linkedin.md` | A headline and "About" section tuned to this kind of role |
 
-Two layouts because a resume has to win twice: once with a parser, once with a person. The
-single-column file is what survives a screener; the two-column one is what looks good in an inbox.
-[Which to send when →](reference/RESUME-FORMATS.md)
+One file for both readers: it parses cleanly because it is a single column with standard headings,
+and it reads well because it carries the typography of a designed resume. A two-column version of
+the same design is available with `--layout polished` for emailing a person; never upload that one.
+[The layouts, in detail →](reference/RESUME-FORMATS.md)
 
 ## Two ways to run it
 
@@ -85,14 +97,21 @@ Want to know how you match *before* spending a generation? That needs no API key
 .venv/bin/resume-tailor match jobs/stripe-staff-backend.md
 ```
 
+Neither does the general, untailored resume — the whole profile in resume form:
+
+```bash
+.venv/bin/resume-tailor general                    # applications/general/, Word and PDF
+.venv/bin/resume-tailor general --since 2019 --max-highlights 5
+```
+
 Or run it as an HTTP API — the same code behind endpoints, ready for a UI:
 
 ```bash
 .venv/bin/resume-tailor serve      # http://127.0.0.1:8000/docs
 ```
 
-`GET /health`, `GET /profile`, `POST /match` need **no API key**. `POST /tailor` and
-`GET /applications` do the generation.
+`GET /health`, `GET /profile`, `POST /match` and `POST /general` need **no API key**.
+`POST /tailor` does the generation; `GET /applications` lists what is on disk.
 
 **In Claude Code** — open the folder and talk to it. `/tailor <paste a job description>` runs the
 same method conversationally, and you can correct the profile as you go.
@@ -101,11 +120,27 @@ Either way, **nothing is invented**: generated resumes are checked against your 
 regenerated if they make a claim it does not support. See
 [reference/ARCHITECTURE.md](reference/ARCHITECTURE.md).
 
+**And everything gets a second read.** After a resume is generated it is reviewed for
+readability: the mechanical problems are fixed on the spot (spacing, a missing full stop, a
+hyphen in a date range, a skill listed twice), the standalone path has the model edit the draft
+for clarity under the same no-invention check, and what is left comes back as two lists —
+suggestions an editor should act on, and questions only you can answer. The fit report carries
+both. To work through the questions:
+
+```bash
+make review APP=stripe-staff-backend-engineer      # or: resume-tailor review <resume.md> --interactive
+```
+
+It asks them one at a time and keeps your answers in `profile/raw/answers.md`, where the next
+`make profile FORCE=--force` picks them up as source material. `resume-tailor profile review`
+does the same for the open questions the profile builder left in `notes`.
+
 ## Quickstart
 
 ```bash
 make setup && cp .env.example .env    # add your key to .env
 make profile                          # after dropping files into profile/raw/
+make resume                           # a general, untailored resume from the whole profile
 make tailor                           # after dropping postings into jobs/
 ```
 
@@ -115,10 +150,11 @@ Export a resume or letter to Word + PDF anytime:
 make export APP=stripe-staff-backend-engineer
 ```
 
-Or a single file, with control over the layout:
+Or a single file, and the two-column version of the design when you want it:
 
 ```bash
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout ats
+.venv/bin/resume-tailor build applications/<folder>/resume.md
+.venv/bin/resume-tailor build applications/<folder>/resume.md --layout polished
 ```
 
 ## The master profile
@@ -153,6 +189,9 @@ experience:
 |---|---|
 | `make profile` | Draft it from `profile/raw/` (add `FORCE=--force` to replace one) |
 | `make profile-check` | Validate it, and list anything still marked unconfirmed |
+| `make resume` | Render the whole profile as an untailored resume in `applications/general/` |
+| `make review APP=<folder>` | Fix a resume's easy problems, re-export it, then ask about the rest |
+| `resume-tailor profile review` | Answer the profile's open questions one by one |
 | `make profile-md` | Render a readable Markdown view at `profile/MASTER_PROFILE.md` |
 | `make profile-schema` | Regenerate `schema/master-profile.schema.json` from the models |
 
@@ -178,7 +217,7 @@ Source is in `src/resume_tailor/`, tests mirror it in `tests/`. All three gates 
 ## Learn more
 
 - [CLAUDE.md](CLAUDE.md) — the tailoring method Claude follows, step by step
-- [reference/RESUME-FORMATS.md](reference/RESUME-FORMATS.md) — the two layouts and when to send which
+- [reference/RESUME-FORMATS.md](reference/RESUME-FORMATS.md) — the resume file, and the optional two-column version
 - [reference/ATS-PLAYBOOK.md](reference/ATS-PLAYBOOK.md) — how resume screeners work and how to pass them
 - [profile/HOW-TO-BUILD-YOUR-PROFILE.md](profile/HOW-TO-BUILD-YOUR-PROFILE.md) — filling in your profile
 - [jobs/README.md](jobs/README.md) — dropping in postings to tailor against

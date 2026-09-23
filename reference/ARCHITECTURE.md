@@ -18,7 +18,7 @@ flowchart TB
         match["match<br/>keyword coverage with evidence"]
         verify["verify<br/>anti-fabrication check"]
         docs["documents.parser<br/>format contract"]
-        render["render<br/>.docx + .pdf, two layouts"]
+        render["render<br/>.docx + .pdf (two-column opt-in)"]
     end
 
     subgraph agentic ["Model-driven — retried until it passes the checks"]

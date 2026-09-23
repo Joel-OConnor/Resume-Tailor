@@ -7,9 +7,9 @@ this surface and the CLI cannot drift apart.
 Two properties are load-bearing:
 
 * **Building the app never needs an API key.** The model is constructed on the first request that
-  actually needs one, which is what keeps ``/health``, ``/profile`` and ``/match`` working on a
-  machine that has no key at all — and what lets a key added to ``.env`` take effect without a
-  restart.
+  actually needs one, which is what keeps ``/health``, ``/profile``, ``/match`` and ``/general``
+  working on a machine that has no key at all — and what lets a key added to ``.env`` take
+  effect without a restart.
 * **No response body ever carries a stack trace or a credential.** Known failures answer with
   their own one-line message; anything unforeseen answers with a fixed string and nothing else.
 
@@ -36,11 +36,12 @@ from resume_tailor.errors import (
     ResumeTailorError,
 )
 from resume_tailor.llm import build_model, load_settings
-from resume_tailor.profile import DEFAULT_PROFILE_PATH
+from resume_tailor.profile import DEFAULT_PROFILE_PATH, ResumeShape
 from resume_tailor.service import (
     DEFAULT_APPLICATIONS_DIR,
     Application,
     check_profile,
+    general_resume,
     list_applications,
     match_only,
     tailor_application,
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from resume_tailor.llm import LanguageModel
+    from resume_tailor.review import Finding
 
 __all__ = ["create_app"]
 
@@ -102,6 +104,32 @@ class TailorRequest(BaseModel):
 
     posting: str = Field(min_length=1, description="The job description, as plain text.")
     export: bool = Field(default=True, description="Also render .docx and .pdf.")
+    refine: bool = Field(default=True, description="Also have the model edit for readability.")
+
+
+class GeneralRequest(BaseModel):
+    """How to shape the untailored resume, and whether to render the Word and PDF files too."""
+
+    title: str = Field(
+        default="", description="The line under the name; default: the first target role."
+    )
+    max_highlights: int = Field(default=0, ge=0, description="Bullets per role; 0 means all.")
+    max_skills: int = Field(default=0, ge=0, description="Items per skills group; 0 means all.")
+    since: str = Field(
+        default="",
+        pattern=r"^(?:[0-9]{4})?$",
+        description="Omit employers left before this year (YYYY); empty keeps every employer.",
+    )
+    export: bool = Field(default=True, description="Also render .docx and .pdf.")
+
+    def shape(self) -> ResumeShape:
+        """Convert the request into the renderer's own terms."""
+        return ResumeShape(
+            title=self.title,
+            max_highlights=self.max_highlights,
+            max_skills=self.max_skills,
+            since=self.since,
+        )
 
 
 class ApplicationResponse(BaseModel):
@@ -112,6 +140,10 @@ class ApplicationResponse(BaseModel):
     role: str
     directory: str
     files: list[str]
+    advice: list[str] = Field(default_factory=list, description="Readability suggestions.")
+    questions: list[str] = Field(
+        default_factory=list, description="What only the candidate can answer."
+    )
 
     @classmethod
     def of(cls, application: Application) -> ApplicationResponse:
@@ -122,7 +154,14 @@ class ApplicationResponse(BaseModel):
             role=application.role,
             directory=str(application.directory),
             files=[str(path) for path in application.files],
+            advice=[_describe(finding) for finding in application.review.advice],
+            questions=[_describe(finding) for finding in application.review.questions],
         )
+
+
+def _describe(finding: Finding) -> str:
+    """One line per finding: the message, and the text it is about when there is one."""
+    return f'{finding.message} ("{finding.text}")' if finding.text else finding.message
 
 
 def default_model() -> LanguageModel:
@@ -218,6 +257,19 @@ def create_app(
                 profile_path=profile,
                 applications_dir=applications,
                 model=make_model(),
+                export=request.export,
+                refine=request.refine,
+            )
+        )
+
+    @app.post("/general", response_model=ApplicationResponse, summary="Write the untailored resume")
+    def general(request: GeneralRequest) -> ApplicationResponse:
+        """Render the whole profile as one resume. Deterministic — no model, no API key."""
+        return ApplicationResponse.of(
+            general_resume(
+                profile_path=profile,
+                applications_dir=applications,
+                shape=request.shape(),
                 export=request.export,
             )
         )

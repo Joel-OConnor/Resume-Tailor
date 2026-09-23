@@ -166,7 +166,7 @@ def test_tailoring_exports_by_default(monkeypatch: pytest.MonkeyPatch, client: T
     install_agent(monkeypatch, draft_of())
     body = client.post("/tailor", json={"posting": POSTING}).json()
     assert any(name.endswith("resume.docx") for name in body["files"])
-    assert any(name.endswith("resume-polished.pdf") for name in body["files"])
+    assert any(name.endswith("resume.pdf") for name in body["files"])
 
 
 # --- error mapping --------------------------------------------------------------------------------
@@ -280,3 +280,54 @@ def test_an_unknown_slug_is_a_not_found_in_the_same_error_shape(
     response = client.get("/applications/never-applied-here")
     assert response.status_code == 404
     assert response.json() == {"error": "no application named 'never-applied-here'"}
+
+
+# --- /general -------------------------------------------------------------------------------------
+def test_the_general_resume_needs_no_key_and_returns_its_folder(applications: Path) -> None:
+    client = TestClient(create_app(profile_path=EXAMPLE_PROFILE, applications_dir=applications))
+    response = client.post("/general", json={"export": False, "since": "2022", "title": "Eng"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["slug"] == "general"
+    assert body["company"] == ""
+    assert body["directory"] == str(applications / "general")
+    assert [name.rsplit("/", 1)[-1] for name in body["files"]] == ["resume.md"]
+    text = (applications / "general" / "resume.md").read_text(encoding="utf-8")
+    assert text.splitlines()[1] == "Eng"
+    assert "Cedar Analytics" not in text
+
+
+def test_the_general_resume_exports_by_default(client: TestClient) -> None:
+    body = client.post("/general", json={}).json()
+    assert any(name.endswith("resume.pdf") for name in body["files"])
+
+
+def test_a_malformed_shape_is_rejected_before_any_work_happens(client: TestClient) -> None:
+    assert client.post("/general", json={"since": "last year"}).status_code == 422
+    assert client.post("/general", json={"max_highlights": -1}).status_code == 422
+
+
+# --- the second read ------------------------------------------------------------------------------
+def test_tailoring_returns_the_review_questions_and_advice(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    install_agent(monkeypatch, draft_of())
+    body = client.post("/tailor", json={"posting": POSTING, "export": False}).json()
+    assert isinstance(body["advice"], list)
+    assert any(question.startswith("What did this achieve?") for question in body["questions"])
+    assert any('("Corresponded with Babbage' in question for question in body["questions"])
+
+
+def test_tailoring_can_skip_the_editor(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    from resume_tailor import service
+
+    install_agent(monkeypatch, draft_of())
+
+    def never(*_: object, **__: object) -> object:
+        msg = "the editor must not be consulted"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(service, "refine_resume", never)
+    response = client.post("/tailor", json={"posting": POSTING, "export": False, "refine": False})
+    assert response.status_code == 200

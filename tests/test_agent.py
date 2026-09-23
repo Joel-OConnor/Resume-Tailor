@@ -12,7 +12,15 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from resume_tailor.agent import TailorResult, Usage, build_profile, prompts, tailor
+from resume_tailor.agent import (
+    RefineResult,
+    TailorResult,
+    Usage,
+    build_profile,
+    prompts,
+    refine_resume,
+    tailor,
+)
 from resume_tailor.errors import FabricationError, ModelError
 from resume_tailor.llm import LanguageModel, Reply
 from resume_tailor.profile import load_mapping, loads
@@ -422,3 +430,79 @@ def test_the_retry_prompt_leads_with_the_problems_and_keeps_the_request() -> Non
 
     assert retry.index("- you invented a metric") < retry.index("ORIGINAL REQUEST")
     assert "rejected by an automatic check" in retry
+
+
+# --- refine_resume: the editor pass ---------------------------------------------------------------
+EDITED = RESUME.replace(
+    "Cut batch runtime 38% by rewriting the scheduler in Python.",
+    "Rewrote the scheduler in Python, cutting batch runtime 38%.",
+)
+
+
+def _edit_reply(resume: str, questions: str = "- none") -> str:
+    return f"{prompts.marker('RESUME')}\n{resume}\n{prompts.marker('QUESTIONS')}\n{questions}\n"
+
+
+def _refine(model: FakeModel, resume: str = RESUME) -> RefineResult:
+    from resume_tailor.review import review_resume
+
+    return refine_resume(resume, load_mapping(_PROFILE_DATA), review_resume(resume), model)
+
+
+def test_refine_returns_the_edit_and_the_questions() -> None:
+    model = FakeModel(
+        [_edit_reply(EDITED, "- How large was the batch?\n* Which year did it ship?")]
+    )
+    result = _refine(model)
+    assert result.resume == EDITED.strip()
+    assert result.questions == ("How large was the batch?", "Which year did it ship?")
+    assert result.usage == Usage(_INPUT_TOKENS, _OUTPUT_TOKENS, 1)
+    assert model.systems == [prompts.REFINE_SYSTEM]
+    assert "<mechanical-review>" in model.prompts[0]
+
+
+def test_refine_reads_none_as_no_questions() -> None:
+    assert _refine(FakeModel([_edit_reply(EDITED, "- None.")])).questions == ()
+
+
+def test_refine_rejects_an_edit_that_drops_an_entry_then_accepts_the_retry() -> None:
+    dropped = EDITED.replace(
+        "### Analytical Engine Programme — Principal Engineer",
+        "### Analytical Engine Programme — Engineer",
+    )
+    model = FakeModel([_edit_reply(dropped), _edit_reply(EDITED)])
+    result = _refine(model)
+    assert result.usage.attempts == 2
+    assert "Keep every role and degree heading" in model.prompts[1]
+    assert result.resume == EDITED.strip()
+
+
+def test_refine_refuses_an_edit_that_changes_a_figure() -> None:
+    inflated = _edit_reply(EDITED.replace("38%", "39%"))
+    with pytest.raises(FabricationError, match="39%"):
+        _refine(FakeModel([inflated] * 3))
+
+
+def test_refine_needs_both_sections() -> None:
+    model = FakeModel([f"{prompts.marker('RESUME')}\n{EDITED}\n"] * 3)
+    with pytest.raises(ModelError, match="QUESTIONS"):
+        _refine(model)
+
+
+def test_refine_rejects_an_edit_that_does_not_parse() -> None:
+    model = FakeModel([_edit_reply("no name line here"), _edit_reply(EDITED)])
+    assert _refine(model).usage.attempts == 2
+    assert "format contract" in model.prompts[1]
+
+
+def test_refine_prompt_lists_what_the_mechanical_read_flagged() -> None:
+    from resume_tailor.review import Finding, Level, Review
+
+    profile = load_mapping(_PROFILE_DATA)
+    flagged = Review(
+        (Finding("tense", Level.ADVISE, 5, "Acme – Engineer", "bullets switch tense"),)
+    )
+    assert '- line 5: tense: bullets switch tense ("Acme – Engineer")' in prompts.refine_prompt(
+        RESUME, profile, flagged
+    )
+    assert "Nothing was flagged." in prompts.refine_prompt(RESUME, profile, Review())

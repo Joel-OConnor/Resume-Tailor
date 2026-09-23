@@ -36,8 +36,12 @@ def _names(source: Path, **kwargs: object) -> list[str]:
     return [artifact.path.name for artifact in build(source, **kwargs)]  # type: ignore[arg-type]
 
 
-def test_both_layouts_by_default(source: Path) -> None:
-    assert _names(source) == [
+def test_the_single_column_layout_by_default(source: Path) -> None:
+    assert _names(source) == ["resume.docx", "resume.pdf"]
+
+
+def test_both_layouts_on_request(source: Path) -> None:
+    assert _names(source, layout=Layout.BOTH) == [
         "resume.docx",
         "resume.pdf",
         "resume-polished.docx",
@@ -57,7 +61,8 @@ def test_the_polished_layout_is_suffixed(source: Path) -> None:
 
 
 def test_no_pdf_writes_only_word_files(source: Path) -> None:
-    assert _names(source, pdf=False) == ["resume.docx", "resume-polished.docx"]
+    assert _names(source, pdf=False) == ["resume.docx"]
+    assert _names(source, layout=Layout.BOTH, pdf=False) == ["resume.docx", "resume-polished.docx"]
 
 
 def test_every_artifact_actually_exists(source: Path) -> None:
@@ -65,7 +70,7 @@ def test_every_artifact_actually_exists(source: Path) -> None:
 
 
 def test_artifacts_report_their_layout(source: Path) -> None:
-    assert [artifact.layout for artifact in build(source)] == [
+    assert [artifact.layout for artifact in build(source, layout=Layout.BOTH)] == [
         Layout.ATS,
         Layout.ATS,
         Layout.POLISHED,
@@ -108,13 +113,15 @@ def test_the_layout_enum_round_trips_through_strings() -> None:
     assert str(Layout.ATS) == "ats"
 
 
-def test_a_cover_letter_skips_the_polished_layout_by_default(tmp_path: Path) -> None:
+def test_a_cover_letter_skips_the_polished_layout_even_when_both_are_asked_for(
+    tmp_path: Path,
+) -> None:
     """A letter has no sections: the rail would be empty, and the docs promise one column."""
     letter = tmp_path / "cover-letter.md"
     letter.write_text(
         "# Ada\nada@example.com\n\nDear Hiring Manager,\n\nHello.\n", encoding="utf-8"
     )
-    assert _names(letter) == ["cover-letter.docx", "cover-letter.pdf"]
+    assert _names(letter, layout=Layout.BOTH) == ["cover-letter.docx", "cover-letter.pdf"]
 
 
 def test_an_explicit_polished_layout_still_renders_a_letter(tmp_path: Path) -> None:
@@ -137,7 +144,8 @@ def test_a_dotted_stem_does_not_collapse_the_output_names(tmp_path: Path) -> Non
     """`with_suffix` would turn resume.v2.md into resume.docx, and polished would overwrite it."""
     source = tmp_path / "resume.v2.md"
     source.write_text(RESUME_MD, encoding="utf-8")
-    assert _names(source, pdf=False) == ["resume.v2.docx", "resume.v2-polished.docx"]
+    names = _names(source, layout=Layout.BOTH, pdf=False)
+    assert names == ["resume.v2.docx", "resume.v2-polished.docx"]
     assert (tmp_path / "resume.v2.docx").is_file()
     assert (tmp_path / "resume.v2-polished.docx").is_file()
 
@@ -147,7 +155,7 @@ def test_a_dotted_stem_keeps_the_ats_file_single_column(tmp_path: Path) -> None:
 
     source = tmp_path / "jordan.rivera.md"
     source.write_text(RESUME_MD, encoding="utf-8")
-    build(source, pdf=False)
+    build(source, layout=Layout.BOTH, pdf=False)
     assert not read_docx(str(tmp_path / "jordan.rivera.docx")).tables
     assert read_docx(str(tmp_path / "jordan.rivera-polished.docx")).tables
 
@@ -155,7 +163,7 @@ def test_a_dotted_stem_keeps_the_ats_file_single_column(tmp_path: Path) -> None:
 def test_a_utf8_bom_does_not_hide_the_name_line(tmp_path: Path) -> None:
     source = tmp_path / "resume.md"
     source.write_bytes(b"\xef\xbb\xbf" + RESUME_MD.encode("utf-8"))
-    assert _names(source, pdf=False) == ["resume.docx", "resume-polished.docx"]
+    assert _names(source, pdf=False) == ["resume.docx"]
 
 
 def test_an_unreadable_source_is_a_render_error(tmp_path: Path) -> None:
@@ -206,18 +214,18 @@ def test_output_names_are_built_by_concatenation(tmp_path: Path) -> None:
 def test_a_control_character_does_not_break_the_export(tmp_path: Path) -> None:
     source = tmp_path / "resume.md"
     source.write_text("# Ada\ny@z.com\n\n## Summary\nPasted\x0bfrom Word.\n", encoding="utf-8")
-    assert _names(source, pdf=False) == ["resume.docx", "resume-polished.docx"]
+    assert _names(source, pdf=False) == ["resume.docx"]
 
 
 def test_a_downgraded_letter_clears_the_previous_polished_export(tmp_path: Path) -> None:
     """Otherwise last build's two-column file waits in the folder the user sends from."""
     source = tmp_path / "resume.md"
     source.write_text(RESUME_MD, encoding="utf-8")
-    build(source, pdf=False)
+    build(source, layout=Layout.BOTH, pdf=False)
     assert (tmp_path / "resume-polished.docx").is_file()
 
     source.write_text("# Ada\ny@z.com\n\nDear Hiring Manager,\n", encoding="utf-8")
-    assert _names(source, pdf=False) == ["resume.docx"]
+    assert _names(source, layout=Layout.BOTH, pdf=False) == ["resume.docx"]
     assert not (tmp_path / "resume-polished.docx").exists()
 
 
@@ -225,6 +233,6 @@ def test_an_explicit_layout_never_deletes_the_other_one(tmp_path: Path) -> None:
     """Only the tool's own downgrade cleans up; the user's choice is not destructive."""
     source = tmp_path / "resume.md"
     source.write_text(RESUME_MD, encoding="utf-8")
-    build(source, pdf=False)
+    build(source, layout=Layout.BOTH, pdf=False)
     build(source, layout=Layout.ATS, pdf=False)
     assert (tmp_path / "resume-polished.docx").is_file()

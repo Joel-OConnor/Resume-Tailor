@@ -25,22 +25,30 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from resume_tailor.profile.models import Profile
+    from resume_tailor.review import Review
 
 __all__ = [
     "COVER_LETTER_FORMAT",
     "OUTPUT_CONTRACT",
     "PROFILE_SYSTEM",
+    "REFINE_OUTPUT_CONTRACT",
+    "REFINE_SECTIONS",
+    "REFINE_SYSTEM",
     "RESUME_FORMAT",
     "SECTIONS",
     "TAILOR_SYSTEM",
     "marker",
     "profile_prompt",
+    "refine_prompt",
     "retry_prompt",
     "tailor_prompt",
 ]
 
 SECTIONS: tuple[str, ...] = ("COMPANY", "ROLE", "RESUME", "FIT REPORT", "COVER LETTER", "LINKEDIN")
 """Every part of a tailoring answer, in the order the model must return them."""
+
+REFINE_SECTIONS: tuple[str, ...] = ("RESUME", "QUESTIONS")
+"""Every part of an editing answer, in the order the model must return them."""
 
 
 def marker(section: str) -> str:
@@ -92,6 +100,32 @@ HOW TO TAILOR
 
 Write plainly, in the candidate's voice. No filler, no superlatives about yourself, no "results
 driven professional". Return the sections asked for and nothing else — no preamble, no commentary.
+"""
+
+REFINE_SYSTEM = """\
+You are the editor of Resume-Tailor. You are handed a resume that is already TRUE — every
+employer, title, date, technology and figure in it traces to the candidate's profile — and your
+only job is to make it read well: to a recruiter with ten seconds, and to a screener matching
+keywords.
+
+WHAT YOU MAY CHANGE
+- Wording, word order, sentence structure, tense and length. Tighten every bullet to one idea of
+  at most about 35 words that opens with what was done and ends with what it produced.
+- Tense: present for the current role, past for every earlier one, and consistent within a role.
+- Repetition and filler: say a phrase once across the document; cut "responsible for",
+  "leveraged", "seamless", "robust" and their kind.
+- The order of bullets within a role, so the strongest comes first.
+
+WHAT YOU MAY NOT CHANGE
+- Any fact. Every employer, title, date, credential, technology, number and outcome stays exactly
+  as it is. The checks that run on your answer reject an invented or altered figure.
+- The set of "### " entries: keep every role and degree, in the same order, with the same heading
+  text. Keep every section heading and the header lines.
+- The format: the resume format contract below is what the renderer accepts.
+
+Where a bullet would only get better with a fact you do not have — an outcome, a number, a
+scope — leave that bullet as it is and put the question in QUESTIONS, worded for the candidate.
+Return the two sections and nothing else: no preamble, no commentary.
 """
 
 PROFILE_SYSTEM = """\
@@ -190,6 +224,19 @@ A headline of at most 220 characters, then an "About" section of three or four s
 both tuned to this kind of role and true to the profile.
 """
 
+REFINE_OUTPUT_CONTRACT = f"""\
+Return exactly these sections, in this order, each opened by its own delimiter line and nothing
+else on that line. Return no text before the first delimiter or after the last section.
+
+{marker("RESUME")}
+The edited resume, complete, in the resume format given above.
+
+{marker("QUESTIONS")}
+One question per line, each opened by "- ", for a fact that would make the resume stronger and
+that only the candidate has: an outcome with no number, a scope with no size, a claim with no
+date. Write "- none" when there is nothing to ask.
+"""
+
 _RETRY_PREAMBLE = """\
 Your previous answer was rejected by an automatic check. These are the exact problems found:
 
@@ -247,6 +294,30 @@ def tailor_prompt(posting: str, profile: Profile) -> str:
                 "cover-letter-format", "The cover letter must follow this:", COVER_LETTER_FORMAT
             ),
             _tagged("output-contract", "What to return, and nothing else:", OUTPUT_CONTRACT),
+        )
+    )
+
+
+_REVIEW_NOTE = """\
+What a mechanical read of the resume flagged. Act on every suggestion you can, and carry each
+question into QUESTIONS unless the profile answers it.
+"""
+
+
+def refine_prompt(resume: str, profile: Profile, review: Review) -> str:
+    """Build the prompt for one editing pass over ``resume``."""
+    flagged = "\n".join(
+        f"- line {finding.line}: {finding.rule}: {finding.message}"
+        + (f' ("{finding.text}")' if finding.text else "")
+        for finding in (*review.advice, *review.questions)
+    )
+    return "\n".join(
+        (
+            _tagged("resume", "The resume to edit:", resume),
+            _tagged("master-profile", _PROFILE_NOTE, render_profile(profile)),
+            _tagged("mechanical-review", _REVIEW_NOTE, flagged or "Nothing was flagged."),
+            _tagged("resume-format", "The resume you return must follow this:", RESUME_FORMAT),
+            _tagged("output-contract", "What to return, and nothing else:", REFINE_OUTPUT_CONTRACT),
         )
     )
 

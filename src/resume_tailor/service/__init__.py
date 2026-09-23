@@ -17,25 +17,31 @@ import re
 import shutil
 import tempfile
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from resume_tailor.agent import tailor
+from resume_tailor.agent import refine_resume, tailor
 from resume_tailor.errors import RenderError
 from resume_tailor.match import match_posting, render_markdown
-from resume_tailor.profile import load
+from resume_tailor.profile import DEFAULT_SHAPE, ResumeShape, load, render_general_resume
 from resume_tailor.render import Layout, build
+from resume_tailor.review import Finding, Level, Review, apply_fixes, review_and_fix, review_resume
+from resume_tailor.review import render_markdown as render_review
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from resume_tailor.llm import LanguageModel
     from resume_tailor.profile import Profile
 
 __all__ = [
     "DEFAULT_APPLICATIONS_DIR",
+    "GENERAL_SLUG",
     "Application",
     "RawDocuments",
     "check_profile",
+    "general_resume",
     "list_applications",
     "match_only",
     "read_raw_documents",
@@ -44,6 +50,9 @@ __all__ = [
 ]
 
 DEFAULT_APPLICATIONS_DIR = Path("applications")
+
+GENERAL_SLUG = "general"
+"""The one application folder that is not a job: the untailored resume of the whole profile."""
 
 JOB_DESCRIPTION_FILE = "job-description.md"
 RESUME_FILE = "resume.md"
@@ -72,13 +81,15 @@ class RawDocuments:
 
 @dataclass(frozen=True, slots=True)
 class Application:
-    """One application folder: where it is and what it holds."""
+    """One application folder: where it is, what it holds, and what a second read of it found."""
 
     slug: str
     directory: Path
     files: tuple[Path, ...]
     company: str = ""
     role: str = ""
+    review: Review = field(default_factory=Review)
+    """The readability review of the resume as written: fixes made, advice, open questions."""
 
 
 def slugify(company: str, role: str) -> str:
@@ -98,15 +109,21 @@ def slugify(company: str, role: str) -> str:
     return slug[:_MAX_SLUG].rstrip("-") or _FALLBACK_SLUG
 
 
-def tailor_application(
+def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct input
     posting: str,
     *,
     profile_path: Path,
     applications_dir: Path,
     model: LanguageModel,
     export: bool = True,
+    refine: bool = True,
 ) -> Application:
     """Tailor ``posting`` into a complete application folder and report what was written.
+
+    The draft gets a second read before it is written: the mechanical fixes are applied, the
+    model edits it for readability under the same verifier that guarded the draft (skipped with
+    ``refine=False``), and what remains — advice, and questions only the candidate can answer —
+    goes into the fit report and comes back on the :class:`Application`.
 
     Nothing appears at ``applications_dir/<slug>`` until every document is written and every
     export has succeeded: the run builds into a hidden sibling directory and swaps it in at the
@@ -123,36 +140,70 @@ def tailor_application(
     """
     profile = load(profile_path)
     draft = tailor(posting, profile, model)
+    resume, review = _polish(draft.resume, profile, model if refine else None)
     slug = slugify(draft.company, draft.role)
-    directory = applications_dir / slug
     documents = {
         JOB_DESCRIPTION_FILE: posting,
-        RESUME_FILE: draft.resume,
-        FIT_REPORT_FILE: _fit_report(draft.fit_report, posting, profile, draft.company),
+        RESUME_FILE: resume,
+        FIT_REPORT_FILE: _fit_report(draft.fit_report, posting, profile, draft.company, review),
         COVER_LETTER_FILE: draft.cover_letter,
         LINKEDIN_FILE: draft.linkedin,
     }
-
-    staging = _staging_dir(applications_dir, slug)
-    with contextlib.ExitStack() as unwind:
-        # Registered before the first write and cancelled only once everything is on disk, so
-        # every failure path below discards the partial folder without an except clause of its
-        # own — including the ones raised by code this module does not own.
-        unwind.callback(shutil.rmtree, staging, ignore_errors=True)
-        for name, text in documents.items():
-            _write(staging / name, text)
-        if export:
-            _export(staging)
-        unwind.pop_all()
-
-    _swap(staging, directory)
+    directory = _publish(applications_dir, slug, documents, export=_export if export else None)
     return Application(
         slug=slug,
         directory=directory,
         files=_files(directory),
         company=draft.company,
         role=draft.role,
+        review=review,
     )
+
+
+def _polish(markdown: str, profile: Profile, model: LanguageModel | None) -> tuple[str, Review]:
+    """Give a resume its second read: fix, edit if a model is on hand, then review what is left.
+
+    The editor's own questions join the review's as ``ASK`` findings, so a caller sees one list
+    of what the candidate still has to answer whichever reader raised it.
+    """
+    fixed, applied = apply_fixes(markdown)
+    asked: tuple[Finding, ...] = ()
+    if model is not None:
+        edited = refine_resume(fixed, profile, review_resume(fixed), model)
+        fixed, more = apply_fixes(edited.resume)
+        applied += more
+        asked = tuple(
+            Finding("editor", Level.ASK, 0, "", question) for question in edited.questions
+        )
+    return fixed, Review(review_resume(fixed).findings + asked, applied)
+
+
+def general_resume(
+    *,
+    profile_path: Path,
+    applications_dir: Path,
+    shape: ResumeShape = DEFAULT_SHAPE,
+    export: bool = True,
+) -> Application:
+    """Render the whole profile as one untailored resume and report the folder written.
+
+    Deterministic and key-free: :func:`resume_tailor.profile.render_general_resume` prints the
+    profile's own words in the profile's own order, so there is no model to consult and nothing
+    a verifier could reject. The folder is always ``applications_dir / GENERAL_SLUG``, replaced
+    whole on every run, with the same all-or-nothing guarantee as :func:`tailor_application`.
+
+    Raises:
+        ProfileError: the profile is missing or does not validate.
+        RenderError: the resume could not be written or exported.
+    """
+    markdown, review = review_and_fix(render_general_resume(load(profile_path), shape))
+    directory = _publish(
+        applications_dir,
+        GENERAL_SLUG,
+        {RESUME_FILE: markdown},
+        export=_export_resume if export else None,
+    )
+    return Application(GENERAL_SLUG, directory, _files(directory), review=review)
 
 
 def list_applications(applications_dir: Path) -> tuple[Application, ...]:
@@ -208,15 +259,46 @@ def match_only(posting: str, profile_path: Path) -> str:
     return render_markdown(match_posting(posting, load(profile_path)))
 
 
-def _fit_report(narrative: str, posting: str, profile: Profile, company: str) -> str:
-    """Append the computed coverage table beneath the model's narrative.
+def _fit_report(
+    narrative: str, posting: str, profile: Profile, company: str, review: Review
+) -> str:
+    """Append the computed coverage table and the readability review beneath the narrative.
 
-    The two halves are deliberately separated by a rule. Above it is prose a model wrote; below
-    it is arithmetic over the profile, so a reader can check every keyword claim in the prose
-    without having to trust the prose.
+    The halves are deliberately separated by a rule. Above it is prose a model wrote; below it
+    is arithmetic over the profile and the resume, so a reader can check every claim in the
+    prose without having to trust the prose.
     """
     coverage = render_markdown(match_posting(posting, profile, company))
-    return f"{narrative.rstrip()}\n\n---\n\n{coverage}"
+    return f"{narrative.rstrip()}\n\n---\n\n{coverage.rstrip()}\n\n{render_review(review)}"
+
+
+def _publish(
+    applications_dir: Path,
+    slug: str,
+    documents: Mapping[str, str],
+    *,
+    export: Callable[[Path], None] | None,
+) -> Path:
+    """Write ``documents`` into ``applications_dir / slug`` — all of them, or none.
+
+    The run builds into a hidden sibling directory and swaps it in at the end, so a failure
+    anywhere below — a write, a render — leaves whatever was there before exactly as it was.
+    """
+    staging = _staging_dir(applications_dir, slug)
+    with contextlib.ExitStack() as unwind:
+        # Registered before the first write and cancelled only once everything is on disk, so
+        # every failure path below discards the partial folder without an except clause of its
+        # own — including the ones raised by code this module does not own.
+        unwind.callback(shutil.rmtree, staging, ignore_errors=True)
+        for name, text in documents.items():
+            _write(staging / name, text)
+        if export is not None:
+            export(staging)
+        unwind.pop_all()
+
+    directory = applications_dir / slug
+    _swap(staging, directory)
+    return directory
 
 
 def _staging_dir(applications_dir: Path, slug: str) -> Path:
@@ -239,9 +321,14 @@ def _write(path: Path, text: str) -> None:
 
 
 def _export(directory: Path) -> None:
-    """Render the resume in both layouts and the cover letter single-column."""
-    build(directory / RESUME_FILE)
+    """Render the resume and the cover letter, each single-column."""
+    _export_resume(directory)
     build(directory / COVER_LETTER_FILE, layout=Layout.ATS)
+
+
+def _export_resume(directory: Path) -> None:
+    """Render the resume alone, in the single-column layout that serves parsers and people."""
+    build(directory / RESUME_FILE, layout=Layout.ATS)
 
 
 def _swap(staging: Path, directory: Path) -> None:

@@ -19,10 +19,10 @@ So a resume has to win three times: parse cleanly, match the keywords, and read 
 
 ## Formatting rules that keep parsers happy
 
-The **ATS layout** (`resume.docx` / `resume.pdf`) follows all of these by construction. The
-**polished layout** (`resume-polished.*`) deliberately breaks the single-column rule for the benefit
-of human readers — send that one to people, never to a portal. See
-[RESUME-FORMATS.md](RESUME-FORMATS.md). If you edit a `.docx` by hand, keep to these:
+The resume the project exports (`resume.docx` / `resume.pdf`) follows all of these by construction.
+The optional two-column version (`resume-polished.*`, via `--layout polished`) deliberately breaks
+the single-column rule for the benefit of human readers — hand that one to people, never to a
+portal. See [RESUME-FORMATS.md](RESUME-FORMATS.md). If you edit a `.docx` by hand, keep to these:
 
 **Do**
 - **Single column, top-to-bottom.** Parsers read in one flow. Two-column layouts get interleaved.
