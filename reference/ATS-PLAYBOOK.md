@@ -28,7 +28,11 @@ portal. See [RESUME-FORMATS.md](RESUME-FORMATS.md). If you edit a `.docx` by han
 - **Single column, top-to-bottom.** Parsers read in one flow. Two-column layouts get interleaved.
 - **Standard section headings:** `Summary`, `Skills`, `Experience` (or `Work Experience`),
   `Education`, `Certifications`, `Projects`. Parsers look for these exact-ish words.
-- **Standard fonts** (Calibri, Arial, Helvetica, Georgia, Times) at 10–12pt.
+- **Standard fonts** (Calibri, Arial, Helvetica, Georgia, Times) at 10–12pt, with section
+  headings at 14–16pt. The exported resume is set in Arial.
+- **One weight per idea:** bold the job title or the company, not both. The exported resume bolds
+  the title.
+- **Margins between 0.5 and 0.75 inches:** room to breathe without crowding onto another page.
 - **Simple bullets** (`•`) and plain text. Bold for emphasis is fine.
 - **Clear dates** in a consistent format (`Jan 2022 – Mar 2024`, or `2022 – Present`).
 - **Real text**, not images. The exported PDF has selectable text (an ATS can read it).

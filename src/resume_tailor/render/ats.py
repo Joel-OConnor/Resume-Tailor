@@ -3,15 +3,15 @@
 This is the one file to send anywhere. It keeps every property a resume parser depends on — a
 single top-to-bottom text flow, standard headings, real bullet lists, contact details in the body
 rather than the header region, no tables and no graphics (see ``reference/ATS-PLAYBOOK.md``) —
-and sets it in the typography of the user's own "2026 Polished Resume": Roboto throughout, a
-large light name, 15pt regular headings, semibold role headings, and a bullet glyph with a 0.25in
-hanging indent on every accomplishment. The two-column arrangement of that design lives in
-:mod:`resume_tailor.render.polished` as an opt-in for people, because columns are a table and
-tables are what parsers scramble.
+and sets it in the proportions of the user's own "2026 Polished Resume": a large regular-weight
+name, 15pt regular headings, a 10pt body, and a bullet glyph with a 0.25in hanging indent on
+every accomplishment. The face is Arial throughout, in the only two weights it has, and a role
+heading bolds just the job title (see :mod:`resume_tailor.render.emphasis`). The two-column
+arrangement of that design lives in :mod:`resume_tailor.render.polished` as an opt-in for people,
+because columns are a table and tables are what parsers scramble.
 
-The PDF is printed from the HTML, which pulls Roboto from Google Fonts at print time; offline it
-falls back to the metric-similar Helvetica. Word draws the ``.docx`` in Roboto only where the
-font is installed.
+Arial ships with macOS and Windows, so the PDF printed from the HTML fetches nothing at print time
+and Word draws the ``.docx`` in the same face the PDF shows.
 """
 
 from __future__ import annotations
@@ -35,7 +35,8 @@ from resume_tailor.documents.blocks import (
     is_note,
 )
 from resume_tailor.render.docx_common import add_spans, set_indent, set_spacing
-from resume_tailor.render.html_common import FONT_IMPORT_URL, FONT_STACK, page, spans_to_html
+from resume_tailor.render.emphasis import entry_spans
+from resume_tailor.render.html_common import FONT_STACK, page, spans_to_html
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,25 +48,23 @@ if TYPE_CHECKING:
 
 __all__ = ["render_docx", "render_html"]
 
-FONT = "Roboto"
-FONT_LIGHT = "Roboto ExtraLight"
-FONT_SEMIBOLD = "Roboto SemiBold"
+FONT = "Arial"
 
 BODY_PT = 10.0
 PROSE_PT = 11.0
-CONTACT_PT = 9.0
+CONTACT_PT = 10.0
 SUBTITLE_PT = 12.0
 SECTION_PT = 15.0
-NAME_PT = 35.0
+NAME_PT = 28.0
 
-# Line boxes, absolute so Word and the browser agree — see docx_common.set_spacing. Each is at
-# least Roboto's natural box at that size, and every vertical measure here is a multiple of
-# 0.75pt, one CSS pixel, so the browser's whole-pixel snapping never drifts from Word.
+# Line boxes, absolute so Word and the browser agree (see docx_common.set_spacing). Each is at
+# least Arial's natural box at that size, 1.15 times it, and every vertical measure here is a
+# multiple of 0.75pt, one CSS pixel, so the browser's whole-pixel snapping never drifts from Word.
 LINE_PT = 12.0
 PROSE_LINE_PT = 13.5
 SUBTITLE_LINE_PT = 14.25
 SECTION_LINE_PT = 18.0
-NAME_LINE_PT = 41.25
+NAME_LINE_PT = 33.0
 
 # The gap ABOVE each block. It lives in exactly one property on each side, and the block that
 # opens the page gets none.
@@ -141,10 +140,10 @@ def _add_block(  # noqa: C901 - flat dispatch over the block union
     match block:
         case Name(spans):
             paragraph = _paragraph(docx, _gap("name", previous), line=NAME_LINE_PT)
-            add_spans(paragraph, spans, font=FONT_LIGHT, size=NAME_PT)
+            add_spans(paragraph, spans, font=FONT, size=NAME_PT)
         case HeaderLine(spans) if is_contact_line(spans):
             paragraph = _paragraph(docx, _gap("contact", previous))
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=CONTACT_PT)
+            add_spans(paragraph, spans, font=FONT, size=CONTACT_PT)
         case HeaderLine(spans):
             paragraph = _paragraph(docx, _gap("subtitle", previous), line=SUBTITLE_LINE_PT)
             add_spans(paragraph, spans, font=FONT, size=SUBTITLE_PT)
@@ -154,9 +153,7 @@ def _add_block(  # noqa: C901 - flat dispatch over the block union
             add_spans(paragraph, (Span(title),), font=FONT, size=SECTION_PT)
         case Entry(spans):
             paragraph = _paragraph(docx, _gap("entry", previous))
-            # The family name carries the weight; a bold flag on top would resolve to the bold
-            # companion of SemiBold, heavier than the design and than the HTML.
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=BODY_PT)
+            add_spans(paragraph, entry_spans(spans), font=FONT, size=BODY_PT)
         case Meta(spans):
             paragraph = _paragraph(docx, _gap("meta", previous))
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, italic=True)
@@ -190,24 +187,25 @@ def _paragraph(
 
 # --- HTML -----------------------------------------------------------------------------------------
 CSS = f"""
-@import url('{FONT_IMPORT_URL}');
 @page {{ size: Letter; margin: {PAGE_MARGIN_IN[0]}in {PAGE_MARGIN_IN[1]}in; }}
 * {{ box-sizing: border-box; }}
 /* Every gap is a margin-TOP and every bottom margin is 0, so CSS collapsing and Word's additive
    spacing produce the same number. line-height is absolute for the same reason. */
 body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
         color: #111; margin: 0; }}
+/* Arial has two weights, regular and bold, which is also all a .docx run can say, so no rule
+   here names a weight between them. An entry heading's bold comes from its spans, as in Word. */
 h1, h2, h3, p, ul, li, div {{ margin: 0; }}
-h1 {{ font-size: {NAME_PT}pt; font-weight: 200; line-height: {NAME_LINE_PT}pt;
+h1 {{ font-size: {NAME_PT}pt; font-weight: 400; line-height: {NAME_LINE_PT}pt;
       margin-top: {GAP_PT["name"]}pt; }}
 .subtitle {{ font-size: {SUBTITLE_PT}pt; line-height: {SUBTITLE_LINE_PT}pt;
              margin-top: {GAP_PT["subtitle"]}pt; }}
-.contact {{ font-size: {CONTACT_PT}pt; font-weight: 600; margin-top: {GAP_PT["contact"]}pt; }}
+.contact {{ font-size: {CONTACT_PT}pt; margin-top: {GAP_PT["contact"]}pt; }}
 h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; line-height: {SECTION_LINE_PT}pt;
       margin-top: {GAP_PT["section"]}pt; }}
 h1 + h2 {{ margin-top: {GAP_PT["section-after-name"]}pt; }}
 .subtitle + h2, .contact + h2 {{ margin-top: {GAP_PT["section-after-header"]}pt; }}
-h3 {{ font-size: {BODY_PT}pt; font-weight: 600; margin-top: {GAP_PT["entry"]}pt; }}
+h3 {{ font-size: {BODY_PT}pt; font-weight: 400; margin-top: {GAP_PT["entry"]}pt; }}
 .meta {{ font-style: italic; margin-top: {GAP_PT["meta"]}pt; }}
 .skill {{ margin-top: {GAP_PT["skill"]}pt; }}
 p {{ font-size: {PROSE_PT}pt; line-height: {PROSE_LINE_PT}pt; margin-top: {GAP_PT["para"]}pt; }}
@@ -248,7 +246,7 @@ def _html_block(block: Block) -> str:
         case Section(title):
             html = f"<h2>{spans_to_html((Span(title),))}</h2>"
         case Entry(spans):
-            html = f"<h3>{spans_to_html(spans)}</h3>"
+            html = f"<h3>{spans_to_html(entry_spans(spans))}</h3>"
         case Meta(spans):
             html = f'<div class="meta">{spans_to_html(spans)}</div>'
         case SkillLine(label, items):

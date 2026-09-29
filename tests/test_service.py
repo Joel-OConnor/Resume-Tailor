@@ -1,95 +1,175 @@
-"""Orchestration: slugs, the application folder, and the atomic-or-nothing guarantee."""
+"""Orchestration: the three runs, the review before every export, the all-or-nothing folder."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from resume_tailor import service
-from resume_tailor.agent import RefineResult, TailorResult, Usage
-from resume_tailor.errors import DocumentError, FabricationError, ProfileError, RenderError
-from resume_tailor.llm import LanguageModel, Reply
+from resume_tailor.agent import (
+    COVER_LETTER,
+    LINKEDIN,
+    RESUME,
+    EditResult,
+    GeneralResult,
+    ProfileEdit,
+    TailorResult,
+    Usage,
+)
+from resume_tailor.errors import (
+    DocumentError,
+    FabricationError,
+    ModelError,
+    ProfileError,
+    RenderError,
+)
+from resume_tailor.llm import Reply
+from resume_tailor.profile import loads
 from resume_tailor.render import exporter
 from resume_tailor.render.pdf import PdfResult
-from resume_tailor.review import Review
+from resume_tailor.review import Answer, Question
+from resume_tailor.service import applications as apps
+from resume_tailor.service import profile as profiles
 from tests.conftest import LETTER_MD, REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
 
-    from resume_tailor.profile import Profile
+    from resume_tailor.profile.models import Profile
 
 EXAMPLE_PROFILE = REPO_ROOT / "templates" / "master-profile.example.yaml"
+EXAMPLE_YAML = EXAMPLE_PROFILE.read_text(encoding="utf-8")
+BARE_YAML = "\n".join(line for line in EXAMPLE_YAML.splitlines() if not line.startswith("#"))
+UPDATED_YAML = BARE_YAML.replace(
+    "Mentored 4 engineers; two were promoted within a year.",
+    "Mentored 4 engineers; two were promoted within a year, one to staff.",
+)
 
 POSTING = """\
 Staff Backend Engineer at Acme
 
 We need someone strong in Python and Kubernetes to own our payments platform.
-Experience with Terraform and Kafka is required.
 """
 
-FIT_REPORT = "## Fit\n\nStrong match on backend and cloud."
-LINKEDIN = "## Headline\n\nStaff Backend Engineer.\n"
-
-
-def fake_result(**overrides: str) -> TailorResult:
-    """Build a generated application that the profile really does support."""
-    fields: dict[str, str] = {
-        "company": "Acme Corp",
-        "role": "Staff Backend Engineer",
-        "resume": RESUME_MD,
-        "fit_report": FIT_REPORT,
-        "cover_letter": LETTER_MD,
-        "linkedin": LINKEDIN,
-        **overrides,
-    }
-    return TailorResult(usage=Usage(), **fields)
+LINKEDIN_MD = "# Jordan Rivera\n\n## Headline\nSenior Backend Engineer"
 
 
 class FakeModel:
-    """A :class:`LanguageModel` that is never actually consulted here."""
+    """A language model the stand-ins below never actually consult."""
 
     def complete(self, system: str, prompt: str) -> Reply:
         """Return a fixed reply."""
         return Reply(text=f"{system}{prompt}")
 
 
-def install_agent(monkeypatch: pytest.MonkeyPatch, generate: Callable[..., TailorResult]) -> None:
-    """Replace the generation call with a stub, and the editor pass with a pass-through.
+class Agent:
+    """Stand-ins for every model operation the service calls, recording what they were asked.
 
-    Everything above ``agent.tailor`` is deterministic, so the whole service can be exercised
-    without a model, a key, or a network — which is also why the API tests can drive it.
+    Everything above the agent layer is deterministic, so the whole service can be exercised
+    without a model, a key, or a network.
     """
-    monkeypatch.setattr(service, "tailor", generate)
-    monkeypatch.setattr(service, "refine_resume", pass_through)
 
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.general = GeneralResult(RESUME_MD, LINKEDIN_MD)
+        self.tailored = TailorResult(
+            company="Acme Corp",
+            role="Staff Backend Engineer",
+            fit="A strong match on Python; Kafka is the gap.",
+            resume=RESUME_MD,
+            cover_letter=LETTER_MD,
+            questions=("The posting asks for Kafka. Have you used it?",),
+        )
+        self.editor_questions: tuple[str, ...] = ("How many engines ran it?",)
+        self.revise: Callable[[str], str] = lambda text: text.replace("Babbage", "Charles Babbage")
+        self.edits: list[dict[str, Any]] = []
+        self.updates: list[tuple[Answer, ...]] = []
+        self.updated = UPDATED_YAML
+        self.update_error: Exception | None = None
+        self.revise_error: Exception | None = None
+        self.draft = BARE_YAML
+        self.refined = BARE_YAML.replace(
+            "Senior backend engineer with 8 years", "Backend engineer, 8 years"
+        )
+        self.refine_error: Exception | None = None
+        monkeypatch.setattr(apps, "write_general", self._write_general)
+        monkeypatch.setattr(apps, "tailor", self._tailor)
+        monkeypatch.setattr(apps, "edit_documents", self._edit_documents)
+        monkeypatch.setattr(profiles, "update_profile", self._update_profile)
+        monkeypatch.setattr(profiles, "build_profile", self._build_profile)
+        monkeypatch.setattr(profiles, "refine_profile", self._refine_profile)
 
-def pass_through(resume: str, *_: object, **__: object) -> RefineResult:
-    """Return the resume unchanged and ask nothing."""
-    return RefineResult(resume, (), Usage())
-
-
-def draft_of(**overrides: str) -> Callable[..., TailorResult]:
-    """Build an agent stub that always returns the same result."""
-
-    def generate(posting: str, profile: Profile, model: LanguageModel) -> TailorResult:
-        assert posting
+    def _write_general(
+        self, profile: Profile, model: object, *, progress: object = None
+    ) -> GeneralResult:
+        assert callable(progress)
         assert profile.contact.name
-        assert isinstance(model, LanguageModel)
-        return fake_result(**overrides)
+        assert model is not None
+        return self.general
 
-    return generate
+    def _tailor(
+        self, posting: str, profile: Profile, model: object, *, progress: object = None
+    ) -> TailorResult:
+        assert callable(progress)
+        assert posting == POSTING
+        assert profile.contact.name
+        assert model is not None
+        return self.tailored
+
+    def _edit_documents(  # noqa: PLR0913 - mirrors the real signature
+        self,
+        documents: Mapping[str, str],
+        profile: Profile,
+        model: object,
+        *,
+        flagged: str = "",
+        answers: Sequence[Answer] = (),
+        progress: object = None,
+    ) -> EditResult:
+        assert callable(progress)
+        assert model is not None
+        self.edits.append(
+            {
+                "documents": dict(documents),
+                "flagged": flagged,
+                "answers": tuple(answers),
+                "profile": profile,
+            }
+        )
+        if not answers:
+            return EditResult(dict(documents), self.editor_questions)
+        if self.revise_error is not None:
+            raise self.revise_error
+        return EditResult({kind: self.revise(text) for kind, text in documents.items()})
+
+    def _update_profile(
+        self, current: str, answers: Sequence[Answer], model: object, *, progress: object = None
+    ) -> ProfileEdit:
+        assert current and model is not None and callable(progress)
+        self.updates.append(tuple(answers))
+        if self.update_error is not None:
+            raise self.update_error
+        return ProfileEdit(self.updated, loads(self.updated))
+
+    def _build_profile(
+        self, documents: Mapping[str, str], model: object, *, progress: object = None
+    ) -> tuple[str, Usage]:
+        assert documents and model is not None and callable(progress)
+        return self.draft, Usage()
+
+    def _refine_profile(
+        self, draft: str, documents: Mapping[str, str], model: object, *, progress: object = None
+    ) -> ProfileEdit:
+        assert draft == self.draft and documents and model is not None and callable(progress)
+        if self.refine_error is not None:
+            raise self.refine_error
+        return ProfileEdit(self.refined, loads(self.refined), ("Tightened the summary.",))
 
 
-def raising(exc: Exception) -> Callable[..., TailorResult]:
-    """Build an agent stub that fails the way ``exc`` says."""
-
-    def generate(*_: object, **__: object) -> TailorResult:
-        raise exc
-
-    return generate
+@pytest.fixture
+def agent(monkeypatch: pytest.MonkeyPatch) -> Agent:
+    return Agent(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -108,14 +188,47 @@ def applications(tmp_path: Path) -> Path:
     return tmp_path / "applications"
 
 
-def tailor(applications_dir: Path, *, export: bool = False) -> service.Application:
-    """Run a tailoring against the bundled example profile."""
-    return service.tailor_application(
-        POSTING,
-        profile_path=EXAMPLE_PROFILE,
+@pytest.fixture
+def profile_path(tmp_path: Path) -> Path:
+    """Copy the example profile somewhere writable, since answering questions rewrites it."""
+    path = tmp_path / "profile" / "master-profile.yaml"
+    path.parent.mkdir()
+    path.write_text(BARE_YAML, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def answers_log(tmp_path: Path) -> Path:
+    return tmp_path / "raw" / "answers.md"
+
+
+def answering(*replies: str) -> Callable[[tuple[Question, ...]], tuple[Answer, ...]]:
+    """Build an asker that answers each question in turn with ``replies``."""
+
+    def ask(questions: tuple[Question, ...]) -> tuple[Answer, ...]:
+        return tuple(
+            Answer(question, reply) for question, reply in zip(questions, replies, strict=False)
+        )
+
+    return ask
+
+
+def general(applications_dir: Path, profile_path: Path, **options: Any) -> service.Application:
+    return service.general_application(
+        profile_path=profile_path,
         applications_dir=applications_dir,
         model=FakeModel(),
-        export=export,
+        **options,
+    )
+
+
+def tailored(applications_dir: Path, profile_path: Path, **options: Any) -> service.Application:
+    return service.tailor_application(
+        POSTING,
+        profile_path=profile_path,
+        applications_dir=applications_dir,
+        model=FakeModel(),
+        **options,
     )
 
 
@@ -154,221 +267,524 @@ def test_a_very_long_name_is_truncated_without_a_trailing_hyphen() -> None:
     assert not slug.endswith("-")
 
 
-# --- tailor_application ---------------------------------------------------------------------------
-def test_tailoring_writes_all_five_documents(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+# --- the general resume and the LinkedIn profile --------------------------------------------------
+@pytest.mark.usefixtures("agent")
+def test_the_general_run_writes_the_resume_and_the_linkedin_profile(
+    applications: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of())
-    application = tailor(applications)
+    application = general(applications, profile_path, export=False)
+
+    assert application.slug == "general"
+    assert application.directory == applications / "general"
+    assert [path.name for path in application.files] == ["linkedin.md", "resume.md"]
+    assert (application.directory / "linkedin.md").read_text(encoding="utf-8") == LINKEDIN_MD + "\n"
+    assert application.company == application.role == application.fit == ""
+
+
+@pytest.mark.usefixtures("agent")
+def test_the_general_run_exports_the_resume_but_not_the_linkedin_text(
+    applications: Path, profile_path: Path
+) -> None:
+    application = general(applications, profile_path)
+
+    assert [path.name for path in application.files] == [
+        "linkedin.md",
+        "resume.docx",
+        "resume.md",
+        "resume.pdf",
+    ]
+
+
+def test_the_review_fixes_the_mechanical_problems_and_hands_the_rest_to_the_editor(
+    agent: Agent, applications: Path, profile_path: Path
+) -> None:
+    agent.general = GeneralResult(
+        RESUME_MD.replace("Jan 1843 – Present", "Jan 1843 - Present"), LINKEDIN_MD
+    )
+
+    application = general(applications, profile_path, export=False)
+
+    written = (application.directory / "resume.md").read_text(encoding="utf-8")
+    assert "Jan 1843 – Present" in written
+    assert [finding.rule for finding in application.review.applied] == ["dates"]
+    edit = agent.edits[0]
+    assert "Jan 1843 – Present" in edit["documents"][RESUME], "the editor sees the fixed draft"
+    assert edit["documents"][LINKEDIN] == LINKEDIN_MD
+    assert "no-outcome" in edit["flagged"], "and what the mechanical read flagged"
+
+
+def test_without_anyone_to_ask_the_questions_come_back_unasked(
+    agent: Agent, applications: Path, profile_path: Path
+) -> None:
+    application = general(applications, profile_path, export=False)
+
+    assert application.asked is False
+    assert application.update is None
+    assert Question("How many engines ran it?") in application.questions
+    assert len(agent.edits) == 1, "no revision without answers"
+
+
+def test_a_clean_review_asks_nothing(agent: Agent, applications: Path, profile_path: Path) -> None:
+    agent.editor_questions = ()
+    clean = RESUME_MD.replace(
+        "- Corresponded with Babbage on engine semantics.",
+        "- Corresponded with Babbage on engine semantics, fixing 3 of its errors.",
+    )
+    agent.general = GeneralResult(clean, LINKEDIN_MD)
+
+    def never(_: tuple[Question, ...]) -> tuple[Answer, ...]:
+        raise AssertionError
+
+    application = general(applications, profile_path, export=False, ask=never)
+    assert application.questions == ()
+    assert application.asked is False
+
+
+def test_answers_go_into_the_profile_and_then_into_the_documents(
+    agent: Agent, applications: Path, profile_path: Path, answers_log: Path
+) -> None:
+    application = general(
+        applications,
+        profile_path,
+        export=False,
+        ask=answering("Three engines ran it."),
+        answers_path=answers_log,
+    )
+
+    assert application.asked is True
+    assert application.update is not None
+    assert [answer.text for answer in application.update.answers] == ["Three engines ran it."]
+    assert "one to staff" in profile_path.read_text(encoding="utf-8")
+    assert application.update.backup is not None, "the profile the user had is kept"
+    assert application.update.backup.read_text(encoding="utf-8").endswith(BARE_YAML)
+    assert application.update.changes == ()
+    assert "Three engines ran it." in answers_log.read_text(encoding="utf-8")
+    revision = agent.edits[1]
+    assert revision["answers"] == application.update.answers
+    assert "one to staff" in revision["profile"].experience[0].roles[0].highlights[2].text
+    written = (application.directory / "resume.md").read_text(encoding="utf-8")
+    assert "Charles Babbage" in written, "the revision is what ships"
+
+
+def test_answers_that_decline_are_logged_but_change_nothing(
+    agent: Agent, applications: Path, profile_path: Path, answers_log: Path
+) -> None:
+    application = general(
+        applications, profile_path, export=False, ask=answering("no"), answers_path=answers_log
+    )
+
+    assert application.asked is True
+    assert application.update is None
+    assert agent.updates == []
+    assert profile_path.read_text(encoding="utf-8") == BARE_YAML
+    assert "**A:** no" in answers_log.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("agent")
+def test_skipping_every_question_logs_nothing(
+    applications: Path, profile_path: Path, answers_log: Path
+) -> None:
+    general(applications, profile_path, export=False, ask=answering(""), answers_path=answers_log)
+    assert not answers_log.exists()
+
+
+def test_answers_that_cannot_be_recorded_leave_the_profile_and_the_documents_alone(
+    agent: Agent, applications: Path, profile_path: Path, answers_log: Path
+) -> None:
+    agent.update_error = FabricationError("recorded a figure nobody said")
+
+    application = general(
+        applications, profile_path, export=False, ask=answering("Three."), answers_path=answers_log
+    )
+
+    assert application.update is not None
+    assert application.update.error == "recorded a figure nobody said"
+    assert application.problems == (
+        "your answers could not be recorded in the profile: recorded a figure nobody said",
+    )
+    assert profile_path.read_text(encoding="utf-8") == BARE_YAML
+    assert len(agent.edits) == 1
+    assert "Three." in answers_log.read_text(encoding="utf-8"), "the answer itself is safe"
+
+
+def test_a_revision_that_fails_still_ships_the_reviewed_documents(
+    agent: Agent, applications: Path, profile_path: Path, answers_log: Path
+) -> None:
+    agent.revise_error = ModelError("the model went away")
+
+    application = general(
+        applications, profile_path, export=False, ask=answering("Three."), answers_path=answers_log
+    )
+
+    assert application.problems == (
+        (
+            "your answers are in the profile, but the documents do not use them yet: the model "
+            "went away"
+        ),
+    )
+    assert "one to staff" in profile_path.read_text(encoding="utf-8")
+    assert "Charles Babbage" not in (application.directory / "resume.md").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.usefixtures("agent")
+def test_regenerating_the_general_folder_replaces_it_whole(
+    applications: Path, profile_path: Path
+) -> None:
+    first = general(applications, profile_path, export=False)
+    (first.directory / "stale.txt").write_text("old", encoding="utf-8")
+
+    second = general(applications, profile_path, export=False)
+
+    assert [path.name for path in second.files] == ["linkedin.md", "resume.md"]
+
+
+def test_an_invalid_profile_fails_before_the_model_is_asked(
+    monkeypatch: pytest.MonkeyPatch, applications: Path, tmp_path: Path
+) -> None:
+    def never(*_: object, **__: object) -> object:
+        raise AssertionError
+
+    monkeypatch.setattr(apps, "write_general", never)
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("summary: []\n", encoding="utf-8")
+
+    with pytest.raises(ProfileError):
+        general(applications, broken)
+    assert not applications.exists()
+
+
+# --- a tailored application -----------------------------------------------------------------------
+def test_tailoring_writes_the_posting_the_resume_and_the_cover_letter(
+    agent: Agent, applications: Path, profile_path: Path
+) -> None:
+    application = tailored(applications, profile_path, export=False)
 
     assert application.slug == "acme-corp-staff-backend-engineer"
-    assert application.company == "Acme Corp"
-    assert application.role == "Staff Backend Engineer"
-    assert application.directory == applications / application.slug
+    assert (application.company, application.role) == ("Acme Corp", "Staff Backend Engineer")
+    assert application.fit == "A strong match on Python; Kafka is the gap."
     assert [path.name for path in application.files] == [
         "cover-letter.md",
-        "fit-report.md",
         "job-description.md",
-        "linkedin.md",
         "resume.md",
     ]
     assert (application.directory / "job-description.md").read_text(encoding="utf-8") == POSTING
+    assert agent.edits[0]["documents"][COVER_LETTER] == LETTER_MD
 
 
-def test_every_document_ends_in_a_newline(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
-) -> None:
-    install_agent(monkeypatch, draft_of(linkedin="no trailing newline"))
-    application = tailor(applications)
-    for path in application.files:
-        assert path.read_text(encoding="utf-8").endswith("\n")
+@pytest.mark.usefixtures("agent")
+def test_the_writer_s_questions_are_asked_first(applications: Path, profile_path: Path) -> None:
+    application = tailored(applications, profile_path, export=False)
+
+    assert [question.text for question in application.questions[:2]] == [
+        "The posting asks for Kafka. Have you used it?",
+        "How many engines ran it?",
+    ]
 
 
-def test_the_fit_report_carries_the_computed_coverage_under_the_models_prose(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
-) -> None:
-    install_agent(monkeypatch, draft_of())
-    application = tailor(applications)
-    report = (application.directory / "fit-report.md").read_text(encoding="utf-8")
-
-    narrative, _, coverage = report.partition("\n---\n")
-    assert narrative.strip() == FIT_REPORT
-    assert "## Keyword coverage" in coverage
-    # Deterministic, not prose: the posting's Kubernetes really is in the example profile.
-    assert "Kubernetes" in coverage
-
-
+@pytest.mark.usefixtures("agent")
 def test_exporting_renders_the_resume_and_the_letter_single_column(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    applications: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of())
-    application = tailor(applications, export=True)
+    application = tailored(applications, profile_path)
 
     names = {path.name for path in application.files}
     assert {"resume.docx", "resume.pdf", "cover-letter.docx", "cover-letter.pdf"} <= names
     assert not any("polished" in name for name in names), "the two-column design is opt-in"
 
 
-def test_tailoring_the_same_job_twice_replaces_the_folder(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
-) -> None:
-    install_agent(monkeypatch, draft_of())
-    first = tailor(applications)
-    (first.directory / "notes-i-left-behind.md").write_text("stale", encoding="utf-8")
-
-    second = tailor(applications)
-    assert second.directory == first.directory
-    assert "notes-i-left-behind.md" not in {path.name for path in second.files}
+@pytest.mark.usefixtures("agent")
+def test_every_document_ends_in_a_newline(applications: Path, profile_path: Path) -> None:
+    for path in tailored(applications, profile_path, export=False).files:
+        assert path.read_text(encoding="utf-8").endswith("\n")
 
 
+@pytest.mark.usefixtures("agent")
 def test_a_generation_failure_leaves_no_folder_at_all(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    monkeypatch: pytest.MonkeyPatch, applications: Path, profile_path: Path
 ) -> None:
     """The failure this guard exists for: a half-written folder is one a user might send."""
-    install_agent(monkeypatch, raising(FabricationError("invented a metric")))
 
+    def invent(*_: object, **__: object) -> TailorResult:
+        msg = "invented a metric"
+        raise FabricationError(msg)
+
+    monkeypatch.setattr(apps, "tailor", invent)
     with pytest.raises(FabricationError):
-        tailor(applications)
-    # Not even the parent: nothing is created until there is something true to put in it.
+        tailored(applications, profile_path)
     assert not applications.exists()
 
 
 def test_an_export_failure_leaves_the_previous_version_untouched(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    agent: Agent, applications: Path, profile_path: Path
 ) -> None:
-    """A broken re-tailor must not cost the user the resume they already had."""
-    install_agent(monkeypatch, draft_of())
-    good = tailor(applications, export=False)
+    """A broken re-run must not cost the user the resume they already had."""
+    good = tailored(applications, profile_path, export=False)
     original = (good.directory / "resume.md").read_text(encoding="utf-8")
 
-    install_agent(monkeypatch, draft_of(resume="not a resume at all\n"))
+    agent.tailored = TailorResult(
+        "Acme Corp", "Staff Backend Engineer", "", "not a resume\n", LETTER_MD
+    )
     with pytest.raises(DocumentError):
-        tailor(applications, export=True)
+        tailored(applications, profile_path, export=True)
 
     assert (good.directory / "resume.md").read_text(encoding="utf-8") == original
     assert [child.name for child in applications.iterdir()] == [good.slug]
 
 
+@pytest.mark.usefixtures("agent")
 def test_a_write_failure_is_reported_cleanly_and_cleans_up(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    monkeypatch: pytest.MonkeyPatch, applications: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of())
+    real = Path.write_text
 
-    def refuse(*_: object, **__: object) -> None:
-        raise OSError(13, "Permission denied")
+    def refuse(self: Path, *args: Any, **kwargs: Any) -> int:
+        if applications in self.parents:
+            raise OSError(13, "Permission denied")
+        return real(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", refuse)
     with pytest.raises(RenderError, match="Permission denied"):
-        tailor(applications)
+        tailored(applications, profile_path)
     assert list(applications.iterdir()) == []
 
 
+@pytest.mark.usefixtures("agent")
 def test_an_unwritable_applications_directory_is_reported_cleanly(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of())
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("in the way", encoding="utf-8")
 
     with pytest.raises(RenderError, match="cannot write to"):
-        tailor(blocked)
+        tailored(blocked, profile_path)
 
 
+@pytest.mark.usefixtures("agent")
 def test_a_folder_that_cannot_be_replaced_is_reported_cleanly(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    applications: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of())
     applications.mkdir(parents=True)
     # A plain file where the folder should go: nothing can be removed or renamed onto it.
     (applications / "acme-corp-staff-backend-engineer").write_text("a file", encoding="utf-8")
 
     with pytest.raises(RenderError, match="cannot write"):
-        tailor(applications)
+        tailored(applications, profile_path)
     assert [child.name for child in applications.iterdir()] == ["acme-corp-staff-backend-engineer"]
 
 
 def test_a_draft_with_no_company_or_role_still_lands_somewhere(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+    agent: Agent, applications: Path, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of(company="", role=""))
-    application = tailor(applications)
+    agent.tailored = TailorResult("", "", "", RESUME_MD, LETTER_MD)
+    application = tailored(applications, profile_path, export=False)
     assert application.slug == "application"
-    assert application.directory.is_dir()
 
 
-def test_an_invalid_profile_fails_before_the_model_is_asked(
-    monkeypatch: pytest.MonkeyPatch, applications: Path, tmp_path: Path
+# --- building the profile -------------------------------------------------------------------------
+@pytest.fixture
+def raw() -> service.RawDocuments:
+    return service.RawDocuments({"linkedin.txt": "Jordan Rivera, Senior Backend Engineer"})
+
+
+def build(raw: service.RawDocuments, out: Path, **options: Any) -> service.ProfileBuild:
+    return service.build_master_profile(raw, out=out, model=FakeModel(), **options)
+
+
+def test_nothing_to_read_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ProfileError, match="no readable documents"):
+        build(service.RawDocuments({}), tmp_path / "p.yaml")
+
+
+@pytest.mark.usefixtures("agent")
+def test_an_existing_profile_is_never_replaced_without_force(
+    raw: service.RawDocuments, profile_path: Path
 ) -> None:
-    install_agent(monkeypatch, raising(AssertionError("the agent must not be reached")))
-    broken = tmp_path / "broken.yaml"
-    broken.write_text("summary: []\n", encoding="utf-8")
-
-    with pytest.raises(ProfileError):
-        service.tailor_application(
-            POSTING,
-            profile_path=broken,
-            applications_dir=applications,
-            model=FakeModel(),
-        )
+    with pytest.raises(ProfileError, match="--force"):
+        build(raw, profile_path)
+    assert profile_path.read_text(encoding="utf-8") == BARE_YAML
 
 
-# --- list_applications ----------------------------------------------------------------------------
-def test_listing_a_missing_directory_is_empty_not_an_error(tmp_path: Path) -> None:
-    assert service.list_applications(tmp_path / "nothing-here") == ()
-
-
-def test_listing_returns_folders_in_slug_order_and_skips_stray_files(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
+@pytest.mark.usefixtures("agent")
+def test_the_profile_is_drafted_refined_and_written(
+    raw: service.RawDocuments, tmp_path: Path
 ) -> None:
-    install_agent(monkeypatch, draft_of(company="Zebra"))
-    zebra = tailor(applications)
-    install_agent(monkeypatch, draft_of(company="Acme"))
-    acme = tailor(applications)
-    (applications / "README.md").write_text("not an application", encoding="utf-8")
-    (applications / ".acme-in-flight").mkdir()
+    out = tmp_path / "profile" / "master-profile.yaml"
 
-    listed = service.list_applications(applications)
-    assert [item.slug for item in listed] == [acme.slug, zebra.slug]
-    assert listed[0].company == ""
-    assert listed[0].role == ""
-    assert [path.name for path in listed[0].files] == [path.name for path in acme.files]
+    built = build(raw, out)
 
-
-# --- check_profile and match_only -----------------------------------------------------------------
-def test_the_profile_summary_counts_what_a_ui_needs_to_show() -> None:
-    summary = service.check_profile(EXAMPLE_PROFILE)
-    assert summary["name"] == "Jordan Rivera"
-    assert summary["employers"] == 2
-    assert summary["roles"] == 2
-    assert summary["technologies"] == 10
-    assert summary["path"] == str(EXAMPLE_PROFILE)
+    written = out.read_text(encoding="utf-8")
+    assert written.startswith("# yaml-language-server: $schema=")
+    assert "Backend engineer, 8 years" in written
+    assert built.path == out
+    assert built.backup is None
+    assert built.changes == ("Tightened the summary.",)
+    assert built.difference == ("summary: rewritten",)
+    assert built.refine_error == ""
+    assert built.questions == (
+        Question(
+            "Confirm the exact settlement latency numbers before quoting them in an interview."
+        ),
+    ), "the profile's open notes come back as questions"
+    assert built.update is None
 
 
-def test_the_profile_summary_surfaces_unconfirmed_notes() -> None:
-    """Notes are the claims a resume must not print, so a UI has to be able to see them."""
-    notes = service.check_profile(EXAMPLE_PROFILE)["notes"]
-    assert isinstance(notes, list)
-    assert any("Confirm" in note for note in notes)
+@pytest.mark.usefixtures("agent")
+def test_forcing_a_rebuild_keeps_the_profile_it_replaces(
+    raw: service.RawDocuments, profile_path: Path
+) -> None:
+    built = build(raw, profile_path, force=True)
+
+    assert built.backup is not None
+    assert built.backup.read_text(encoding="utf-8") == BARE_YAML
 
 
-def test_the_profile_summary_rejects_an_invalid_profile(tmp_path: Path) -> None:
-    broken = tmp_path / "broken.yaml"
-    broken.write_text("summary: []\n", encoding="utf-8")
-    with pytest.raises(ProfileError):
-        service.check_profile(broken)
+def test_a_refinement_that_fails_its_checks_keeps_the_draft(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
+) -> None:
+    agent.refine_error = FabricationError("lost the figure '38%'")
+    out = tmp_path / "master-profile.yaml"
+
+    built = build(raw, out)
+
+    assert built.refine_error == "lost the figure '38%'"
+    assert "Senior backend engineer with 8 years" in out.read_text(encoding="utf-8")
+    assert built.changes == built.difference == ()
 
 
-def test_matching_needs_no_model_and_returns_markdown() -> None:
-    markdown = service.match_only(POSTING, EXAMPLE_PROFILE)
-    assert markdown.startswith("## Keyword coverage")
-    assert "Kubernetes" in markdown
+@pytest.mark.usefixtures("agent")
+def test_the_open_questions_are_asked_and_answered_into_the_profile(
+    raw: service.RawDocuments, tmp_path: Path, answers_log: Path
+) -> None:
+    out = tmp_path / "master-profile.yaml"
+
+    built = build(raw, out, ask=answering("It was 38%, measured at p95."), answers_path=answers_log)
+
+    assert built.update is not None
+    assert built.update.backup is None, "no backup of a file this same run just wrote"
+    assert "one to staff" in out.read_text(encoding="utf-8")
+    assert list(tmp_path.glob("*.bak")) == []
+    assert "measured at p95" in answers_log.read_text(encoding="utf-8")
 
 
-# --- reading profile/raw/ ------------------------------------------------------------------
+@pytest.mark.usefixtures("agent")
+def test_declining_every_open_question_leaves_the_refined_profile(
+    raw: service.RawDocuments, tmp_path: Path, answers_log: Path
+) -> None:
+    out = tmp_path / "master-profile.yaml"
+
+    built = build(raw, out, ask=answering("not sure"), answers_path=answers_log)
+
+    assert built.update is None
+    assert "Backend engineer, 8 years" in out.read_text(encoding="utf-8")
+
+
+def test_an_update_that_fails_during_a_build_is_reported_not_raised(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path, answers_log: Path
+) -> None:
+    agent.update_error = ModelError("rate limited")
+    out = tmp_path / "master-profile.yaml"
+
+    built = build(raw, out, ask=answering("Yes."), answers_path=answers_log)
+
+    assert built.update is not None
+    assert built.update.error == "rate limited"
+    assert "Backend engineer, 8 years" in out.read_text(encoding="utf-8")
+
+
+def test_a_profile_with_nothing_open_asks_nothing(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
+) -> None:
+    agent.refined = "\n".join(
+        line for line in agent.refined.splitlines() if "Confirm" not in line and line != "notes:"
+    )
+
+    def never(_: tuple[Question, ...]) -> tuple[Answer, ...]:
+        raise AssertionError
+
+    built = build(raw, tmp_path / "p.yaml", ask=never)
+    assert built.questions == ()
+
+
+# --- recording answers ----------------------------------------------------------------------------
+def test_answers_are_logged_as_a_dated_section(tmp_path: Path) -> None:
+    log = tmp_path / "raw" / "answers.md"
+    question = Question("What did this achieve?", "Built the thing")
+
+    service.record_answers(log, "applications/general", (Answer(question, "Cut costs 10%."),))
+    service.record_answers(log, "applications/general", (Answer(Question("Why?"), "Because."),))
+
+    text = log.read_text(encoding="utf-8")
+    assert text.count("· applications/general") == 2
+    assert (
+        '- **Q:** What did this achieve? (about: "Built the thing")\n  **A:** Cut costs 10%.'
+        in text
+    )
+    assert "- **Q:** Why?\n  **A:** Because." in text
+
+
+def test_an_unwritable_answers_log_is_reported_cleanly(tmp_path: Path) -> None:
+    blocked = tmp_path / "file"
+    blocked.write_text("in the way", encoding="utf-8")
+    with pytest.raises(RenderError, match="cannot write"):
+        service.record_answers(blocked / "answers.md", "x", (Answer(Question("Q?"), "A."),))
+
+
+@pytest.mark.usefixtures("agent")
+def test_nothing_substantive_means_no_update(profile_path: Path, tmp_path: Path) -> None:
+    log = tmp_path / "answers.md"
+    assert service.apply_answers(profile_path, (), FakeModel(), answers_path=log) is None
+    assert not log.exists()
+
+
+# --- writing the profile --------------------------------------------------------------------------
+def test_a_written_profile_points_an_editor_at_the_schema(tmp_path: Path) -> None:
+    out = tmp_path / "nested" / "master-profile.yaml"
+
+    assert service.write_profile(out, "summary: s") is None
+
+    first, second = out.read_text(encoding="utf-8").splitlines()
+    assert first.startswith("# yaml-language-server: $schema=")
+    assert first.endswith("schema/master-profile.schema.json")
+    assert (out.parent / first.split("=", 1)[1]).resolve() == (
+        REPO_ROOT / "schema" / "master-profile.schema.json"
+    ).resolve()
+    assert second == "summary: s"
+
+
+def test_a_profile_that_already_points_at_the_schema_is_left_as_it_is(tmp_path: Path) -> None:
+    out = tmp_path / "master-profile.yaml"
+    service.write_profile(out, EXAMPLE_YAML)
+    assert out.read_text(encoding="utf-8") == EXAMPLE_YAML
+
+
+def test_without_a_schema_to_point_at_no_comment_is_added(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(profiles, "SCHEMA_PATH", tmp_path / "absent.json")
+    out = tmp_path / "master-profile.yaml"
+    service.write_profile(out, "summary: s\n")
+    assert out.read_text(encoding="utf-8") == "summary: s\n"
+
+
+def test_a_profile_that_cannot_be_written_is_reported_cleanly(tmp_path: Path) -> None:
+    blocked = tmp_path / "file"
+    blocked.write_text("in the way", encoding="utf-8")
+    with pytest.raises(RenderError, match="cannot write"):
+        service.write_profile(blocked / "master-profile.yaml", "summary: s")
+
+
+def test_a_backup_can_be_skipped(tmp_path: Path) -> None:
+    out = tmp_path / "master-profile.yaml"
+    out.write_text("old", encoding="utf-8")
+    assert service.write_profile(out, "summary: s", back_up=False) is None
+    assert list(tmp_path.glob("*.bak")) == []
+
+
+# --- reading profile/raw/ -------------------------------------------------------------------------
 def test_raw_documents_are_extracted_from_docx_and_text(tmp_path: Path) -> None:
     from docx import Document as new_docx
-
-    from resume_tailor.service import read_raw_documents
 
     raw = tmp_path / "raw"
     raw.mkdir()
@@ -380,15 +796,13 @@ def test_raw_documents_are_extracted_from_docx_and_text(tmp_path: Path) -> None:
     table.rows[0].cells[0].text = "Charter Communications"
     document.save(str(raw / "old.docx"))
 
-    found = read_raw_documents(raw).documents
+    found = service.read_raw_documents(raw).documents
     assert set(found) == {"notes.md", "old.docx", "resume.txt"}
     assert "Charter Communications" in found["old.docx"], "table cells carry the real content"
 
 
 def test_unreadable_and_hidden_files_are_reported_not_fatal(tmp_path: Path) -> None:
     """A stray .DS_Store must not stop a build — but a file that yielded nothing is named."""
-    from resume_tailor.service import read_raw_documents
-
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / ".DS_Store").write_bytes(b"\x00\x01")
@@ -399,194 +813,68 @@ def test_unreadable_and_hidden_files_are_reported_not_fatal(tmp_path: Path) -> N
     (raw / "good.md").write_text("Real content.\n", encoding="utf-8")
     (raw / "nested").mkdir()
 
-    found = read_raw_documents(raw)
+    found = service.read_raw_documents(raw)
     assert set(found.documents) == {"good.md"}
-    # Hidden files and folders are noise; a document the user meant to add is not.
     assert found.skipped == ("broken.docx", "empty.md", "portfolio.rtf", "scan.pdf")
 
 
 def test_the_projects_own_raw_readme_is_never_career_history(tmp_path: Path) -> None:
     """Feeding the instructions to the model invites the model to write from them."""
-    from resume_tailor.service import read_raw_documents
-
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "README.md").write_text("# Drop your background materials here\n", encoding="utf-8")
     (raw / "notes.md").write_text("Real content.\n", encoding="utf-8")
 
-    found = read_raw_documents(raw)
+    found = service.read_raw_documents(raw)
     assert set(found.documents) == {"notes.md"}
-    assert found.skipped == (), "skipping it deliberately is not something to warn about"
+    assert found.skipped == ()
 
 
 def test_a_pdf_resume_is_read(tmp_path: Path) -> None:
-    """Most people's only resume is a PDF; silently ignoring it built half a profile."""
-    from resume_tailor.service import read_raw_documents
-
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "resume.pdf").write_bytes(pdf_bytes("Lead Engineer at Charter Communications"))
 
-    found = read_raw_documents(raw)
+    found = service.read_raw_documents(raw)
     assert "Charter Communications" in found.documents["resume.pdf"]
-    assert found.skipped == ()
 
 
 def test_a_scanned_pdf_with_no_text_layer_is_reported(tmp_path: Path) -> None:
-    """A scan yields nothing; saying so is the whole point of the skipped list."""
-    from resume_tailor.service import read_raw_documents
-
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "scan.pdf").write_bytes(pdf_bytes(""))
 
-    found = read_raw_documents(raw)
-    assert found.documents == {}
-    assert found.skipped == ("scan.pdf",)
-
-
-def test_a_corrupt_pdf_is_reported_not_fatal(tmp_path: Path) -> None:
-    from resume_tailor.service import read_raw_documents
-
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "broken.pdf").write_bytes(b"%PDF-1.4 truncated nonsense")
-    assert read_raw_documents(raw).skipped == ("broken.pdf",)
+    found = service.read_raw_documents(raw)
+    assert (found.documents, found.skipped) == ({}, ("scan.pdf",))
 
 
 def test_a_missing_raw_directory_is_empty(tmp_path: Path) -> None:
-    from resume_tailor.service import read_raw_documents
-
-    found = read_raw_documents(tmp_path / "absent")
+    found = service.read_raw_documents(tmp_path / "absent")
     assert (found.documents, found.skipped) == ({}, ())
 
 
 def test_undecodable_text_is_skipped(tmp_path: Path) -> None:
-    from resume_tailor.service import read_raw_documents
-
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "bad.txt").write_bytes(b"\xff\xfe\x00\x80invalid")
-    assert read_raw_documents(raw).documents == {}
+    assert service.read_raw_documents(raw).documents == {}
 
 
-# --- general_resume -------------------------------------------------------------------------------
-def general(applications_dir: Path, **options: object) -> service.Application:
-    """Render the untailored resume from the bundled example profile."""
-    return service.general_resume(
-        profile_path=EXAMPLE_PROFILE,
-        applications_dir=applications_dir,
-        **options,  # type: ignore[arg-type]
-    )
-
-
-def test_the_general_resume_lands_in_its_own_folder_holding_only_the_resume(
-    applications: Path,
+@pytest.mark.usefixtures("agent")
+def test_a_long_list_of_open_notes_is_capped_at_the_most_consequential(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
 ) -> None:
-    application = general(applications, export=False)
-    assert application.slug == "general"
-    assert application.company == ""
-    assert application.role == ""
-    assert application.directory == applications / "general"
-    assert [path.name for path in application.files] == ["resume.md"]
-    text = (application.directory / "resume.md").read_text(encoding="utf-8")
-    assert text.startswith("# Jordan Rivera\n")
-    assert text.endswith("\n")
+    """Notes come most consequential first; a build asks the first few, not a questionnaire."""
+    notes = "\n".join(f"  - Question {index}?" for index in range(12))
+    agent.refined = agent.refined.split("notes:")[0] + f"notes:\n{notes}\n"
+    asked: list[tuple[Question, ...]] = []
 
+    def ask(questions: tuple[Question, ...]) -> tuple[Answer, ...]:
+        asked.append(questions)
+        return ()
 
-def test_the_general_resume_exports_word_and_pdf_by_default(applications: Path) -> None:
-    application = general(applications)
-    assert [path.name for path in application.files] == ["resume.docx", "resume.md", "resume.pdf"]
+    built = build(raw, tmp_path / "p.yaml", ask=ask)
 
-
-def test_the_general_resume_takes_its_shape_from_the_caller(applications: Path) -> None:
-    from resume_tailor.profile import ResumeShape
-
-    shape = ResumeShape(title="Engineer", since="2022")
-    application = general(applications, shape=shape, export=False)
-    text = (application.directory / "resume.md").read_text(encoding="utf-8")
-    assert text.splitlines()[1] == "Engineer"
-    assert "Northwind Payments" in text
-    assert "Cedar Analytics" not in text
-
-
-def test_regenerating_the_general_resume_replaces_the_folder_whole(applications: Path) -> None:
-    """The profile is the place to edit: the Markdown is regenerated, not merged."""
-    first = general(applications, export=False)
-    (first.directory / "resume.md").write_text("edited by hand\n", encoding="utf-8")
-    (first.directory / "stale.txt").write_text("old", encoding="utf-8")
-
-    second = general(applications, export=False)
-    assert second.directory == first.directory
-    assert [path.name for path in second.files] == ["resume.md"]
-    assert (second.directory / "resume.md").read_text(encoding="utf-8").startswith("# Jordan")
-
-
-def test_the_general_resume_rejects_an_invalid_profile_before_writing_anything(
-    applications: Path, tmp_path: Path
-) -> None:
-    broken = tmp_path / "broken.yaml"
-    broken.write_text("summary: []\n", encoding="utf-8")
-    with pytest.raises(ProfileError):
-        service.general_resume(profile_path=broken, applications_dir=applications)
-    assert not applications.exists()
-
-
-# --- the second read ------------------------------------------------------------------------------
-def test_tailoring_gives_the_draft_a_second_read(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
-) -> None:
-    """Mechanical fixes land in the file, the editor's questions land in the report and result."""
-    flawed = RESUME_MD.replace("Jan 1843 – Present", "Jan 1843 - Present")
-    install_agent(monkeypatch, draft_of(resume=flawed))
-
-    def editor(resume: str, *_: object, **__: object) -> RefineResult:
-        return RefineResult(
-            resume.replace("Corresponded with", "Wrote to"), ("Which year?",), Usage()
-        )
-
-    monkeypatch.setattr(service, "refine_resume", editor)
-    application = tailor(applications)
-
-    written = (application.directory / "resume.md").read_text(encoding="utf-8")
-    assert "Jan 1843 – Present" in written
-    assert "Wrote to Babbage" in written
-    assert [finding.rule for finding in application.review.applied] == ["dates"]
-    assert "Which year?" in [finding.message for finding in application.review.questions]
-    report = (application.directory / "fit-report.md").read_text(encoding="utf-8")
-    assert "## Readability review" in report
-    assert "- Which year?" in report or "editor: Which year?" in report
-
-
-def test_tailoring_can_skip_the_editor(monkeypatch: pytest.MonkeyPatch, applications: Path) -> None:
-    install_agent(monkeypatch, draft_of())
-
-    def never(*_: object, **__: object) -> RefineResult:
-        msg = "the editor must not be consulted"
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(service, "refine_resume", never)
-    application = service.tailor_application(
-        POSTING,
-        profile_path=EXAMPLE_PROFILE,
-        applications_dir=applications,
-        model=FakeModel(),
-        export=False,
-        refine=False,
-    )
-    assert isinstance(application.review, Review)
-    assert application.review.applied == ()
-
-
-def test_the_general_resume_carries_its_review(applications: Path) -> None:
-    application = general(applications, export=False)
-    assert isinstance(application.review, Review)
-    assert application.review.fixes == ()
-
-
-def test_a_listed_application_has_an_empty_review(
-    monkeypatch: pytest.MonkeyPatch, applications: Path
-) -> None:
-    install_agent(monkeypatch, draft_of())
-    tailor(applications)
-    assert service.list_applications(applications)[0].review == Review()
+    assert [q.text for q in asked[0]] == [f"Question {index}?" for index in range(8)]
+    assert built.questions == asked[0]
+    assert len(built.review.questions) == 12, "the rest stay in notes"

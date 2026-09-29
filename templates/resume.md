@@ -6,11 +6,11 @@
   Syntax:
     # Full Name                     the name (one, first line)
     lines until the first blank     header lines — a target title, then the contact line
-    a header line with any "|"      treated as contact details (small and semibold; the rail
-                                    in the two-column version)
-                                    so keep pipes out of the target-title line
+    a header line with any "|"      treated as contact details (the rail in the two-column
+                                    version), so keep pipes out of the target-title line
     ## Section                      section heading (Summary, Skills, Experience, Education, …)
     ### Entry Title                 a role, degree, project, or certification
+    ### **Title** – Company         bold only the job title (or degree); the company stays regular
     a plain line right after ###    the dates/location line (italic)
     **Label:** a, b, c              a skills line: bold label + comma-separated items
     - bullet  (or * bullet)         a bullet point
@@ -50,7 +50,7 @@ mentoring teams toward faster, safer delivery.
 
 ## Experience
 
-### Northwind Payments — Senior Backend Engineer
+### **Senior Backend Engineer** – Northwind Payments
 Austin, TX | Mar 2021 – Present
 - **Settlement Throughput:** Redesigned the settlement pipeline to process 4M+ daily transactions, cutting end-to-end latency 38% (820ms → 510ms).
 - **Service Decomposition:** Led migration from a monolith to 6 Go microservices, reducing deploy time from 2 days to under 1 hour.
@@ -58,7 +58,7 @@ Austin, TX | Mar 2021 – Present
 - **Mentorship:** Mentored 4 engineers; two were promoted within a year.
 *Tech Stack — Go, Python, PostgreSQL, Kafka, AWS (ECS, Lambda, RDS), Terraform, GitHub Actions*
 
-### Cedar Analytics — Backend Engineer
+### **Backend Engineer** – Cedar Analytics
 Remote | Jun 2018 – Feb 2021
 - **Event Pipeline:** Built a Kafka-based event pipeline ingesting 500M events/day with 99.98% delivery reliability.
 - **Cost Reduction:** Cut monthly AWS spend 22% (~$14k/mo) by right-sizing services and adding autoscaling.
@@ -67,8 +67,8 @@ Remote | Jun 2018 – Feb 2021
 
 ## Education
 
-### B.S. Computer Science
-University of Texas at Austin, 2016
+### **B.S. Computer Science** – University of Texas at Austin
+Austin, TX | 2016
 
 ## Certifications
 - AWS Certified Solutions Architect – Associate — Amazon — 2022

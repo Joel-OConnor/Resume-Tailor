@@ -2,8 +2,8 @@
 # Example master profile — copy to profile/master-profile.yaml and replace with your own history.
 #
 #   cp templates/master-profile.example.yaml profile/master-profile.yaml
-#   make profile-check     # validate
-#   make profile-md        # readable Markdown view
+#   .venv/bin/resume-tailor profile validate   # validate and audit
+#   .venv/bin/resume-tailor profile render     # readable Markdown view
 #
 # Everything in this file is fictional. Validated against schema/master-profile.schema.json.
 
@@ -79,6 +79,11 @@ technologies:
         level: proficient
         years: 5
         used_at: [northwind-payments, cedar-analytics]
+      - name: Amazon DynamoDB
+        aliases: [DynamoDB]
+        level: working
+        years: 2
+        used_at: [cedar-analytics]
 
   - group: Practices
     items:

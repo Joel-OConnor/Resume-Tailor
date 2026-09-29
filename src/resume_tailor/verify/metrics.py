@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from resume_tailor.profile.models import Profile
     from resume_tailor.verify.source import Line, Source
 
-__all__ = ["check_metrics", "supported_metrics"]
+__all__ = ["check_metrics", "figures_in", "supported_metrics"]
 
 _SCALES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 _DATED_AREAS = frozenset({Area.EXPERIENCE, Area.EDUCATION})
@@ -69,6 +69,20 @@ class _Figure:
 def supported_metrics(profile: Profile) -> frozenset[str]:
     """Return every figure the profile itself states, normalised for comparison."""
     return frozenset(figure.value for text in _profile_text(profile) for figure in _figures(text))
+
+
+def figures_in(text: str, lexicon: Lexicon) -> dict[str, str]:
+    """Return every figure ``text`` claims, as normalised value to the text that wrote it.
+
+    The same reading :func:`check_metrics` applies to a resume line, exemptions included, so a
+    technology name (``EC2``) or a version (``Python 3``) is never mistaken for a claimed number.
+    """
+    tokens = tokenise(text)
+    return {
+        figure.value: figure.raw
+        for figure in _figures(text)
+        if not _explained(figure, tokens, (), lexicon)
+    }
 
 
 def check_metrics(source: Source, profile: Profile, lexicon: Lexicon) -> list[Violation]:

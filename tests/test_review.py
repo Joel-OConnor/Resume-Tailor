@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from resume_tailor.profile import loader
 from resume_tailor.review import (
+    MAX_QUESTIONS,
+    Answer,
     Finding,
     Level,
+    Question,
     Review,
     apply_fixes,
+    check_linkedin,
     format_review,
-    render_markdown,
+    from_findings,
+    gather,
     review_and_fix,
     review_profile,
     review_resume,
+    said,
 )
 
 CLEAN = """\
@@ -274,7 +281,7 @@ def test_a_document_with_no_headings_still_reviews() -> None:
 
 
 # --- reports --------------------------------------------------------------------------------------
-def test_format_review_lists_fixes_advice_and_questions() -> None:
+def test_format_review_lists_what_was_fixed_and_what_is_still_advised() -> None:
     review = Review(
         (
             Finding("tense", Level.ADVISE, 12, "Acme – Engineer", "bullets switch tense"),
@@ -282,44 +289,27 @@ def test_format_review_lists_fixes_advice_and_questions() -> None:
         ),
         applied=(Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),),
     )
-    text = format_review(review)
-    assert text.startswith("Readability: 1 fixed · 1 suggestions · 1 questions\n")
-    assert "  ✓ line 9  dates: an en dash" in text
+    text = format_review(review, title="Review")
+    assert text.startswith("Review: 1 fixed · 1 suggestion\n")
     assert '  ~ line 12  tense: bullets switch tense\n      "Acme – Engineer"' in text
-    assert "  ? line 14  no-outcome: What did this achieve?" in text
+    assert "What did this achieve?" not in text, "questions are asked, not listed here"
 
 
-def test_a_pending_fix_is_listed_and_marked() -> None:
-    review = Review((Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),))
-    text = format_review(review)
-    assert text.startswith("Readability: 0 fixed · 1 to fix · 0 suggestions · 0 questions\n")
-    assert "  ✓ line 9  dates: an en dash (not applied)" in text
-
-
-def test_a_finding_without_a_line_prints_without_one() -> None:
-    review = Review((Finding("note", Level.ASK, 0, "notes", "Confirm the phone number."),))
-    assert "  ? note: Confirm the phone number." in format_review(review)
-
-
-def test_render_markdown_says_so_when_there_is_nothing_to_flag() -> None:
-    assert render_markdown(Review()) == "## Readability review\n\nNothing to flag.\n"
-
-
-def test_render_markdown_groups_findings_by_kind() -> None:
-    review = Review(
-        (Finding("no-outcome", Level.ASK, 14, "Did a thing", "What did this achieve?"),),
-        applied=(Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),),
-    )
-    text = render_markdown(review)
-    assert "**Fixed automatically**\n\n- line 9 dates: an en dash\n" in text
+def test_a_finding_without_a_line_or_quote_prints_without_them() -> None:
+    review = Review((Finding("no-level", Level.ADVISE, 0, "", "2 technologies have no level"),))
     assert (
-        '**Questions for you**\n\n- line 14 no-outcome: What did this achieve? ("Did a thing")'
-        in text
+        format_review(review)
+        == "Review: 1 suggestion\n  ~ no-level: 2 technologies have no level\n"
     )
-    assert "**Suggestions**" not in text
+
+
+def test_nothing_to_say_still_says_so() -> None:
+    assert format_review(Review()) == "Review: 0 suggestions\n"
 
 
 # --- the profile ----------------------------------------------------------------------------------
+TODAY = date(2026, 9, 25)
+
 MINIMAL: dict[str, Any] = {
     "contact": {"name": "Ada", "headline": "Engineer", "email": "ada@example.com"},
     "summary": "Writes programs for engines.",
@@ -330,7 +320,7 @@ MINIMAL: dict[str, Any] = {
             "roles": [
                 {
                     "title": "Principal Engineer",
-                    "start": "1843-01",
+                    "start": "2019-01",
                     "end": "present",
                     "highlights": [{"label": "Scheduler", "text": "Cut runtime 38%."}],
                 }
@@ -340,13 +330,24 @@ MINIMAL: dict[str, Any] = {
 }
 
 
+def audit(data: dict[str, Any]) -> Review:
+    return review_profile(loader.load_mapping(data), today=TODAY)
+
+
+def advised(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+    return [(f.rule, f.text, f.message) for f in audit(data).advice]
+
+
 def test_a_tidy_profile_reviews_clean() -> None:
+    assert audit(MINIMAL) == Review()
+
+
+def test_the_audit_defaults_to_today() -> None:
     assert review_profile(loader.load_mapping(MINIMAL)) == Review()
 
 
 def test_profile_review_turns_notes_into_questions() -> None:
-    profile = loader.load_mapping({**MINIMAL, "notes": ["Confirm the phone number."]})
-    questions = review_profile(profile).questions
+    questions = audit({**MINIMAL, "notes": ["Confirm the phone number."]}).questions
     assert [(f.rule, f.message) for f in questions] == [("note", "Confirm the phone number.")]
 
 
@@ -365,19 +366,19 @@ def test_profile_review_flags_what_would_print_badly() -> None:
                 "roles": [
                     {
                         "title": "Principal Engineer",
-                        "start": "1843-01",
+                        "start": "2019-01",
                         "end": "present",
                         "highlights": [
                             {"text": "Cut runtime 38%."},
-                            {"label": "Long", "text": " ".join(["word"] * 46)},
+                            {"label": "Long", "text": " ".join(f"w{n}" for n in range(46))},
                         ],
                     },
-                    {"title": "Translator", "start": "1842", "end": "1843"},
+                    {"title": "Translator", "start": "2017", "end": "2018"},
                 ],
             }
         ],
     }
-    review = review_profile(loader.load_mapping(data))
+    review = audit(data)
     assert [f.rule for f in review.advice] == [
         "long-summary",
         "no-label",
@@ -389,6 +390,7 @@ def test_profile_review_flags_what_would_print_badly() -> None:
         "experience[0].roles[0].highlights[0]",
         "experience[0].roles[0].highlights[1]",
     ]
+    assert "'python' appears 2 times" in review.advice[3].message
     assert "2 technologies have no level (Go, python)" in review.advice[-1].message
     assert [f.rule for f in review.questions] == ["no-highlights"]
     assert "Translator at Analytical Engine Programme" in review.questions[0].message
@@ -396,6 +398,318 @@ def test_profile_review_flags_what_would_print_badly() -> None:
 
 def test_profile_review_abbreviates_a_long_list_of_unrated_technologies() -> None:
     items = [{"name": f"T{index}"} for index in range(7)]
-    profile = loader.load_mapping({**MINIMAL, "technologies": [{"group": "A", "items": items}]})
-    message = review_profile(profile).advice[0].message
+    message = audit({**MINIMAL, "technologies": [{"group": "A", "items": items}]}).advice[0].message
     assert "T0, T1, T2, T3, T4, …" in message
+
+
+def _employer(company: str, *roles: dict[str, Any], ident: str = "") -> dict[str, Any]:
+    return {
+        "id": ident or company.lower().replace(" ", "-"),
+        "company": company,
+        "roles": list(roles),
+    }
+
+
+def _held(title: str, start: str, end: str, *texts: str) -> dict[str, Any]:
+    return {
+        "title": title,
+        "start": start,
+        "end": end,
+        "highlights": [{"label": f"L{n}", "text": text} for n, text in enumerate(texts)],
+    }
+
+
+def test_one_employer_recorded_twice_is_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer("Acme, Inc.", _held("Lead", "2022", "present", "Led it."), ident="acme"),
+            _employer("Acme", _held("Engineer", "2019", "2022", "Built it."), ident="acme-2"),
+        ],
+    }
+    assert advised(data) == [
+        (
+            "duplicate-employer",
+            "experience[1]",
+            (
+                "Acme is recorded twice (experience[0] and experience[1]); merge them into one "
+                "employer, each title a role"
+            ),
+        )
+    ]
+
+
+def test_employers_and_roles_out_of_order_are_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer("Old Co", _held("Engineer", "2015", "2017", "Built it.")),
+            _employer(
+                "New Co",
+                _held("Engineer", "2018", "2020", "Built more."),
+                _held("Lead", "2020", "present", "Led it."),
+            ),
+        ],
+    }
+    assert [(rule, where) for rule, where, _ in advised(data)] == [
+        ("employer-order", "experience[1]"),
+        ("role-order", "experience[1].roles[1]"),
+    ]
+
+
+def test_roles_held_at_once_are_flagged_but_a_shared_boundary_month_is_not() -> None:
+    def roles(second_start: str) -> dict[str, Any]:
+        return {
+            **MINIMAL,
+            "experience": [
+                _employer(
+                    "Acme",
+                    _held("Lead", second_start, "present", "Led it."),
+                    _held("Engineer", "2019-01", "2022-06", "Built it."),
+                )
+            ],
+        }
+
+    assert advised(roles("2022-06")) == []
+    assert advised(roles("2022-05")) == [], "one month of drift is how dates copy"
+    assert [rule for rule, _, _ in advised(roles("2022-03"))] == ["overlapping-roles"]
+
+
+def test_a_year_only_overlap_is_judged_by_the_year() -> None:
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer(
+                "Acme",
+                _held("Lead", "2021", "present", "Led it."),
+                _held("Engineer", "2019", "2022", "Built it."),
+            )
+        ],
+    }
+    assert [rule for rule, _, _ in advised(data)] == ["overlapping-roles"]
+
+
+def test_a_highlight_mentioning_a_year_after_its_role_ended_is_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer(
+                "Acme",
+                _held("Lead", "2022-06", "present", "Led it."),
+                _held(
+                    "Engineer",
+                    "2019-01",
+                    "2022-06",
+                    "Since 2024, built the assistant.",
+                    "In 2020, shipped it.",
+                ),
+            )
+        ],
+    }
+    assert advised(data) == [
+        (
+            "highlight-after-role",
+            "experience[0].roles[1].highlights[0]",
+            (
+                "mentions 2024, after this role ended (June 2022); it probably belongs under a "
+                "later role"
+            ),
+        )
+    ]
+
+
+def test_a_highlight_recorded_twice_is_flagged_even_when_reworded() -> None:
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer(
+                "Acme",
+                _held(
+                    "Lead",
+                    "2019-01",
+                    "present",
+                    "Cut batch runtime 38% by rewriting the scheduler in Python.",
+                    "Rewrote the scheduler in Python, cutting batch runtime 38%.",
+                    "Mentored junior developers.",
+                    "Mentored and developed junior developers across two teams.",
+                    "Shipped the billing export.",
+                ),
+            )
+        ],
+    }
+    assert [(rule, where) for rule, where, _ in advised(data)] == [
+        ("duplicate-highlight", "experience[0].roles[0].highlights[1]"),
+        ("duplicate-highlight", "experience[0].roles[0].highlights[3]"),
+    ]
+
+
+def test_a_spelling_that_names_two_technologies_is_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "technologies": [
+            {
+                "group": "Cloud",
+                "items": [
+                    {"name": "Amazon Web Services", "aliases": ["AWS"], "level": "expert"},
+                    {"name": "AWS", "level": "expert"},
+                ],
+            }
+        ],
+    }
+    assert advised(data) == [
+        (
+            "duplicate-technology",
+            "technologies",
+            (
+                "'aws' names both amazon web services and aws; record it once, other spellings "
+                "as aliases"
+            ),
+        )
+    ]
+
+
+def test_more_years_than_the_career_is_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "technologies": [
+            {"group": "L", "items": [{"name": "Python", "level": "expert", "years": 12}]}
+        ],
+    }
+    assert advised(data) == [
+        (
+            "technology-years",
+            "technologies",
+            "Python: 12 years, but the earliest role recorded starts in 2019",
+        )
+    ]
+
+
+def test_a_stack_naming_an_unrecorded_technology_is_flagged() -> None:
+    data = {
+        **MINIMAL,
+        "technologies": [
+            {"group": "L", "items": [{"name": "Amazon Web Services (AWS)", "level": "expert"}]}
+        ],
+        "experience": [
+            {
+                **MINIMAL["experience"][0],
+                "roles": [{**MINIMAL["experience"][0]["roles"][0], "stack": ["AWS", "Go"]}],
+            }
+        ],
+    }
+    assert advised(data) == [
+        (
+            "stack-unrecorded",
+            "experience[0].roles[0]",
+            (
+                "stack names Go, which technologies does not record; add them there or drop "
+                "them from the stack"
+            ),
+        )
+    ]
+
+
+# --- questions ------------------------------------------------------------------------------------
+def test_questions_merge_in_priority_order_without_repeats_and_are_capped() -> None:
+    first = (Question("Have you used Kafka?"),)
+    second = (Question("Have you used  kafka?"), Question("How big was the team?"))
+    many = tuple(Question(f"Question {n}?") for n in range(10))
+
+    merged = gather(first, second, many)
+
+    assert [q.text for q in merged[:2]] == ["Have you used Kafka?", "How big was the team?"]
+    assert len(merged) == MAX_QUESTIONS
+    assert gather(first, many, limit=2) == (first[0], many[0])
+    assert gather((Question("?!"),)) == (), "a question with no words is no question"
+
+
+def test_ask_findings_become_questions_and_the_rest_are_left_out() -> None:
+    findings = (
+        Finding("no-outcome", Level.ASK, 3, "Did a thing", "What did this achieve?"),
+        Finding("no-dates", Level.ASK, 5, "Acme – Engineer", "When was this?"),
+        Finding("tense", Level.ADVISE, 7, "", "bullets switch tense"),
+    )
+    assert from_findings(findings, skip=("no-outcome",)) == (
+        Question("When was this?", "Acme – Engineer"),
+    )
+
+
+def test_an_answer_that_declines_gives_the_profile_nothing() -> None:
+    question = Question("Have you used Kafka?")
+    assert Answer(question, "Yes, for 2 years at Acme.").substantive
+    for declined in ("no", "No.", "  nope ", "Not sure", "", "n/a", "I haven't"):
+        assert not Answer(question, declined).substantive, declined
+
+
+def test_what_an_answer_establishes_includes_the_question_it_accepts() -> None:
+    """A yes to "Have you used Kafka?" establishes Kafka; a no establishes nothing."""
+    answers = (
+        Answer(Question("Have you used Kafka?"), "No."),
+        Answer(Question("Have you used Rust?"), "Not really, only a tutorial."),
+        Answer(Question("Have you used Go?"), "I haven't."),
+        Answer(Question("How big was the team?"), "Twelve."),
+        Answer(Question("Have you used Terraform?"), "Notably, yes: two years."),
+    )
+    assert said(answers) == (
+        "No.\nNot really, only a tutorial.\nI haven't.\nHow big was the team?\nTwelve.\n"
+        "Have you used Terraform?\nNotably, yes: two years."
+    )
+
+
+# --- LinkedIn -------------------------------------------------------------------------------------
+LINKEDIN = """\
+# Ada Lovelace
+
+## Headline
+Principal Engineer | Python
+
+## About
+I write programs for engines.
+
+## Top Skills
+**Top Skills:** Python, Go
+
+## Experience
+
+### **Principal Engineer** – Analytical Engine Programme
+January 2021 – Present | London, UK
+I lead the programming.
+- Cut batch runtime 38%.
+**Skills:** Python
+
+## Skills
+**Skills:** Python, Go
+- Rust
+"""
+
+
+def test_a_linkedin_profile_within_the_limits_passes() -> None:
+    assert check_linkedin(LINKEDIN) == ()
+
+
+def test_a_missing_linkedin_section_is_named() -> None:
+    assert check_linkedin("# Ada\n<!-- ## About -->\n## Headline\nEngineer\n") == (
+        "the ## About section is missing",
+        "the ## Experience section is missing",
+        "the ## Skills section is missing",
+    )
+
+
+def test_every_linkedin_limit_is_enforced() -> None:
+    too_long = LINKEDIN.replace("Principal Engineer | Python", "x" * 221)
+    too_long = too_long.replace("I write programs for engines.", "y" * 2601)
+    too_long = too_long.replace("I lead the programming.", "z" * 2001)
+    too_long = too_long.replace("Python, Go\n\n## Experience", "A, B, C, D, E, F\n\n## Experience")
+    too_long = too_long.replace("- Rust", "\n".join(f"- S{n}" for n in range(100)))
+
+    assert check_linkedin(too_long) == (
+        "the headline is 221 characters; LinkedIn stops at 220",
+        "the About section is 2601 characters; LinkedIn stops at 2600",
+        # The outcomes beneath it are part of the description LinkedIn counts.
+        (
+            "the description for **Principal Engineer** – Analytical Engine Programme is 2026 "
+            "characters; LinkedIn stops at 2000"
+        ),
+        "6 top skills; LinkedIn pins at most 5",
+        "102 skills; LinkedIn takes at most 100",
+    )

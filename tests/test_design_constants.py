@@ -5,13 +5,16 @@ in lockstep with any change to that constant and can never catch one. These asse
 numbers out. Changing a constant is then a deliberate two-place edit, and the diff says what the
 document will look like afterwards.
 
-Both layouts take their figures from the user's own "2026 Polished Resume" PDF: the single-column
-layout carries its typography in the parser-safe shape ``reference/ATS-PLAYBOOK.md`` describes,
-and the polished layout carries its two-column geometry as well.
+Both layouts take their proportions from the user's own "2026 Polished Resume" PDF, set in Arial
+at the sizes resume guidance for people and parsers alike recommends (body 10-12pt, headings
+14-16pt): the single-column layout carries that typography in the parser-safe shape
+``reference/ATS-PLAYBOOK.md`` describes, and the polished layout carries its two-column geometry
+as well.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,30 +27,33 @@ from resume_tailor.render.html_common import FONT_STACK
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import ModuleType
 
     from resume_tailor.documents.blocks import Document
 
 _TWIP = 635  # EMU
+
+# Arial's natural line box as a share of its size, about 1.15: (ascender + descender + line gap)
+# over units per em, from its hhea table. Word's "single" line and the browser's "normal" are this.
+_ARIAL_LINE = (1854 + 434 + 67) / 2048
 
 
 # --- the numbers themselves -----------------------------------------------------------------------
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("FONT", "Roboto"),
-        ("FONT_LIGHT", "Roboto ExtraLight"),
-        ("FONT_SEMIBOLD", "Roboto SemiBold"),
+        ("FONT", "Arial"),
         ("BODY_PT", 10.0),
         ("PROSE_PT", 11.0),
-        ("CONTACT_PT", 9.0),
+        ("CONTACT_PT", 10.0),
         ("SUBTITLE_PT", 12.0),
         ("SECTION_PT", 15.0),
-        ("NAME_PT", 35.0),
+        ("NAME_PT", 28.0),
         ("LINE_PT", 12.0),
         ("PROSE_LINE_PT", 13.5),
         ("SUBTITLE_LINE_PT", 14.25),
         ("SECTION_LINE_PT", 18.0),
-        ("NAME_LINE_PT", 41.25),
+        ("NAME_LINE_PT", 33.0),
         ("PAGE_MARGIN_IN", (0.6, 0.7)),
         ("BULLET_HANGING_IN", 0.25),
         ("NOTE_INDENT_IN", 0.05),
@@ -79,20 +85,18 @@ def test_ats_gaps() -> None:
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("FONT", "Roboto"),
-        ("FONT_LIGHT", "Roboto ExtraLight"),
-        ("FONT_SEMIBOLD", "Roboto SemiBold"),
+        ("FONT", "Arial"),
         ("BODY_PT", 10.0),
         ("PROSE_PT", 11.0),
-        ("CONTACT_PT", 9.0),
+        ("CONTACT_PT", 10.0),
         ("SECTION_PT", 15.0),
         ("SUBTITLE_PT", 12.0),
-        ("NAME_PT", 35.0),
+        ("NAME_PT", 28.0),
         ("LINE_PT", 12.0),
         ("PROSE_LINE_PT", 13.5),
         ("SUBTITLE_LINE_PT", 14.25),
         ("SECTION_LINE_PT", 18.0),
-        ("NAME_LINE_PT", 41.25),
+        ("NAME_LINE_PT", 33.0),
         ("PAGE_MARGIN_IN", 0.2),
         ("SIDEBAR_WIDTH_IN", 2.42),
         ("MAIN_WIDTH_IN", 6.08),
@@ -129,10 +133,34 @@ def test_polished_gaps() -> None:
     }
 
 
-def test_the_polished_pdf_fetches_the_design_face_by_weight() -> None:
-    """Only the weights the layout sets: 200 for the name, 600 semibold, 700 bold, 400 italic."""
-    assert polished.FONT_IMPORT_URL.startswith("https://fonts.googleapis.com/css2?family=Roboto")
-    assert "0,200;0,400;0,600;0,700;1,400" in polished.FONT_IMPORT_URL
+@pytest.mark.parametrize("module", [ats, polished])
+def test_the_pdf_fetches_nothing_at_print_time(module: ModuleType) -> None:
+    """Arial is a system font on macOS and Windows, so there is no web font to wait for."""
+    assert "@import" not in module.CSS
+    assert "url(" not in module.CSS
+
+
+@pytest.mark.parametrize("module", [ats, polished])
+def test_the_css_asks_only_for_the_weights_arial_has(module: ModuleType) -> None:
+    """Regular and bold, the two a .docx run can say; a 200 or a 600 would have no Word twin."""
+    assert set(re.findall(r"font-weight: *(\d+)", module.CSS)) <= {"400", "700"}
+
+
+_SIZED_LINES = (
+    ("BODY_PT", "LINE_PT"),
+    ("CONTACT_PT", "LINE_PT"),
+    ("PROSE_PT", "PROSE_LINE_PT"),
+    ("SUBTITLE_PT", "SUBTITLE_LINE_PT"),
+    ("SECTION_PT", "SECTION_LINE_PT"),
+    ("NAME_PT", "NAME_LINE_PT"),
+)
+
+
+@pytest.mark.parametrize("module", [ats, polished])
+@pytest.mark.parametrize(("size", "line"), _SIZED_LINES)
+def test_every_line_box_holds_a_line_of_arial(module: ModuleType, size: str, line: str) -> None:
+    """Word's "at least" widens a box smaller than the font's own; the browser does not."""
+    assert getattr(module, line) >= getattr(module, size) * _ARIAL_LINE
 
 
 _LINE_CONSTANTS = (
@@ -159,10 +187,8 @@ def test_the_columns_fill_the_page() -> None:
     assert polished.SIDEBAR_WIDTH_IN + polished.MAIN_WIDTH_IN == 8.5
 
 
-def test_the_font_stack_leads_with_the_design_face() -> None:
-    assert FONT_STACK.startswith("Roboto,")
-    assert "Helvetica" in FONT_STACK
-    assert FONT_STACK.endswith("sans-serif")
+def test_the_font_stack_is_arial_then_its_metric_twin() -> None:
+    assert FONT_STACK == "Arial, Helvetica, sans-serif"
 
 
 # --- the numbers as they reach the .docx ----------------------------------------------------------
@@ -185,12 +211,13 @@ def test_ats_typography_reaches_the_docx(resume: Document, tmp_path: Path) -> No
         for p in document.paragraphs
         if p.runs and p.runs[0].font.size is not None
     }
-    assert sizes["Ada Lovelace"] == 35
+    assert sizes["Ada Lovelace"] == 28
+    assert sizes["ada@example.com | (555) 010-0100 | London, UK | github.com/ada"] == 10
     assert sizes["Summary"] == 15
     assert sizes["Analytical Engine Programme — Principal Engineer"] == 10
 
     name = next(p for p in document.paragraphs if p.text.strip() == "Ada Lovelace")
-    assert name.paragraph_format.line_spacing == Pt(41.25)
+    assert name.paragraph_format.line_spacing == Pt(33)
     section = next(p for p in document.paragraphs if p.text.strip() == "Summary")
     assert section.paragraph_format.line_spacing == Pt(18)
     # The fixture's Summary follows the contact line.
@@ -218,13 +245,15 @@ def test_polished_typography_reaches_the_docx(resume: Document, tmp_path: Path) 
     rail, main = table.rows[0].cells
 
     name = main.paragraphs[0]
-    assert name.runs[0].font.size.pt == 35
-    assert name.runs[0].font.name == "Roboto ExtraLight"
-    assert name.paragraph_format.line_spacing == Pt(41.25)
+    assert name.runs[0].font.size.pt == 28
+    assert name.runs[0].font.name == "Arial"
+    assert name.runs[0].bold is False, "a large name reads as prominent without the weight"
+    assert name.paragraph_format.line_spacing == Pt(33)
 
     contact = rail.paragraphs[0]
-    assert contact.runs[0].font.size.pt == 9
-    assert contact.runs[0].font.name == "Roboto SemiBold"
+    assert contact.runs[0].font.size.pt == 10
+    assert contact.runs[0].font.name == "Arial"
+    assert contact.runs[0].bold is False
 
     heading = next(p for p in main.paragraphs if p.text.strip() == "Summary")
     assert heading.runs[0].font.size.pt == 15
@@ -234,20 +263,12 @@ def test_polished_typography_reaches_the_docx(resume: Document, tmp_path: Path) 
     assert heading.paragraph_format.space_before == Pt(21)
 
 
-def test_polished_role_headings_are_semibold_not_bold(resume: Document, tmp_path: Path) -> None:
-    """SemiBold family plus a bold flag resolves to the bold companion — heavier than designed."""
+def test_every_polished_run_is_arial(resume: Document, tmp_path: Path) -> None:
+    """One family in every run of both cells, so Word never substitutes a face it lacks."""
     out = tmp_path / "resume-polished.docx"
     polished.render_docx(resume, out)
-    table = read_docx(str(out)).tables[0]
-    entries = [
-        run
-        for p in table.rows[0].cells[1].paragraphs
-        for run in p.runs
-        if "Analytical Engine Programme" in run.text
-    ]
-    assert entries
-    assert all(run.font.name == "Roboto SemiBold" for run in entries)
-    assert all(run.bold is False for run in entries)
+    cells = read_docx(str(out)).tables[0].rows[0].cells
+    assert {run.font.name for cell in cells for p in cell.paragraphs for run in p.runs} == {"Arial"}
 
 
 def test_polished_zeroes_the_table_cell_margins(resume: Document, tmp_path: Path) -> None:

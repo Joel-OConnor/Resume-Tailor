@@ -1,29 +1,30 @@
-Tailor my resume to a specific job, following the method in CLAUDE.md exactly.
+Tailor my resume and cover letter to one job, following the workflow in CLAUDE.md exactly.
 
 Job description:
 $ARGUMENTS
 
-If the job description above is empty, ask me to paste it (or tell you which file it's in).
+If the job description above is empty, ask me to paste it or tell you which file it's in.
 
 Do all of this:
-1. Analyze the job description: exact title + seniority, must-have requirements, nice-to-haves, the
-   keywords/phrases it repeats, and the top day-to-day responsibilities.
-2. Read `profile/master-profile.yaml` in full. (If it doesn't exist yet, tell me to build it first
-   from `profile/raw/`.) Match the posting's wording against technology names *and* their aliases,
-   and use `highlights[].tags` to find the strongest evidence for each requirement.
-3. Map fit and gaps: strong matches, partial/adjacent matches, and genuine gaps.
-4. Create `applications/<company>-<role>/` (lowercase slug) and write, selecting and reframing ONLY
-   real experience from the profile:
-   - `job-description.md` (the posting, saved for reference)
-   - `resume.md` — following `templates/resume.md` structure precisely; use each highlight's `label`
-     as the bullet's bold lead-in
-   - `fit-report.md` — match strength, keywords covered vs. missing, honest ways to close gaps
-   - `cover-letter.md` — following `templates/cover-letter.md`
-   - `linkedin.md` — a headline + "About" tuned to this kind of role
-5. Export: `make export APP=<company>-<role>`. This writes both layouts of the resume plus the
-   cover letter.
-6. Summarize: overall match strength, what you emphasized and why, any gaps I should be aware of,
-   and which file to send where (`resume.docx` for portals, `resume-polished.docx` for people).
+1. If I pasted the posting, save it as `jobs/<company>-<role>.md` (lowercase slug). If I named a
+   file, use that file.
+2. Make sure `profile/master-profile.yaml` exists. If it doesn't, tell me to run `make profile`
+   first and stop.
+3. Run `make tailor JOB=<that file>`. It writes `applications/<company>-<role>/` with the tailored
+   resume and cover letter, and prints a fit summary and the review's open questions.
+4. Tell me the fit summary in a sentence or two. Then ask me the open questions one at a time.
+   For each real answer, record the fact in `profile/master-profile.yaml` where it belongs (a
+   figure into the highlight it measures, a technology into `technologies` and the role's stack,
+   a new accomplishment as a highlight with a label and tags), and run
+   `.venv/bin/resume-tailor profile validate`. Record nothing for a "no" or a skip, and never
+   answer a question yourself.
+5. If I gave any answers, run `make tailor JOB=<that file>` again so the final files use them.
+6. Summarize: how strong the match is, what the resume leads with and why, any gaps I should know
+   about, and that `resume.docx` is the file to upload (the PDF is for forms that only take PDF,
+   or for email).
 
-Never fabricate anything. Keep every claim true to my master profile, and flag rather than print
-anything listed under the profile's `notes`.
+If there's no API key, do steps 3 to 5 by hand as CLAUDE.md's "Doing it by hand" describes, and
+verify every document before handing it over.
+
+Never fabricate anything. Keep every claim true to my master profile, and never print anything
+listed under the profile's `notes`.

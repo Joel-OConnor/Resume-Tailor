@@ -23,6 +23,20 @@ if TYPE_CHECKING:
 
 _TWIP = 635  # EMU
 
+# The entry-heading convention: the Markdown bolds the job title (or degree), never the company.
+# Education goes to the rail, so the rule is exercised in both cells.
+TITLED_MD = """\
+# Ada Lovelace
+
+## Experience
+### **Principal Engineer** – Analytical Engine Programme
+London, UK | Jan 1843 – Present
+
+## Education
+### **Mathematics** – Private tuition
+1840
+"""
+
 
 def _table(document: Document, tmp_path: Path, **kwargs: object) -> Table:
     out = tmp_path / "resume-polished.docx"
@@ -173,11 +187,40 @@ def test_unbalanced_parentheses_do_not_swallow_the_rest() -> None:
     assert polished._skill_items((Span("a), b"),)) == [(Span("a)"),), (Span("b"),)]
 
 
-def test_the_name_uses_the_light_display_face(resume: Document, tmp_path: Path) -> None:
+def test_the_name_is_large_and_regular_weight(resume: Document, tmp_path: Path) -> None:
     table = _table(resume, tmp_path)
     run = table.rows[0].cells[1].paragraphs[0].runs[0]
-    assert run.font.name == polished.FONT_LIGHT
+    assert run.font.name == polished.FONT
     assert run.font.size.pt == polished.NAME_PT
+    assert run.bold is False
+
+
+def test_a_heading_that_bolds_its_title_leaves_the_company_regular(tmp_path: Path) -> None:
+    rail, main = _table(parse(TITLED_MD), tmp_path).rows[0].cells
+    role = next(p for p in main.paragraphs if p.text.startswith("Principal Engineer"))
+    degree = next(p for p in rail.paragraphs if p.text.startswith("Mathematics"))
+    assert [(run.text, run.bold) for run in role.runs] == [
+        ("Principal Engineer", True),
+        (" – Analytical Engine Programme", False),
+    ]
+    assert [(run.text, run.bold) for run in degree.runs] == [
+        ("Mathematics", True),
+        (" – Private tuition", False),
+    ]
+    assert {run.font.name for p in (role, degree) for run in p.runs} == {polished.FONT}
+
+
+def test_a_heading_with_no_bold_span_is_bold_throughout(resume: Document, tmp_path: Path) -> None:
+    """Resumes written before the convention keep the all-bold heading they always had."""
+    rail, main = _table(resume, tmp_path).rows[0].cells
+    role = next(p for p in main.paragraphs if "Analytical Engine Programme" in p.text)
+    tuition = next(p for p in rail.paragraphs if "Private tuition" in p.text)
+    assert [(run.text, run.bold) for run in role.runs] == [
+        ("Analytical Engine Programme — Principal Engineer", True)
+    ]
+    assert [(run.text, run.bold) for run in tuition.runs] == [
+        ("Private tuition in mathematics", True)
+    ]
 
 
 def test_every_bullet_keeps_the_glyph_lead_in_or_not(resume: Document, tmp_path: Path) -> None:
@@ -306,8 +349,26 @@ def test_html_draws_every_bullet_glyph_at_the_column_edge(resume: Document) -> N
     assert f"li {{ position: relative; padding-left: {polished.BULLET_HANGING_IN}in" in html
 
 
-def test_html_pulls_the_design_face_from_google_fonts(resume: Document) -> None:
-    assert f"@import url('{polished.FONT_IMPORT_URL}');" in polished.render_html(resume)
+def test_html_sets_arial_and_fetches_nothing(resume: Document) -> None:
+    html = polished.render_html(resume)
+    assert "font-family: Arial, Helvetica, sans-serif;" in html
+    assert "@import" not in html, "nothing to fetch: Arial is already installed"
+    assert f".contact {{ font-size: {polished.CONTACT_PT}pt; margin-top:" in html, "regular weight"
+
+
+def test_html_bolds_an_entry_heading_only_where_the_markdown_does() -> None:
+    html = polished.render_html(parse(TITLED_MD))
+    rail = html.split('<aside class="rail">')[1].split("</aside>")[0]
+    main = html.split('<section class="main">')[1].split("</section>")[0]
+    assert "<h3><strong>Principal Engineer</strong> – Analytical Engine Programme</h3>" in main
+    assert "<h3><strong>Mathematics</strong> – Private tuition</h3>" in rail
+    assert f"h3 {{ font-size: {polished.BODY_PT}pt; font-weight: 400;" in html, "a regular base"
+
+
+def test_html_sets_a_heading_with_no_bold_span_bold_throughout(resume: Document) -> None:
+    html = polished.render_html(resume)
+    assert "<h3><strong>Analytical Engine Programme — Principal Engineer</strong></h3>" in html
+    assert "<h3><strong>Private tuition in mathematics</strong></h3>" in html
 
 
 def test_html_marks_a_closing_note_and_sets_prose_larger(resume: Document) -> None:
@@ -399,3 +460,12 @@ def test_a_list_that_ends_a_section_is_closed_before_the_next_heading() -> None:
     html = polished.render_html(parse("# A\n\n## Awards\n- one\n- two\n\n## Projects\n- three"))
     assert html.count("<ul>") == html.count("</ul>") == 2
     assert "<li>two</li></ul><h2>Projects</h2><ul><li>three</li></ul>" in html
+
+
+def test_the_normal_style_carries_the_body_face(resume: Document, tmp_path: Path) -> None:
+    """Word sizes a line by its paragraph mark too, and the mark takes Normal's font."""
+    out = tmp_path / "resume-polished.docx"
+    polished.render_docx(resume, out)
+    normal = read_docx(str(out)).styles["Normal"].font
+    assert normal.name == "Arial"
+    assert normal.size == Pt(10)

@@ -16,10 +16,11 @@ from resume_tailor.errors import ModelError
 if TYPE_CHECKING:
     from resume_tailor.llm.config import Settings
 
-__all__ = ["AnthropicModel", "LanguageModel", "Reply", "build_model"]
+__all__ = ["AnthropicModel", "LanguageModel", "Reply"]
 
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
 _KEY_SHAPED = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
+_NO_CREDIT = "credit balance is too low"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,13 +70,16 @@ class AnthropicModel:
         request outright rather than waiting. The reply is still assembled and returned whole —
         nothing upstream sees a stream.
         """
+        request: dict[str, Any] = {
+            "model": self.settings.model,
+            "max_tokens": self.settings.max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self.settings.effort:
+            request["output_config"] = {"effort": self.settings.effort}
         try:
-            with self._client.messages.stream(
-                model=self.settings.model,
-                max_tokens=self.settings.max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-            ) as stream:
+            with self._client.messages.stream(**request) as stream:
                 message = stream.get_final_message()
         except Exception as exc:  # the SDK raises a wide family; all of them mean 'no reply'
             raise ModelError(_describe(exc)) from exc
@@ -113,6 +117,12 @@ def _describe(exc: Exception) -> str:
         return "the API key was rejected — check ANTHROPIC_API_KEY in your .env"
     if status == 429:  # noqa: PLR2004
         return "rate limited by the API — wait a moment and try again"
+    if _NO_CREDIT in str(exc):
+        return (
+            "the Anthropic account is out of credits — add credits at "
+            "https://console.anthropic.com/settings/billing, or set RESUME_TAILOR_LLM=claude-code "
+            "in .env to have a Claude Code session answer instead"
+        )
     if status in _RETRYABLE_STATUS:
         return f"the API is temporarily unavailable (HTTP {status}) — try again"
     # The type alone named the failure but never what to do about it — "ValueError" was the whole
@@ -124,8 +134,3 @@ def _describe(exc: Exception) -> str:
 def _redact(text: str) -> str:
     """Blank out anything shaped like an API key before it reaches a terminal or a log."""
     return _KEY_SHAPED.sub("sk-ant-***", text)
-
-
-def build_model(settings: Settings) -> LanguageModel:
-    """Construct the configured model."""
-    return AnthropicModel(settings)

@@ -35,8 +35,9 @@ _SEGMENT = re.compile(r"\s*[,;·|]\s*|\s+-\s+")
 _EMPHASIS = re.compile(r"[*`]+")
 
 _EDUCATION_REASON = (
-    "does not appear in the profile's education, certifications, or awards; use the profile's own "
-    "wording for the credential and the institution, or drop the entry"
+    "is not in the profile's record of any degree, certification or award; print only what the "
+    "profile records for this entry (its credential, institution, location and year) and remove "
+    "the rest, such as a city or state the profile does not give"
 )
 
 

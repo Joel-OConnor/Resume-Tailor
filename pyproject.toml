@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "resume-tailor"
 version = "1.0.0"
-description = "Build ATS-safe and design-polished resumes from a structured career profile."
+description = "Turn a structured career profile into a general resume, a LinkedIn profile, and tailored applications."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -19,8 +19,6 @@ dependencies = [
 # The standalone path: everything needed to run without a Claude Code session.
 agent = [
     "anthropic>=0.40.0",
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
 ]
 
 [project.scripts]
@@ -29,14 +27,11 @@ resume-tailor = "resume_tailor.cli:main"
 [dependency-groups]
 dev = [
     "anthropic>=0.40.0",
-    "fastapi>=0.115.0",
-    "httpx>=0.28.0",
     "mypy>=1.14.0",
     "pytest>=8.3.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.14.0",
     "types-PyYAML>=6.0.12",
-    "uvicorn[standard]>=0.32.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -113,13 +108,7 @@ addopts = [
     "--cov-fail-under=100",
 ]
 xfail_strict = true
-filterwarnings = [
-    "error",
-    # Starlette's TestClient reaches anyio through an alias anyio itself deprecated. It is not
-    # our warning and there is nothing to fix in this repo; the uv lock happens to pin a pair
-    # that stays quiet, and a plain `pip install` does not. Everything else is still an error.
-    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
-]
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true

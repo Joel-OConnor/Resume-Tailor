@@ -90,6 +90,13 @@ def test_a_successful_run_produces_the_pdf(monkeypatch: pytest.MonkeyPatch, tmp_
     assert calls[0][-1].startswith("file://")
 
 
+def test_printing_waits_for_no_web_font(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Both layouts set Arial, which is installed, so Chrome prints as soon as the page loads."""
+    calls = _fake_chrome(monkeypatch, _writes_pdf)
+    pdf.html_to_pdf(HTML, tmp_path / "resume.pdf")
+    assert not [argument for argument in calls[0] if "virtual-time-budget" in argument]
+
+
 def test_the_legacy_headless_flag_is_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

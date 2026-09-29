@@ -1,207 +1,189 @@
-# CLAUDE.md — Resume-Tailor
+# CLAUDE.md: Resume-Tailor
 
-This project builds a **resume tailored to a specific job description** from a machine-readable
-record of the user's real background. The goal: give a recruiter (and the automated screener behind
-them) the most obviously-qualified version of a *true* resume, to raise the odds of an interview.
+This project turns a machine-readable record of the user's real career into the documents a job
+search needs, and gives each of them a review before the final files are written. The goal: the
+most obviously qualified version of a *true* resume, readable by a recruiter and by the AI and
+applicant-tracking parsers that screen for them.
 
-**You (Claude) are the engine.** When the user gives you a job description, follow the method below
-to produce a tailored resume plus supporting docs, then export them to Word and PDF.
+## The whole workflow
 
-## The three moving parts
-
-1. **`profile/master-profile.yaml` — the single source of truth.** A structured *superset* of
-   everything the user has done: every employer, role, accomplishment, technology. Tailoring never
-   invents; it **selects and reframes** from this file. It is validated against
-   `schema/master-profile.schema.json`, and `make profile-md` renders a readable Markdown view at
-   `profile/MASTER_PROFILE.md` (generated — never edit it by hand).
-
-2. **`jobs/` — the inbox, and `applications/<company>-<role>/` — one folder per job.** The user
-   drops postings into `jobs/` as `.md` or `.txt` files (as many as they like); each tailoring run
-   writes its outputs to `applications/<slug>/` (job description, tailored resume, fit report,
-   cover letter, LinkedIn text, exports). Both are gitignored.
-
-3. **`src/resume_tailor/` — the tooling.** A tested Python package that parses the tailored Markdown
-   and renders it into two layouts (below). Run `make check` after touching it.
-
-## One layout, one source
-
-Every resume renders from its Markdown into `resume.docx` and `resume.pdf`: a single column with
-standard headings, no tables, and the typography of the user's own designed resume (Roboto, a
-large light name, 15pt headings, glyph bullets). That one file goes to portals and to people alike.
-
-A two-column arrangement of the same design (`resume-polished.docx` / `.pdf`) exists for emailing
-a person and is opt-in: `--layout polished`. Its columns are a Word table, and resume parsers
-scramble tables, so **never point the user at a polished file for anything submitted through a
-form.** See `reference/RESUME-FORMATS.md`.
-
-## A general resume, untailored
-
-When the user wants a plain, well-rounded resume with no posting in mind, do not tailor: run
+There is one input step and two generating scripts. Nothing else generates anything.
 
 ```bash
-make resume            # or: .venv/bin/resume-tailor general [--title ..] [--max-highlights N] [--max-skills N] [--since YYYY]
+make profile                         # 1. documents in profile/raw/  ->  profile/master-profile.yaml
+make resume                          # 2. the general resume + the LinkedIn profile  ->  applications/general/
+make tailor JOB=jobs/<posting>.md    # 3. a resume + cover letter for that one job   ->  applications/<company>-<role>/
 ```
 
-It renders the whole profile into `applications/general/` (Word and PDF, no API key): every
-employer and bullet in profile order, and every technology recorded above `exposure`/`working`.
-It is deterministic and cannot invent anything, so it needs no verification pass. Shape it with
-the caps rather than by editing the output; anything worth keeping belongs in the profile.
+All three call a model, chosen by `RESUME_TAILOR_LLM` in `.env`: the Anthropic API
+(`anthropic`, with `ANTHROPIC_API_KEY`), or you, through the relay (`claude-code`, below). Steps 2
+and 3 end the same way: a review that fixes and edits the drafts, then questions for the user, then
+the final Word and PDF files. At a terminal the questions are asked as the script runs; with no terminal (including when
+you run it from Claude Code) they are printed instead. See **The review step** below.
 
-## The tailoring method (follow every step)
+## 1. The master profile
 
-When the user provides a job description — pasted, dropped in a file, or sitting in `jobs/`. If
-they say "tailor my resume" without naming one, look in `jobs/` and tell them what you found. For
-several postings, do each one in full before starting the next; a failure on one is reported and
-the rest still run.
+`profile/master-profile.yaml` is the single source of truth. Every document is selected and
+reframed from it and verified against it. It is validated against
+`schema/master-profile.schema.json`; `resume-tailor profile render` writes a readable view to
+`profile/MASTER_PROFILE.md` (generated, never edit it by hand).
 
-1. **Analyze the job description.** Extract and note:
-   - the exact **job title** and seniority level;
-   - **must-have** requirements (skills, tools, years, degrees, domain);
-   - **nice-to-haves**;
-   - the **keywords and phrases** the posting repeats (these are what the screener matches on);
-   - the **top responsibilities** — what this person will actually do day to day;
-   - the **company/industry** context and any values/tone signals.
+`make profile` builds it from whatever the user dropped into `profile/raw/` (old resumes as PDF,
+Word or text, a LinkedIn export, brag docs, and `answers.md`, the log of every question they
+have answered). It runs in three passes:
 
-2. **Read `profile/master-profile.yaml` in full.** (If it doesn't exist, tell the user to run
-   `make profile` to build it from `profile/raw/` — see `profile/HOW-TO-BUILD-YOUR-PROFILE.md`.
-   Never regenerate an existing profile without asking: it may hold corrections made by hand, and
-   `profile build` refuses to replace one without `--force` for exactly that reason.) Use `technologies[].name`
-   *and* `aliases` when matching the posting's wording, `highlights[].tags` to find evidence for a
-   requirement, and `notes` to see what the user still has to confirm.
+1. **Draft.** A model records every distinct career fact from the documents as YAML.
+2. **Refine.** A second pass reads the draft against its sources and a mechanical audit, and
+   returns the same career recorded once, in the right place, with nothing irrelevant in it:
+   duplicate highlights merged (keeping every figure), one entry per employer and per technology,
+   accomplishments moved out of the skills list, each highlight under the role whose dates it
+   fits, levels and years never claiming more than the documents show. It is checked by
+   `verify/changes.py:check_refinement`, which rejects any refinement that adds a fact the draft
+   did not have or loses one it did. If refinement cannot pass that check, the checked draft is
+   written instead and the user is told.
+3. **Settle what is open.** The audit (`review/profile.py`) reports what still needs a look, and
+   every entry in `notes` (facts the documents left unclear) becomes a question. At a terminal
+   they are asked right away and the answers are recorded in the profile.
 
-3. **Map fit and find gaps.** Start with the deterministic pass:
+It refuses to replace an existing profile without `FORCE=--force`, and keeps a timestamped
+backup when it does: a profile may hold corrections made by hand. **Never regenerate an existing
+profile without asking the user.** When they add new documents, the pattern is the same: drop
+them in `profile/raw/` and rebuild.
 
-   ```bash
-   .venv/bin/resume-tailor match <job-description.md> --format markdown
-   ```
+When matching a posting's wording, use `technologies[].name` *and* `aliases`, and
+`highlights[].tags` to find evidence. Anything in `notes` is **unconfirmed**: never print it.
 
-   It reports, with evidence, which of the profile's technologies the posting asks for and what it
-   asks for that the profile does not support. Treat it as the floor, not the ceiling: it only
-   reads `technologies[]`, so read `highlights[]` yourself for everything it cannot see.
+## 2. The general resume and the LinkedIn profile
 
-   **Never promote one of its `qualified` matches to a confirmed claim without asking the user.** A
-   match is qualified precisely because it is a category alias, a stem match, an unconfirmed
-   `notes[]` entry, or a technology with no accomplishment behind it.
+`make resume` writes `applications/general/`:
 
-   Then, from that plus your own reading, build three lists: **strong matches**,
-   **partial/adjacent matches**, and **genuine gaps** (things the JD wants that the profile
-   doesn't support).
+- `resume.md` / `resume.docx` / `resume.pdf`: one well-rounded resume aimed at the profile's
+  target roles. Selected, not dumped: the strongest, most distinct accomplishments, a skills list
+  of what recruiters for those roles screen for, one or two pages.
+- `linkedin.md`: everything to put on LinkedIn, section by section in LinkedIn's own order and
+  within its limits (headline 220 characters, About 2,600, each position 2,000, five top skills):
+  headline, About, top skills, every position with a description and outcomes, education,
+  certifications, skills, and Open to Work titles. It is checked by `review/linkedin.py` and by
+  the same verifier as the resume.
 
-4. **Select and reframe (truthfully).** Compose the resume by:
-   - **Leading with what matches.** Order experience and skills so the most relevant items are seen
-     first (top of page, top of each section).
-   - **Mirroring the JD's language** for skills the user *genuinely has*. If the JD says
-     "Kubernetes" and the profile lists it under the alias "K8s," write "Kubernetes." If the JD's
-     title is "Staff Software Engineer," reflect that framing in the summary when it's honest to do
-     so.
-   - **Rewriting bullets** to foreground the results the JD cares about, keeping every claim true.
-     Prefer strong verb + what you did + measurable outcome. Keep real metrics; never invent them.
-     Use a highlight's `label` as the bullet's bold lead-in (`- **Data Layer Design:** …`).
-   - **Writing a targeted 2–3 line summary** naming the target role and the top 3–4 matched
-     strengths.
-   - **Cutting** low-relevance content so the page stays focused (it still lives in the profile).
+## 3. A tailored application
 
-5. **Produce the outputs** in `applications/<company>-<role>/`:
-   - `job-description.md` — the posting, saved for reference.
-   - `resume.md` — the tailored resume, following `templates/resume.md` exactly.
-   - `fit-report.md` — how strongly the user matches, JD keywords covered vs. missing, and honest,
-     actionable ways to close gaps (adjacent experience to highlight, a line to add if true, or a
-     skill worth learning). **Never** suggest fabricating.
-   - `cover-letter.md` — a focused one-page letter, following `templates/cover-letter.md`.
-   - `linkedin.md` — a headline + "About" section tuned to this kind of role.
+`make tailor JOB=jobs/<posting>.md` takes exactly one job description the user points at, and
+writes `applications/<company>-<role>/`:
 
-6. **Export** with `make export APP=<company>-<role>`. The resume and the cover letter each render
-   to `.docx` and `.pdf`.
+- `resume.md` / `.docx` / `.pdf`: the resume tailored to that posting.
+- `cover-letter.md` / `.docx` / `.pdf`: a one-page letter for it.
+- `job-description.md`: the posting, kept for reference.
 
-   (The standalone path does all of steps 5 and 6 in one command: `make tailor`, or
-   `.venv/bin/resume-tailor tailor <posting>`. Use it when the user wants the whole inbox done at
-   once; work through the method by hand when they want to shape the result as you go.)
+The terminal also shows a short fit summary (how strong the match is, the biggest gap), and the
+posting's unsupported must-haves are the first questions in the review.
 
-7. **Summarize for the user**: the match strength, what you emphasized and why, any gaps they should
-   be aware of, that `resume.docx` is the file to submit, and where everything lives.
+## The review step
 
-## Checking your own work
+Both scripts review what they wrote before anything is exported:
 
-The standalone path enforces truthfulness mechanically, and you are held to the same standard.
-After writing `resume.md`, verify it the way the agent path does:
+1. The mechanical fixes are applied (spacing, a missing full stop, a hyphen in a date range, a
+   skill listed twice).
+2. An editor pass tightens every document for readability without changing a fact, held to the
+   same verifier as the draft.
+3. The questions only the user can answer are gathered (an unsupported must-have, an outcome with
+   no number, a missing date), at most eight, most important first.
+4. At a terminal, each is asked. An answer that gives a fact is logged in `profile/raw/answers.md`
+   and recorded in `profile/master-profile.yaml` (checked by `verify/changes.py:check_update`,
+   which rejects anything the answers do not state), and the documents are revised to use it.
+5. Then the final `.docx` and `.pdf` files are written.
 
-```bash
-.venv/bin/python -c "from resume_tailor.profile import load; from resume_tailor.verify import verify_resume, format_violations; import pathlib; v = verify_resume(pathlib.Path('applications/<slug>/resume.md').read_text(), load()); print(format_violations(v) or 'clean')"
-```
+**From Claude Code there is no terminal**, so the script finishes with the open questions printed.
+Then *you* are the one who asks: put them to the user one at a time, record each real answer in
+`profile/master-profile.yaml` where it belongs (a figure into the highlight it measures, a
+technology into `technologies` and the role's stack, a new accomplishment as a highlight with a
+label and tags), run `.venv/bin/resume-tailor profile validate`, and run the script again so the
+final files use the answers. Never answer a question by guessing, and never record a "no".
 
-It checks every employer, title, date, education entry, technology and **metric** against the
-profile. If it reports a violation, fix the resume — do not argue with it and do not hand over a
-document it rejects. Then give it the second read described below.
+## Answering the relay (`RESUME_TAILOR_LLM=claude-code`)
 
-## Reviewing what you wrote
+In this mode each model call becomes a file: the script writes `.relay/<id>.request.md` (a system
+prompt and a prompt) and waits for `.relay/<id>.response.md`. You answer it:
 
-Every generated resume gets a second read before it is handed over. After `resume.md` verifies
-clean, run:
+1. Run `.venv/bin/resume-tailor relay wait` in the background. It exits as soon as a request is
+   waiting and prints the request's path and the path to write the reply to.
+2. Read the request in full. Write the complete reply, exactly in the shape its output contract
+   asks for and nothing else (no preamble, no fences around a whole answer), to the reply path in
+   one write.
+3. Wait again, until the script finishes.
 
-```bash
-.venv/bin/resume-tailor review applications/<slug>/resume.md --export
-```
+A reply is checked exactly like an API reply. When it fails a check, the next request opens with
+the precise problems: fix every one. Everything in **Truthfulness** below applies to your replies
+as it does to any model. To give up on a request, write the reason to `.relay/<id>.error.md`; the
+script stops with that reason. Answered requests move to `.relay/answered/`.
 
-It applies the mechanical fixes itself (spacing, a missing full stop, a hyphen in a date range,
-a skill listed twice) and re-exports, then prints two lists. **Suggestions** are an editor's
-calls — a bullet over 40 words, bullets that switch tense within a role, a phrase repeated,
-"responsible for", filler — and in Claude Code *you* are the editor: rewrite for them, keeping
-every fact, and run the verifier again. **Questions** are gaps only the user can fill — an
-accomplishment with no outcome, a role with no numbers, missing dates. Ask them one at a time,
-put each answer into `profile/master-profile.yaml` (a highlight, a scope, a corrected date),
-then regenerate and review again. Never answer a question by guessing.
+## Doing it by hand
 
-The standalone path does the same mechanically: `tailor` applies the fixes and has the model
-edit the draft for readability under the same verifier, and `review --interactive` walks the
-questions with the user and keeps the answers in `profile/raw/answers.md`, where the next
-`make profile FORCE=--force` picks them up as source material.
+If there is no API key, or the user wants to shape a document conversationally, follow the same
+steps yourself and hold your output to the same checks:
 
-## Truthfulness — non-negotiable
+- Write the resume in `templates/resume.md`'s format (bold job title, plain company:
+  `### **Senior Backend Engineer** – Northwind Payments`), and the cover letter in
+  `templates/cover-letter.md`'s.
+- Verify every document you write, and fix whatever it reports; never hand over a document it
+  rejects:
+
+  ```bash
+  .venv/bin/python -c "from resume_tailor.profile import load; from resume_tailor.verify import verify_resume, format_violations; import pathlib; v = verify_resume(pathlib.Path('applications/<slug>/resume.md').read_text(), load()); print(format_violations(v) or 'clean')"
+  ```
+
+- Export with `.venv/bin/resume-tailor build applications/<slug>/resume.md` (and the cover letter).
+- If you edit the profile, check your edit the way the scripts' edits are checked, e.g.
+  `check_update(before, after, answers)` from `resume_tailor.verify.changes`.
+
+## Truthfulness: non-negotiable
 
 - **Never fabricate** employers, titles, dates, degrees, certifications, metrics, or skills the user
-  doesn't have. A resume that gets an interview then collapses in the conversation is worse than no
-  interview. Tailoring = *emphasis and framing of real experience*, nothing more.
-- If a **must-have is missing**, say so in the fit report and offer honest options (surface adjacent
-  experience, add a true line, or note it as a growth area) — do not paper over it.
-- When you reframe a bullet, keep the underlying fact intact. If you're unsure a claim is true,
-  ask the user rather than guess. Anything listed under the profile's `notes` is **unconfirmed** —
-  raise it rather than printing it.
+  does not have. A resume that gets an interview and then collapses in the conversation is worse
+  than no interview. Tailoring is *emphasis and framing of real experience*, nothing more.
+- If a **must-have is missing**, say so, and offer honest options (surface adjacent experience,
+  add a true line, or treat it as a growth area). Do not paper over it.
+- When you reframe a bullet, keep the underlying fact intact. If you are unsure a claim is true,
+  ask the user rather than guess.
 
-## Beating the automated screener — the honest way
+## Readable to people and to parsers
 
-Modern hiring runs resumes through Applicant Tracking Systems (ATS) and, increasingly, AI ranking.
-Getting past them is about making genuine fit **legible to a parser**, not tricking it. See
-`reference/ATS-PLAYBOOK.md` for the full rules; the essentials:
+Every resume renders single-column, top to bottom, which is what AI and applicant-tracking parsers
+read reliably (see `reference/ATS-PLAYBOOK.md` and `reference/RESUME-FORMATS.md`):
 
-- **Clean, single-column, standard-heading layout** (Summary, Skills, Experience, Education) for
-  anything submitted through a portal. No tables, columns, text boxes, images, or header/footer
-  regions — parsers drop or scramble those. The ATS layout is compliant by construction.
-- **Keyword alignment done truthfully:** use the JD's exact wording for skills the user really has;
-  spell out an acronym once with its expansion (e.g., "Applicant Tracking System (ATS)"). The
-  profile's `aliases` field exists for exactly this.
-- **No deceptive tricks** — no hidden white-text keyword stuffing, no fake sections. ATS and
-  recruiters detect these and blacklist candidates. We win on real, well-surfaced fit.
+- Standard headings in the standard order (Summary, Skills, Experience, Education,
+  Certifications, Projects), reverse-chronological, one date format.
+- No tables, columns, text boxes, images or icons; contact details in the body, not a header.
+- Arial throughout: body 10pt, headings 15pt, 0.6/0.7in margins. The job title is bold and the
+  company is not.
+- Use the posting's exact wording for skills the user really has, and spell out an acronym once
+  ("Amazon Web Services (AWS)"); the profile's `aliases` exist for this. No hidden text, no
+  keyword stuffing.
+
+A two-column arrangement of the same design exists for emailing a person
+(`resume-tailor build <resume.md> --layout polished`). Its columns are a Word table, which parsers
+scramble, so **never point the user at a polished file for anything submitted through a form.**
 
 ## Working on the tooling
 
 ```bash
 make setup     # one-time
-make check     # ruff + mypy --strict + pytest with 100% coverage — all three must pass
+make check     # ruff + mypy --strict + pytest with 100% coverage: all three must pass
 ```
 
-- The package lives in `src/resume_tailor/`; tests mirror it in `tests/`.
+- The package lives in `src/resume_tailor/`; tests mirror it in `tests/`. `agent/` holds every
+  model operation and its prompts, `service/` the three runs, `review/` the mechanical reads,
+  `verify/` the anti-fabrication checks, `render/` the Word and PDF output.
 - **Coverage is enforced at 100%** and ruff's full rule set is on. New code needs tests, type
   annotations, and docstrings on public functions.
-- Editing `src/resume_tailor/profile/models.py` changes the schema: run `make profile-schema`, or the test that pins
-  `schema/master-profile.schema.json` will fail.
+- Editing `src/resume_tailor/profile/models.py` changes the schema: run `make profile-schema`, or
+  the test that pins `schema/master-profile.schema.json` will fail.
 - A layout's `.docx` and its HTML-to-PDF render must stay visually identical. If you change one,
-  change the other — they are the same document to the reader.
+  change the other: they are the same document to the reader.
 
 ## Conventions
 
-- The user's real data lives only in `profile/`, `jobs/` and `applications/` — all three are
-  **gitignored** (as is `.env`) so personal info, the jobs they are looking at, and drafts never get
-  committed. Templates, tooling, schema, and docs are tracked.
+- The user's real data lives only in `profile/`, `jobs/` and `applications/`, all **gitignored**
+  (as is `.env`), so personal info, the jobs they are looking at, and drafts never get committed.
 - Application folder slugs: lowercase `company-role`, e.g. `stripe-staff-backend-engineer`.
-- Resume Markdown must follow `templates/resume.md`'s structure so the renderers work. When in
-  doubt, copy the template and fill it in.
+- Resume Markdown must follow `templates/resume.md`'s structure so the renderers work.

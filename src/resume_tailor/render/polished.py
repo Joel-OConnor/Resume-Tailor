@@ -1,21 +1,20 @@
 """The polished layout: a two-column, typographic resume for human readers.
 
-This reproduces the design of the user's own "2026 Polished Resume" — a narrow left rail holding
-contact details, skills, and education, separated by a hairline rule from a wide right column
-holding the name, summary, and experience. Every measurement below was taken from that PDF: 0.2in
-page and column margins, Roboto throughout (ExtraLight for the name, SemiBold for contact lines
-and role headings, Bold for lead-ins and rail labels), a 12pt line pitch for body text and 13.2pt
-for the summary, and a bullet glyph with a 0.25in hanging indent on every accomplishment and on
-every skill in the rail.
+This reproduces the arrangement of the user's own "2026 Polished Resume": a narrow left rail
+holding contact details, skills, and education, separated by a hairline rule from a wide right
+column holding the name, summary, and experience. The geometry was measured from that PDF: 0.2in
+page and column margins, a 12pt line pitch for body text and 13.5pt for the summary, and a bullet
+glyph with a 0.25in hanging indent on every accomplishment and on every skill in the rail. The
+face is Arial throughout, in the only two weights it has: regular for the name, contact lines,
+and headings, bold for the job title in a role heading (see :mod:`resume_tailor.render.emphasis`),
+lead-ins, and rail labels.
 
 It is **not** ATS-safe: the two columns are a table, and table layouts get scrambled or dropped
 by resume parsers. That is why it is opt-in (``--layout polished``): the default export is
 :mod:`resume_tailor.render.ats`, the same typography in one column, which any parser can read.
 
-The PDF is printed from the HTML, which pulls Roboto from Google Fonts at print time so the PDF
-embeds the design face even on a machine that has never installed it. Offline, the metric-similar
-Helvetica fallback keeps the layout and shifts the letterforms slightly. Word draws the ``.docx``
-in Roboto only where the font is installed.
+Arial ships with macOS and Windows, so the PDF printed from the HTML fetches nothing at print time
+and Word draws the ``.docx`` in the same face the PDF shows.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from typing import TYPE_CHECKING, assert_never, cast
 
 from docx import Document as new_docx
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 
 from resume_tailor.documents.blocks import (
     Bullet,
@@ -47,7 +46,8 @@ from resume_tailor.render.docx_common import (
     set_indent,
     set_spacing,
 )
-from resume_tailor.render.html_common import FONT_IMPORT_URL, FONT_STACK, page, spans_to_html
+from resume_tailor.render.emphasis import entry_spans
+from resume_tailor.render.html_common import FONT_STACK, page, spans_to_html
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,7 +59,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_SIDEBAR_SECTIONS",
-    "FONT_IMPORT_URL",
     "render_docx",
     "render_html",
     "split_columns",
@@ -74,26 +73,24 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[str, ...] = (
     "certifications",
 )
 
-FONT = "Roboto"
-FONT_LIGHT = "Roboto ExtraLight"
-FONT_SEMIBOLD = "Roboto SemiBold"
+FONT = "Arial"
 BODY_PT = 10.0
 PROSE_PT = 11.0
-CONTACT_PT = 9.0
+CONTACT_PT = 10.0
 SECTION_PT = 15.0
 SUBTITLE_PT = 12.0
-NAME_PT = 35.0
+NAME_PT = 28.0
 
-# Line boxes, absolute so Word and the browser agree — see docx_common.set_spacing. Each is at
-# least Roboto's natural box at that size, so Word's "at least" never has to widen one and the
-# two renderers stack lines identically. Every vertical measure here is a multiple of 0.75pt,
-# one CSS pixel: the browser snaps line boxes and margins to whole pixels, Word does not, and a
-# value that is already whole keeps the PDF and the .docx from drifting a fraction per line.
+# Line boxes, absolute so Word and the browser agree (see docx_common.set_spacing). Each is at
+# least Arial's natural box at that size, 1.15 times it, so Word's "at least" never has to widen
+# one and the two renderers stack lines identically. Every vertical measure here is a multiple of
+# 0.75pt, one CSS pixel: the browser snaps line boxes and margins to whole pixels, Word does not,
+# and a value that is already whole keeps the PDF and the .docx from drifting a fraction per line.
 LINE_PT = 12.0
 PROSE_LINE_PT = 13.5
 SUBTITLE_LINE_PT = 14.25
 SECTION_LINE_PT = 18.0
-NAME_LINE_PT = 41.25
+NAME_LINE_PT = 33.0
 
 # The gap ABOVE each block. It lives in exactly one property on each side, and a block that opens
 # its column gets none at all: both columns start at the page margin.
@@ -203,6 +200,11 @@ def render_docx(
 ) -> None:
     """Write ``document`` as the two-column polished ``.docx``."""
     docx = new_docx()
+    # Word measures a line by its paragraph mark too, and the mark takes Normal's font. Left at
+    # python-docx's default it would be Cambria 11pt, a taller line than the PDF draws.
+    normal = docx.styles["Normal"].font
+    normal.name = FONT
+    normal.size = Pt(BODY_PT)
     for section in docx.sections:
         section.top_margin = section.bottom_margin = Inches(PAGE_MARGIN_IN)
         section.left_margin = section.right_margin = Inches(0)
@@ -276,10 +278,10 @@ def _add(  # noqa: C901 - flat dispatch over the block union
     match block:
         case Name(spans):
             paragraph = _paragraph(cell, indent, _gap("name", previous), line=NAME_LINE_PT)
-            add_spans(paragraph, spans, font=FONT_LIGHT, size=NAME_PT)
+            add_spans(paragraph, spans, font=FONT, size=NAME_PT)
         case HeaderLine(spans) if sidebar:
             paragraph = _paragraph(cell, indent, _gap("contact", previous))
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=CONTACT_PT)
+            add_spans(paragraph, spans, font=FONT, size=CONTACT_PT)
         case HeaderLine(spans):
             before = _gap("subtitle", previous)
             paragraph = _paragraph(cell, indent, before, line=SUBTITLE_LINE_PT)
@@ -290,9 +292,7 @@ def _add(  # noqa: C901 - flat dispatch over the block union
             add_spans(paragraph, (Span(title),), font=FONT, size=SECTION_PT)
         case Entry(spans):
             paragraph = _paragraph(cell, indent, _gap("entry", previous))
-            # The family name already carries the weight; adding bold on top resolves to the
-            # bold companion of SemiBold, which is heavier than the design and than the HTML.
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=BODY_PT)
+            add_spans(paragraph, entry_spans(spans), font=FONT, size=BODY_PT)
         case Meta(spans):
             paragraph = _paragraph(cell, indent, _gap("meta", previous))
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, italic=True)
@@ -381,7 +381,6 @@ def _skill_items(items: tuple[Span, ...]) -> list[tuple[Span, ...]]:
 
 # --- HTML -----------------------------------------------------------------------------------------
 CSS = f"""
-@import url('{FONT_IMPORT_URL}');
 @page {{ size: Letter; margin: {PAGE_MARGIN_IN}in 0; }}
 * {{ box-sizing: border-box; }}
 /* Every gap is a margin-TOP, every bottom margin is 0, and line-height is absolute — the .docx
@@ -389,6 +388,8 @@ CSS = f"""
    font's natural line box rather than of its size. Points mean the same thing to both. */
 body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
         color: #111; margin: 0; }}
+/* Arial has two weights, regular and bold, which is also all a .docx run can say, so no rule
+   here names a weight between them. An entry heading's bold comes from its spans, as in Word. */
 h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
 /* The rule stops where the content does, exactly as the .docx table row does. */
 .sheet {{ display: flex; align-items: stretch; }}
@@ -396,17 +397,17 @@ h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
          padding: 0 {SIDEBAR_INDENT[1]}in 0 {SIDEBAR_INDENT[0]}in; }}
 .main {{ width: {MAIN_WIDTH_IN}in; flex: 1 1 {MAIN_WIDTH_IN}in;
          padding: 0 {MAIN_INDENT[1]}in 0 {MAIN_INDENT[0]}in; }}
-h1 {{ font-size: {NAME_PT}pt; font-weight: 200; line-height: {NAME_LINE_PT}pt;
+h1 {{ font-size: {NAME_PT}pt; font-weight: 400; line-height: {NAME_LINE_PT}pt;
       margin-top: {GAP_PT["name"]}pt; }}
 h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; line-height: {SECTION_LINE_PT}pt;
       margin-top: {GAP_PT["section"]}pt; }}
 .rail h2 {{ margin-top: {GAP_PT["section-rail"]}pt; }}
 h1 + h2 {{ margin-top: {GAP_PT["section-after-name"]}pt; }}
 .subtitle + h2 {{ margin-top: {GAP_PT["section-after-subtitle"]}pt; }}
-h3 {{ font-size: {BODY_PT}pt; font-weight: 600; margin-top: {GAP_PT["entry"]}pt; }}
+h3 {{ font-size: {BODY_PT}pt; font-weight: 400; margin-top: {GAP_PT["entry"]}pt; }}
 .subtitle {{ font-size: {SUBTITLE_PT}pt; line-height: {SUBTITLE_LINE_PT}pt;
              margin-top: {GAP_PT["subtitle"]}pt; }}
-.contact {{ font-size: {CONTACT_PT}pt; font-weight: 600; margin-top: {GAP_PT["contact"]}pt; }}
+.contact {{ font-size: {CONTACT_PT}pt; margin-top: {GAP_PT["contact"]}pt; }}
 .meta {{ font-style: italic; margin-top: {GAP_PT["meta"]}pt; }}
 .skill-group {{ font-weight: 700; margin-top: {GAP_PT["skill-group"]}pt; }}
 .skill-inline {{ margin-top: {GAP_PT["skill-inline"]}pt; }}
@@ -470,7 +471,7 @@ def _html_block(block: GroupBlock, *, sidebar: bool) -> str:
             css = "contact" if sidebar else "subtitle"
             html = f'<div class="{css}">{spans_to_html(spans)}</div>'
         case Entry(spans):
-            html = f"<h3>{spans_to_html(spans)}</h3>"
+            html = f"<h3>{spans_to_html(entry_spans(spans))}</h3>"
         case Meta(spans):
             html = f'<div class="meta">{spans_to_html(spans)}</div>'
         case SkillLine(label, items):

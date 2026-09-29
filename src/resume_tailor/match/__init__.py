@@ -8,7 +8,7 @@ from resume_tailor.match.coverage import Confidence, Coverage, Match, find_cover
 from resume_tailor.match.gaps import Gap, find_gaps
 from resume_tailor.match.lexicon import Lexicon, Provenance, Tier, build_lexicon
 from resume_tailor.match.posting import Posting, Section, parse_posting
-from resume_tailor.match.report import Report, render_json, render_markdown, render_text
+from resume_tailor.match.report import Report, render_markdown
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,9 +31,7 @@ __all__ = [
     "find_gaps",
     "match_posting",
     "parse_posting",
-    "render_json",
     "render_markdown",
-    "render_text",
 ]
 
 

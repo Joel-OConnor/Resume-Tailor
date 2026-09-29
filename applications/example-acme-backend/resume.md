@@ -17,7 +17,7 @@ is scaling.
 
 ## Experience
 
-### Northwind Payments — Senior Backend Engineer
+### **Senior Backend Engineer** – Northwind Payments
 Austin, TX | Mar 2021 – Present
 - **Settlement Platform:** Led the design of a Go settlement platform processing 4M+ daily transactions, cutting end-to-end latency 38% (820ms → 510ms).
 - **Service Decomposition:** Drove a monolith-to-microservices migration (6 Go services), reducing deploy time from 2 days to under 1 hour.
@@ -26,7 +26,7 @@ Austin, TX | Mar 2021 – Present
 - **Mentorship:** Mentored 4 engineers and raised testing and CI standards; two were promoted within a year.
 *Tech Stack — Go, Python, PostgreSQL, Kafka, AWS (ECS, Lambda, RDS), Kubernetes, Terraform*
 
-### Cedar Analytics — Backend Engineer
+### **Backend Engineer** – Cedar Analytics
 Remote | Jun 2018 – Feb 2021
 - **Event Ingestion:** Built a Kafka event pipeline ingesting 500M events/day at 99.98% delivery reliability.
 - **Infrastructure & Cost:** Managed AWS and Kubernetes infrastructure with Terraform; cut monthly spend 22% (~$14k/mo) via autoscaling and right-sizing.
@@ -35,8 +35,8 @@ Remote | Jun 2018 – Feb 2021
 
 ## Education
 
-### B.S. Computer Science
-University of Texas at Austin, 2016
+### **B.S. Computer Science** – University of Texas at Austin
+Austin, TX | 2016
 
 ## Certifications
 - AWS Certified Solutions Architect – Associate — Amazon — 2022

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from resume_tailor.profile.general_resume import DEFAULT_SHAPE, ResumeShape, render_general_resume
 from resume_tailor.profile.loader import DEFAULT_PROFILE_PATH, LEVELS, load, load_mapping, loads
 from resume_tailor.profile.markdown_view import format_date, format_period, render_markdown
 from resume_tailor.profile.models import (
@@ -23,7 +22,6 @@ from resume_tailor.profile.schema import build_schema
 
 __all__ = [
     "DEFAULT_PROFILE_PATH",
-    "DEFAULT_SHAPE",
     "LEVELS",
     "Contact",
     "Credential",
@@ -33,7 +31,6 @@ __all__ = [
     "Link",
     "Profile",
     "Project",
-    "ResumeShape",
     "Role",
     "Technology",
     "TechnologyGroup",
@@ -44,6 +41,5 @@ __all__ = [
     "load",
     "load_mapping",
     "loads",
-    "render_general_resume",
     "render_markdown",
 ]

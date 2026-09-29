@@ -10,7 +10,6 @@ from docx.shared import Pt
 from resume_tailor.documents import parse
 from resume_tailor.documents.blocks import Span, is_contact_line, is_note
 from resume_tailor.render import ats
-from resume_tailor.render.html_common import FONT_IMPORT_URL
 from tests.conftest import docx_lines
 
 if TYPE_CHECKING:
@@ -20,6 +19,19 @@ if TYPE_CHECKING:
     from docx.text.paragraph import Paragraph as DocxParagraph
 
     from resume_tailor.documents.blocks import Document
+
+# The entry-heading convention: the Markdown bolds the job title (or degree), never the company.
+TITLED_MD = """\
+# Ada Lovelace
+
+## Experience
+### **Principal Engineer** – Analytical Engine Programme
+London, UK | Jan 1843 – Present
+
+## Education
+### **Mathematics** – Private tuition
+1840
+"""
 
 
 def _render(document: Document, tmp_path: Path) -> DocxDocument:
@@ -93,27 +105,44 @@ def test_a_meta_line_renders_italic(resume: Document, tmp_path: Path) -> None:
 def test_every_run_uses_the_design_face(resume: Document, tmp_path: Path) -> None:
     document = _render(resume, tmp_path)
     fonts = {r.font.name for p in document.paragraphs for r in p.runs}
-    assert fonts == {ats.FONT, ats.FONT_LIGHT, ats.FONT_SEMIBOLD}
+    assert fonts == {ats.FONT}
 
 
 def test_the_header_sets_the_name_title_and_contact_line_apart(
     resume: Document, tmp_path: Path
 ) -> None:
-    """A large light name, a regular target title, a small semibold contact line: the design."""
+    """A large regular name, a regular target title, a body-size regular contact line."""
     paragraphs = _render(resume, tmp_path).paragraphs
     name, title, contact = paragraphs[:3]
-    assert (name.runs[0].font.name, _size(name)) == (ats.FONT_LIGHT, 35)
-    assert name.paragraph_format.line_spacing == Pt(41.25)
-    assert (title.runs[0].font.name, _size(title)) == (ats.FONT, 12)
-    assert (contact.runs[0].font.name, _size(contact)) == (ats.FONT_SEMIBOLD, 9)
+    assert (_size(name), name.runs[0].bold) == (28, False)
+    assert name.paragraph_format.line_spacing == Pt(33)
+    assert (_size(title), title.runs[0].bold) == (12, False)
+    assert (_size(contact), contact.runs[0].bold) == (10, False)
     assert contact.text.startswith("ada@example.com |")
 
 
-def test_role_headings_are_semibold_not_bold(resume: Document, tmp_path: Path) -> None:
+def test_a_heading_that_bolds_its_title_leaves_the_company_regular(tmp_path: Path) -> None:
+    paragraphs = _render(parse(TITLED_MD), tmp_path).paragraphs
+    role = next(p for p in paragraphs if p.text.startswith("Principal Engineer"))
+    degree = next(p for p in paragraphs if p.text.startswith("Mathematics"))
+    assert [(run.text, run.bold) for run in role.runs] == [
+        ("Principal Engineer", True),
+        (" – Analytical Engine Programme", False),
+    ]
+    assert [(run.text, run.bold) for run in degree.runs] == [
+        ("Mathematics", True),
+        (" – Private tuition", False),
+    ]
+    assert {run.font.name for p in (role, degree) for run in p.runs} == {ats.FONT}
+
+
+def test_a_heading_with_no_bold_span_is_bold_throughout(resume: Document, tmp_path: Path) -> None:
+    """Resumes written before the convention keep the all-bold heading they always had."""
     document = _render(resume, tmp_path)
     entry = next(p for p in document.paragraphs if "Analytical Engine Programme" in p.text)
-    assert entry.runs[0].font.name == ats.FONT_SEMIBOLD
-    assert entry.runs[0].bold is False
+    assert [(run.text, run.bold) for run in entry.runs] == [
+        ("Analytical Engine Programme — Principal Engineer", True)
+    ]
 
 
 def test_bullets_hang_past_a_glyph_at_the_margin(resume: Document, tmp_path: Path) -> None:
@@ -189,7 +218,7 @@ def test_html_mirrors_the_docx_structure(resume: Document) -> None:
     assert "<title>Ada Lovelace</title>" in html
     assert "<h1>Ada Lovelace</h1>" in html
     assert "<h2>Summary</h2>" in html
-    assert "<h3>Analytical Engine Programme — Principal Engineer</h3>" in html
+    assert "<h3><strong>Analytical Engine Programme — Principal Engineer</strong></h3>" in html
     assert '<div class="meta"><em>London, UK | Jan 1843 – Present</em></div>' in html
     assert "<strong>Languages: </strong>Analytical Notation, Mathematics" in html
 
@@ -220,8 +249,17 @@ def test_a_trailing_italic_note_renders_outside_the_bullet_list(resume: Document
 
 def test_html_carries_the_design_face_and_the_bullet_rule(resume: Document) -> None:
     html = ats.render_html(resume)
-    assert f"@import url('{FONT_IMPORT_URL}');" in html
+    assert "font-family: Arial, Helvetica, sans-serif;" in html
+    assert "@import" not in html, "nothing to fetch: Arial is already installed"
     assert '<div class="subtitle">Principal Engineer</div>' in html
     assert '<div class="contact">ada@example.com |' in html
+    assert f".contact {{ font-size: {ats.CONTACT_PT}pt; margin-top:" in html, "regular weight"
     assert 'li::before { content: "\u2022"; position: absolute; left: 0; }' in html
     assert "table" not in html.split("<body>")[1], "the single column never becomes a table"
+
+
+def test_html_bolds_an_entry_heading_only_where_the_markdown_does() -> None:
+    html = ats.render_html(parse(TITLED_MD))
+    assert "<h3><strong>Principal Engineer</strong> – Analytical Engine Programme</h3>" in html
+    assert "<h3><strong>Mathematics</strong> – Private tuition</h3>" in html
+    assert f"h3 {{ font-size: {ats.BODY_PT}pt; font-weight: 400;" in html, "a regular base"

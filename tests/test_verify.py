@@ -576,6 +576,70 @@ def test_a_prose_line_inside_the_skills_section_is_left_alone(profile: Profile) 
     assert verdict.ok, format_violations(verdict)
 
 
+def test_a_product_written_without_its_vendor_is_still_the_recorded_one() -> None:
+    """Inside "AWS (…)", "Aurora Serverless" is the profile's own "AWS Aurora Serverless"."""
+    technologies = [
+        {
+            "group": "Cloud",
+            "items": [{"name": "AWS Aurora Serverless"}, {"name": "Apache Kafka"}, {"name": "AWS"}],
+        }
+    ]
+    profile = load_mapping(_mapping(technologies=technologies))
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Skills
+        **Cloud:** AWS (Aurora Serverless), Kafka, Serverless
+        """,
+        profile,
+    )
+    assert _texts(verdict) == ["Serverless"], "a bare fragment is not a product"
+
+
+def test_a_skills_line_under_a_role_is_a_claim_too(profile: Profile) -> None:
+    """A LinkedIn position lists its skills under the role; each one must be real."""
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Experience
+
+        ### Northwind Payments — Senior Backend Engineer
+        Mar 2021 – Present
+        - Rebuilt the settlement pipeline.
+        **Skills:** Go, Python, Rust
+        """,
+        profile,
+    )
+    assert _texts(verdict) == ["Rust"]
+
+
+def test_a_labelled_line_outside_skills_and_experience_is_not_a_skills_claim(
+    profile: Profile,
+) -> None:
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Open to Work
+        **Job titles:** Staff Backend Engineer, Platform Lead
+        """,
+        profile,
+    )
+    assert verdict.ok, format_violations(verdict)
+
+
+def test_figures_in_reads_claims_the_way_the_check_does() -> None:
+    from resume_tailor.verify.metrics import figures_in
+
+    lexicon = build_lexicon(load_mapping(_mapping()))
+    found = figures_in(
+        "Cut costs $200k and latency 38% on EC2 with Python 3 for 4M users.", lexicon
+    )
+    assert found == {"200000": "$200k", "38": "38%", "4000000": "4M"}
+
+
 # --- metrics ----------------------------------------------------------------------------------
 def test_an_invented_percentage_is_caught_and_quoted_with_its_word(profile: Profile) -> None:
     """The invented "40% faster" is the failure this whole module exists to stop."""

@@ -28,7 +28,6 @@ CHROME_CANDIDATES: tuple[str, ...] = (
 )
 _ON_PATH = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
 _TIMEOUT_SECONDS = 90
-_FONT_WAIT_MS = 10_000
 
 NO_BROWSER = "no browser found — open the .html and print to PDF"
 BROWSER_FAILED = "the browser could not produce a PDF — open the .html and print it by hand"
@@ -100,9 +99,6 @@ def _run_chrome(chrome: str, flag: str, source: Path, out: Path) -> bool:
         "--disable-gpu",
         "--no-sandbox",
         "--no-pdf-header-footer",
-        # The polished layout fetches its typeface from Google Fonts; this lets that download
-        # finish before the page is printed, instead of racing it and printing the fallback.
-        f"--virtual-time-budget={_FONT_WAIT_MS}",
         f"--print-to-pdf={os.fspath(out)}",
         source.as_uri(),
     ]

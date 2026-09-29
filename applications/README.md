@@ -1,37 +1,35 @@
 # Applications
 
-One folder per job you apply to (slug: lowercase `company-role`, e.g.
-`stripe-staff-backend-engineer`). Each tailoring run creates a folder here with:
+Everything the two generating scripts write lands here, one folder per run.
+
+**`general/`**, from `make resume`:
 
 | File | What it is |
 |------|-----------|
-| `job-description.md` | The posting you pasted in (kept for reference) |
-| `resume.md` | The tailored resume — edit here, then re-export |
-| `resume.docx` / `resume.pdf` | **The resume** — single column, parser-safe, in the design's typography; send it anywhere (`--layout polished` adds a two-column version for people) |
-| `fit-report.md` | Match strength, keywords covered vs. missing, honest ways to close gaps, and the readability review |
-| `cover-letter.md` | Tailored one-page cover letter |
-| `cover-letter.docx` / `.pdf` | Exports (single column) |
-| `linkedin.md` | Suggested LinkedIn headline + "About" for this kind of role |
+| `resume.docx` / `resume.pdf` | **Your general resume**: single column, parser-safe, one or two pages. Send it anywhere |
+| `resume.md` | Its source |
+| `linkedin.md` | Everything to put on LinkedIn, section by section and within LinkedIn's limits |
 
-Everything but the Markdown is generated — see
-[reference/RESUME-FORMATS.md](../reference/RESUME-FORMATS.md) for which resume to send where.
+**`<company>-<role>/`**, from `make tailor JOB=<posting>` (slug: lowercase company and role, e.g.
+`stripe-staff-backend-engineer`):
 
-One folder is not a job: `general/` holds the untailored resume `make resume` renders from the
-whole profile (just `resume.md` and its exports). Re-running replaces it.
+| File | What it is |
+|------|-----------|
+| `resume.docx` / `resume.pdf` | **The resume tailored to that posting** |
+| `cover-letter.docx` / `cover-letter.pdf` | A matching one-page cover letter |
+| `resume.md` / `cover-letter.md` | Their sources |
+| `job-description.md` | The posting, kept for reference |
 
-**Your folders here are gitignored** (they contain personal data) — only this README and the
-`example-acme-backend/` demo are tracked.
-
-To fix a resume's easy problems, re-export it, and answer the questions it raises:
-
-```bash
-make review APP=stripe-staff-backend-engineer
-```
-
-To (re)generate the Word/PDF files after editing a resume or letter:
+Running a script again replaces its folder whole. To change what goes in, change the facts in
+`profile/master-profile.yaml` (or answer the review's questions) rather than editing the output;
+if you do edit a `.md` by hand, re-render it with:
 
 ```bash
-make export APP=stripe-staff-backend-engineer
+.venv/bin/resume-tailor build applications/<folder>/resume.md
 ```
 
-See [`example-acme-backend/`](example-acme-backend/) for a complete worked example (fictional).
+See [reference/RESUME-FORMATS.md](../reference/RESUME-FORMATS.md) for why the resume looks the way
+it does, and [`example-acme-backend/`](example-acme-backend/) for a worked example (fictional).
+
+**Your folders here are gitignored** (they contain personal data): only this README and the
+example are tracked.

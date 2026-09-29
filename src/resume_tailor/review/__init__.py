@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
+from resume_tailor.review.linkedin import check_linkedin
 from resume_tailor.review.models import Finding, Level, Review
 from resume_tailor.review.profile import review_profile
-from resume_tailor.review.report import format_review, render_markdown
+from resume_tailor.review.questions import (
+    MAX_QUESTIONS,
+    Answer,
+    Question,
+    from_findings,
+    gather,
+    said,
+)
+from resume_tailor.review.report import format_review
 from resume_tailor.review.resume import apply_fixes, review_and_fix, review_resume
 
 __all__ = [
+    "MAX_QUESTIONS",
+    "Answer",
     "Finding",
     "Level",
+    "Question",
     "Review",
     "apply_fixes",
+    "check_linkedin",
     "format_review",
-    "render_markdown",
+    "from_findings",
+    "gather",
     "review_and_fix",
     "review_profile",
     "review_resume",
+    "said",
 ]

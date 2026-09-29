@@ -13,6 +13,7 @@ from resume_tailor.render.pdf import NO_BROWSER, PdfResult
 from tests.conftest import REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 EXAMPLE_PROFILE = str(REPO_ROOT / "templates" / "master-profile.example.yaml")
@@ -139,11 +140,33 @@ def test_a_pdf_fallback_is_flagged_in_the_output(
 
 
 # --- profile --------------------------------------------------------------------------------------
-def test_profile_validate_summarises_the_profile(capsys: pytest.CaptureFixture[str]) -> None:
+def test_profile_validate_summarises_and_audits_the_profile(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert cli.main(["profile", "validate", EXAMPLE_PROFILE]) == 0
     out = capsys.readouterr().out
     assert "is valid — 2 employers, 2 roles," in out
-    assert "· note: Confirm the exact settlement latency" in out
+    assert "  ? Confirm the exact settlement latency" in out
+
+
+def test_profile_validate_prints_what_the_audit_still_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "contact: {name: Ada, headline: E, email: a@b.c}\n"
+        "summary: s\n"
+        "technologies: [{group: G, items: [{name: Go}]}]\n"
+        "experience:\n"
+        "  - id: e\n"
+        "    company: E\n"
+        "    roles: [{title: T, start: '2020', end: '2021', highlights: [{text: Did it.}]}]\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["profile", "validate", str(profile)]) == 0
+    out = capsys.readouterr().out
+    assert "Still worth a look: 2 suggestions" in out
+    assert "~ no-level: 1 technologies have no level (Go)" in out
 
 
 def test_profile_validate_reports_an_invalid_file(
@@ -386,192 +409,178 @@ def test_validate_counts_technologies_not_aliases(
     assert "2 technologies" in capsys.readouterr().out
 
 
-# --- the standalone path ---------------------------------------------------------------------
-class _StubModel:
-    """Stands in for a language model; the agent layer only ever calls .complete()."""
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-    def complete(self, system: str, prompt: str) -> object:
-        from resume_tailor.llm import Reply
-
-        assert system and prompt
-        return Reply(self.text, 1, 2, "end_turn")
+# --- the three runs -------------------------------------------------------------------------------
+from resume_tailor.review import Answer, Finding, Level, Question, Review  # noqa: E402
+from resume_tailor.service import Application, ProfileBuild, ProfileUpdate  # noqa: E402
 
 
-def _profile_file(tmp_path: Path) -> Path:
-    path = tmp_path / "profile.yaml"
-    path.write_text(
-        "contact: {name: Ada Lovelace, headline: Engineer, email: a@b.c}\n"
-        "summary: An engineer.\n"
-        "experience:\n"
-        "  - id: acme\n"
-        "    company: Acme\n"
-        "    roles: [{title: Engineer, start: '2020', end: present}]\n",
-        encoding="utf-8",
+def _flat(text: str) -> str:
+    """Undo the terminal's line wrapping, so an assertion reads the sentence that was printed."""
+    return " ".join(text.split())
+
+
+class _Recorder:
+    """Stands in for a service run: records its arguments and returns a canned result."""
+
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.args: tuple[object, ...] = ()
+        self.kwargs: dict[str, object] = {}
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        self.args, self.kwargs = args, kwargs
+        return self.result
+
+
+@pytest.fixture
+def keyed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend an API key is configured, and hand out a model nobody consults."""
+    monkeypatch.setattr(cli, "load_settings", lambda: None)
+    monkeypatch.setattr(cli, "build_model", lambda *_, **__: object())
+
+
+def _application(tmp_path: Path, **fields: object) -> Application:
+    directory = tmp_path / "applications" / "general"
+    directory.mkdir(parents=True, exist_ok=True)
+    resume = directory / "resume.md"
+    resume.write_text(RESUME_MD, encoding="utf-8")
+    return Application("general", directory, (resume,), **fields)  # type: ignore[arg-type]
+
+
+_REVIEWED = Review(
+    (Finding("long-bullet", Level.ADVISE, 12, "Built the thing", "44 words; split it"),),
+    applied=(Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),),
+)
+
+
+@pytest.mark.usefixtures("keyed")
+def test_resume_runs_the_general_application_and_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _Recorder(_application(tmp_path, review=_REVIEWED))
+    monkeypatch.setattr(cli, "general_application", run)
+
+    argv = ["resume", "--applications", str(tmp_path / "applications"), "--no-export"]
+    assert cli.main([*argv, "--no-interactive"]) == 0
+
+    assert run.kwargs["export"] is False
+    assert run.kwargs["ask"] is None
+    out = capsys.readouterr().out
+    assert "→ " in out and "✓ resume.md" in out
+    assert "Review: 1 fixed · 1 suggestion" in out
+    assert "~ line 12  long-bullet: 44 words; split it" in out
+
+
+@pytest.mark.usefixtures("keyed")
+def test_unasked_questions_are_listed_with_how_to_answer_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    questions = (Question("How many users?", "Built the thing"),)
+    monkeypatch.setattr(
+        cli, "general_application", _Recorder(_application(tmp_path, questions=questions))
     )
-    return path
+
+    assert cli.main(["resume", "--no-interactive"]) == 0
+
+    out = _flat(capsys.readouterr().out)
+    assert "Open questions" in out
+    assert "? How many users?" in out
+    assert '"Built the thing"' in out
+    assert "Run it again at a terminal" in out
+    assert "add the facts to profile/master-profile.yaml" in out
 
 
-def test_tailor_writes_an_application(
+@pytest.mark.usefixtures("keyed")
+def test_asked_questions_are_not_listed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    update = ProfileUpdate(
+        (Answer(Question("How many users?"), "About 4,000."),), changes=("highlights: 3 → 4",)
+    )
+    result = _application(
+        tmp_path, questions=(Question("How many users?"),), asked=True, update=update
+    )
+    monkeypatch.setattr(cli, "general_application", _Recorder(result))
+
+    assert cli.main(["resume", "--interactive"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Open questions" not in out
+    assert "✓ recorded 1 answer in profile/master-profile.yaml" in out
+    assert "highlights: 3 → 4" in out
+
+
+@pytest.mark.usefixtures("keyed")
+def test_problems_that_did_not_stop_the_run_are_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    update = ProfileUpdate((Answer(Question("Q?"), "A."),), error="rate limited")
+    result = _application(
+        tmp_path, asked=True, update=update, problems=("the documents do not use them yet",)
+    )
+    monkeypatch.setattr(cli, "general_application", _Recorder(result))
+
+    assert cli.main(["resume"]) == 0
+
+    err = _flat(capsys.readouterr().err)
+    assert "could not be recorded in profile/master-profile.yaml automatically: rate limited" in err
+    assert "! the documents do not use them yet" in err
+
+
+@pytest.mark.usefixtures("keyed")
+def test_tailor_runs_on_the_one_posting_named_and_shows_the_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     posting = tmp_path / "jd.md"
     posting.write_text("# Acme — Engineer\n\n## Requirements\n- Work.\n", encoding="utf-8")
+    run = _Recorder(_application(tmp_path, company="Acme", role="Engineer", fit="Strong on Go."))
+    monkeypatch.setattr(cli, "tailor_application", run)
 
-    called: dict[str, object] = {}
+    assert cli.main(["tailor", str(posting), "--no-interactive"]) == 0
 
-    def fake_tailor(_posting: str, **kwargs: object) -> object:
-        from resume_tailor.service import Application
-
-        called.update(kwargs)
-        directory = tmp_path / "applications" / "acme-engineer"
-        directory.mkdir(parents=True)
-        written = directory / "resume.md"
-        written.write_text("# Ada\n", encoding="utf-8")
-        return Application("acme-engineer", directory, (written,), "Acme", "Engineer")
-
-    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-
-    argv = [
-        "tailor",
-        str(posting),
-        "--profile",
-        str(_profile_file(tmp_path)),
-        "--applications",
-        str(tmp_path / "applications"),
-        "--no-export",
-    ]
-    assert cli.main(argv) == 0
-    assert called["export"] is False
-    assert "resume.md" in capsys.readouterr().out
+    assert run.args == ("# Acme — Engineer\n\n## Requirements\n- Work.\n",)
+    assert run.kwargs["export"] is True
+    assert "Fit: Strong on Go." in capsys.readouterr().out
 
 
-def test_tailor_reports_a_missing_posting(
+def test_tailor_needs_a_posting(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["tailor"])
+    assert "posting" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        (lambda tmp: tmp / "absent.md", "not found"),
+        (lambda tmp: tmp, "not a file"),
+    ],
+)
+def test_tailor_reports_a_posting_it_cannot_use(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    make: Callable[[Path], Path],
+    expected: str,
+) -> None:
+    assert cli.main(["tailor", str(make(tmp_path))]) == 1
+    assert expected in capsys.readouterr().err
+
+
+def test_tailor_reports_an_empty_or_unreadable_posting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["tailor", str(tmp_path / "absent.md")]) == 1
-    assert "not found" in capsys.readouterr().err
-
-
-def test_tailor_reports_a_posting_that_is_not_a_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A path that exists but is neither a file nor a folder cannot be a posting."""
-    import os
-
-    pipe = tmp_path / "pipe"
-    os.mkfifo(pipe)
-    assert cli.main(["tailor", str(pipe)]) == 1
-    assert "not a file or folder" in capsys.readouterr().err
-
-
-def _inbox(tmp_path: Path, *names: str) -> Path:
-    """Build a jobs inbox holding one posting per name."""
-    jobs = tmp_path / "jobs"
-    jobs.mkdir(exist_ok=True)
-    for name in names:
-        (jobs / name).write_text(f"# {name} — Engineer\n\n- Work.\n", encoding="utf-8")
-    return jobs
-
-
-def _fake_tailoring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Record every posting tailored, writing a plausible application folder for each."""
-    seen: list[str] = []
-
-    def fake_tailor(posting: str, **_kwargs: object) -> object:
-        from resume_tailor.service import Application
-
-        seen.append(posting.splitlines()[0])
-        slug = f"app-{len(seen)}"
-        directory = tmp_path / "applications" / slug
-        directory.mkdir(parents=True)
-        written = directory / "resume.md"
-        written.write_text("# Ada\n", encoding="utf-8")
-        return Application(slug, directory, (written,), "Acme", "Engineer")
-
-    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-    return seen
-
-
-def test_tailor_runs_every_posting_in_the_inbox(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Dropping several postings in and running once is the whole point of the inbox."""
-    jobs = _inbox(tmp_path, "acme.md", "beta.txt", "README.md")
-    (jobs / "screenshot.png").write_bytes(b"\x89PNG")
-    (jobs / ".hidden.md").write_text("# Nope\n", encoding="utf-8")
-    seen = _fake_tailoring(tmp_path, monkeypatch)
-
-    assert cli.main(["tailor", "--jobs", str(jobs), "--no-export"]) == 0
-    # The inbox's own README, a hidden file and a non-posting are all left alone.
-    assert seen == ["# acme.md — Engineer", "# beta.txt — Engineer"]
-
-
-def test_tailor_keeps_going_after_one_posting_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A posting the profile cannot honestly satisfy must not cost the user the other three."""
-    from resume_tailor.errors import FabricationError
-    from resume_tailor.service import Application
-
-    jobs = _inbox(tmp_path, "one.md", "two.md")
-    calls: list[str] = []
-
-    def fake_tailor(posting: str, **_kwargs: object) -> object:
-        calls.append(posting.splitlines()[0])
-        if "one.md" in posting:
-            msg = "claimed Kubernetes, which the profile does not support"
-            raise FabricationError(msg)
-        directory = tmp_path / "applications" / "two"
-        directory.mkdir(parents=True)
-        return Application("two", directory, (), "Acme", "Engineer")
-
-    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-
-    assert cli.main(["tailor", "--jobs", str(jobs), "--no-export"]) == 1
-    assert len(calls) == 2, "the second posting still ran"
-    assert "does not support" in capsys.readouterr().err
-
-
-def test_tailor_names_a_folder_and_drops_duplicates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The same posting given twice must not tailor twice over the same folder."""
-    jobs = _inbox(tmp_path, "acme.md")
-    seen = _fake_tailoring(tmp_path, monkeypatch)
-    argv = ["tailor", str(jobs), str(jobs / "acme.md"), "--no-export"]
-    assert cli.main(argv) == 0
-    assert seen == ["# acme.md — Engineer"]
-
-
-def test_an_empty_inbox_says_where_to_put_a_posting(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Told before an API key is ever asked for, so the message is the one that helps."""
-    jobs = tmp_path / "jobs"
-    jobs.mkdir()
-    assert cli.main(["tailor", "--jobs", str(jobs)]) == 1
-    assert "no job descriptions in" in capsys.readouterr().err
-
-
-def test_an_empty_named_folder_is_reported_in_its_own_terms(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    empty = tmp_path / "postings"
-    empty.mkdir()
+    empty = tmp_path / "empty.md"
+    empty.write_text("  \n", encoding="utf-8")
     assert cli.main(["tailor", str(empty)]) == 1
-    assert "no job descriptions found in the folders given" in capsys.readouterr().err
+    assert "is empty" in capsys.readouterr().err
+
+    binary = tmp_path / "binary.md"
+    binary.write_bytes(b"\xff\xfe\x00\x80")
+    assert cli.main(["tailor", str(binary)]) == 1
+    assert "cannot read" in capsys.readouterr().err
 
 
-def test_tailor_surfaces_a_missing_api_key(
+def test_a_missing_api_key_is_reported_with_the_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The commonest first-run failure must name the fix, not raise."""
@@ -587,25 +596,126 @@ def test_tailor_surfaces_a_missing_api_key(
     monkeypatch.setattr(cli, "load_settings", no_key)
     assert cli.main(["tailor", str(posting)]) == 1
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert cli.main(["resume"]) == 1
 
 
-def test_profile_build_writes_yaml(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+# --- asking at the terminal -----------------------------------------------------------------------
+def _typed(monkeypatch: pytest.MonkeyPatch, *lines: str) -> None:
+    """Feed ``lines`` to input(), then end of input."""
+    pending = list(lines)
+
+    def fake_input(_: str = "") -> str:
+        if not pending:
+            raise EOFError
+        return pending.pop(0)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def test_the_terminal_asks_each_question_and_keeps_every_reply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    _typed(monkeypatch, "About 4,000.", "")
+    questions = (Question("How many users?", "Built the thing"), Question("Which year?"))
+
+    answers = cli._ask_in_terminal(questions)
+
+    assert [(a.question, a.text) for a in answers] == [
+        (questions[0], "About 4,000."),
+        (questions[1], ""),
+    ]
+    out = capsys.readouterr().out
+    assert "2 questions before the final version" in out
+    assert "[1/2] How many users?" in out
+    assert '"Built the thing"' in out
+
+
+def test_done_or_end_of_input_stops_the_questions(monkeypatch: pytest.MonkeyPatch) -> None:
+    questions = (Question("One?"), Question("Two?"), Question("Three?"))
+    _typed(monkeypatch, "yes", "done")
+    assert [a.text for a in cli._ask_in_terminal(questions)] == ["yes"]
+    _typed(monkeypatch, "yes")
+    assert [a.text for a in cli._ask_in_terminal(questions[:2])] == ["yes"]
+
+
+def test_questions_are_asked_by_default_only_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = cli.build_parser().parse_args(["resume"])
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert cli._asker(args) is cli._ask_in_terminal
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert cli._asker(args) is None
+    assert cli._asker(cli.build_parser().parse_args(["resume", "--interactive"])) is not None
+
+
+# --- building the profile -------------------------------------------------------------------------
+@pytest.fixture
+def raw(tmp_path: Path) -> Path:
+    folder = tmp_path / "raw"
+    folder.mkdir()
+    (folder / "old.md").write_text("An old resume.\n", encoding="utf-8")
+    return folder
+
+
+@pytest.mark.usefixtures("keyed")
+def test_profile_build_reads_the_documents_and_reports_what_it_did(
+    tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     out = tmp_path / "master-profile.yaml"
+    built = ProfileBuild(
+        path=out,
+        backup=tmp_path / "master-profile.yaml.20260925.bak",
+        changes=("Merged two highlights about the migration.",),
+        difference=("highlights: 12 → 11",),
+        review=Review(
+            (
+                Finding("overlapping-roles", Level.ADVISE, 0, "experience[0].roles[1]", "overlaps"),
+                Finding("note", Level.ASK, 0, "", "Was it 12 or 14?"),
+            )
+        ),
+        questions=(Question("Was it 12 or 14?"),),
+    )
+    run = _Recorder(built)
+    monkeypatch.setattr(cli, "build_master_profile", run)
 
-    from resume_tailor.agent import Usage
+    assert (
+        cli.main(["profile", "build", "--raw", str(raw), "-o", str(out), "--no-interactive"]) == 0
+    )
 
-    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: s\n", Usage(1, 2, 1)))
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
+    assert run.kwargs["out"] == out
+    assert run.kwargs["force"] is False
+    assert run.kwargs["ask"] is None
+    printed = _flat(capsys.readouterr().out)
+    assert "reading 1 document(s)" in printed
+    assert "· old.md" in printed
+    assert "(previous profile kept as master-profile.yaml.20260925.bak)" in printed
+    assert "Merged two highlights about the migration." in printed
+    assert "highlights: 12 → 11" in printed
+    assert "~ overlapping-roles: overlaps" in printed
+    assert "? Was it 12 or 14?" in printed
+    assert "deleting its note" in printed
+    assert "make resume" in printed
+
+
+@pytest.mark.usefixtures("keyed")
+def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
+    tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "master-profile.yaml"
+    built = ProfileBuild(
+        path=out,
+        backup=None,
+        refine_error="lost the figure '38%'",
+        update=ProfileUpdate((Answer(Question("Q?"), "A."),), changes=("notes: 1 → 0",)),
+    )
+    monkeypatch.setattr(cli, "build_master_profile", _Recorder(built))
 
     assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 0
-    assert out.read_text(encoding="utf-8") == "summary: s\n"
-    assert "1 document(s)" in capsys.readouterr().out
+
+    captured = capsys.readouterr()
+    assert "refining did not pass its checks" in captured.err
+    assert "lost the figure '38%'" in _flat(captured.err)
+    assert "✓ recorded 1 answer" in captured.out
+    assert "Open questions" not in captured.out
 
 
 def test_profile_build_reports_an_empty_raw_directory(
@@ -627,12 +737,9 @@ def test_profile_build_names_what_it_could_not_read(
 
 
 def test_profile_build_refuses_to_replace_a_profile(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, raw: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Weeks of hand corrections must not vanish because a command was re-run."""
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
     out = tmp_path / "master-profile.yaml"
     out.write_text("summary: hand written\n", encoding="utf-8")
 
@@ -641,384 +748,63 @@ def test_profile_build_refuses_to_replace_a_profile(
     assert "--force" in capsys.readouterr().err
 
 
-def test_profile_build_forced_keeps_a_backup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.usefixtures("keyed")
+def test_profile_build_with_force_goes_ahead(
+    tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from resume_tailor.agent import Usage
-
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
     out = tmp_path / "master-profile.yaml"
     out.write_text("summary: hand written\n", encoding="utf-8")
+    run = _Recorder(ProfileBuild(path=out, backup=None))
+    monkeypatch.setattr(cli, "build_master_profile", run)
 
-    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: fresh\n", Usage(1, 2, 1)))
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-
-    argv = ["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]
-    assert cli.main(argv) == 0
-    assert out.read_text(encoding="utf-8") == "summary: fresh\n"
-    backups = list(tmp_path.glob("master-profile.yaml.*.bak"))
-    assert [b.read_text(encoding="utf-8") for b in backups] == ["summary: hand written\n"]
-    assert "previous profile" in capsys.readouterr().out
+    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]) == 0
+    assert run.kwargs["force"] is True
 
 
-def test_a_backup_that_cannot_be_written_is_reported(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from resume_tailor.agent import Usage
-
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    (raw / "old.md").write_text("An old resume.\n", encoding="utf-8")
-    out = tmp_path / "master-profile.yaml"
-    out.write_text("summary: hand written\n", encoding="utf-8")
-
-    def refuse(*_args: object, **_kwargs: object) -> None:
-        raise OSError(13, "Permission denied")
-
-    monkeypatch.setattr(cli, "build_profile", lambda *_, **__: ("summary: fresh\n", Usage(1, 2, 1)))
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-    monkeypatch.setattr("resume_tailor.cli.shutil.copy2", refuse)
-
-    argv = ["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]
-    assert cli.main(argv) == 1
-    assert "cannot back up" in capsys.readouterr().err
-    assert out.read_text(encoding="utf-8") == "summary: hand written\n", "the original survives"
+def test_progress_is_one_line_per_step(capsys: pytest.CaptureFixture[str]) -> None:
+    cli._progress("drafting the profile")
+    assert capsys.readouterr().out == "  … drafting the profile\n"
 
 
-def test_serve_starts_the_api(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    started: dict[str, object] = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **kw: started.update(kw, app=app))
-    assert cli.main(["serve", "--port", "9999", "--profile", str(_profile_file(tmp_path))]) == 0
-    assert started["port"] == 9999
-    assert "http://127.0.0.1:9999/docs" in capsys.readouterr().out
-
-
-# --- general --------------------------------------------------------------------------------------
-def test_general_writes_the_untailored_resume(
+def test_a_profile_with_nothing_to_flag_validates_quietly(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    applications = tmp_path / "applications"
-    argv = ["general", "--profile", EXAMPLE_PROFILE, "--applications", str(applications)]
-    assert cli.main([*argv, "--no-export"]) == 0
-    out = capsys.readouterr().out
-    assert str(applications / "general") in out
-    assert "✓ resume.md" in out
-    text = (applications / "general" / "resume.md").read_text(encoding="utf-8")
-    assert text.startswith("# Jordan Rivera\n")
-
-
-def test_general_exports_by_default_and_honours_its_shape_flags(tmp_path: Path) -> None:
-    applications = tmp_path / "applications"
-    argv = [
-        "general",
-        "--profile",
-        EXAMPLE_PROFILE,
-        "--applications",
-        str(applications),
-        "--title",
-        "Engineer",
-        "--max-highlights",
-        "1",
-        "--max-skills",
-        "1",
-        "--since",
-        "2022",
-    ]
-    assert cli.main(argv) == 0
-    folder = applications / "general"
-    assert (folder / "resume.pdf").is_file()
-    assert not (folder / "resume-polished.pdf").exists()
-    text = (folder / "resume.md").read_text(encoding="utf-8")
-    assert text.splitlines()[1] == "Engineer"
-    assert "Cedar Analytics" not in text
-    assert "**Languages:** Python\n" in text
-    assert "Settlement Throughput" in text
-    assert "Service Decomposition" not in text, "the cap keeps only the first bullet"
-
-
-def test_general_defaults_to_the_repo_paths_and_no_caps() -> None:
-    args = cli.build_parser().parse_args(["general"])
-    assert str(args.profile) == "profile/master-profile.yaml"
-    assert str(args.applications) == "applications"
-    assert (args.title, args.max_highlights, args.max_skills, args.since) == ("", 0, 0, "")
-    assert not args.no_export
-
-
-@pytest.mark.parametrize("flag", ["--max-highlights", "--max-skills"])
-@pytest.mark.parametrize("value", ["0", "-1", "two"])
-def test_general_rejects_a_cap_that_is_not_a_positive_whole_number(
-    flag: str, value: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit) as caught:
-        cli.main(["general", flag, value])
-    assert caught.value.code == 2
-    assert "expected" in capsys.readouterr().err
-
-
-def test_general_rejects_a_since_that_is_not_a_year(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as caught:
-        cli.main(["general", "--since", "last year"])
-    assert caught.value.code == 2
-    assert "four-digit year" in capsys.readouterr().err
-
-
-def test_general_reports_a_missing_profile(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    missing = str(tmp_path / "missing.yaml")
-    assert cli.main(["general", "--profile", missing, "--applications", str(tmp_path)]) == 1
-    assert "error: cannot read" in capsys.readouterr().err
-
-
-# --- review ---------------------------------------------------------------------------------------
-def _flawed_resume(tmp_path: Path) -> Path:
-    """Write the fixture resume with a hyphen where the date range wants a dash."""
-    path = tmp_path / "resume.md"
-    path.write_text(RESUME_MD.replace("Jan 1843 – Present", "Jan 1843 - Present"), encoding="utf-8")
-    return path
-
-
-def _answering(monkeypatch: pytest.MonkeyPatch, *answers: str) -> None:
-    """Script what the user types at the prompt cycle; the last answer repeats."""
-    replies = list(answers)
-
-    def fake_input(_prompt: str = "") -> str:
-        return replies.pop(0) if len(replies) > 1 else replies[0]
-
-    monkeypatch.setattr("builtins.input", fake_input)
-
-
-def test_review_fixes_the_file_and_reports(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    assert cli.main(["review", str(path), "--no-interactive"]) == 0
-    out = capsys.readouterr().out
-    assert "Jan 1843 – Present" in path.read_text(encoding="utf-8")
-    assert f"✓ {path}  (updated)" in out
-    assert "Readability: 1 fixed" in out
-    assert "dates: an en dash" in out
-    assert "? line" in out and "no-outcome" in out
-    assert "→ answer them: add --interactive" in out
-
-
-def test_review_report_only_leaves_the_file_alone(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    before = path.read_text(encoding="utf-8")
-    assert cli.main(["review", str(path), "--no-fix", "--no-interactive"]) == 0
-    assert path.read_text(encoding="utf-8") == before
-    assert "1 to fix" in capsys.readouterr().out
-
-
-def test_review_export_renders_the_files(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    assert cli.main(["review", str(path), "--export", "--no-interactive"]) == 0
-    assert (tmp_path / "resume.docx").is_file()
-    assert "resume.pdf" in capsys.readouterr().out
-
-
-def test_review_interactive_records_the_answers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The first question here has no quoted text (no Summary), the second does (a bare role)."""
-    path = _flawed_resume(tmp_path)
-    text = path.read_text(encoding="utf-8")
-    path.write_text(
-        text.replace(
-            "## Summary\nEngineer who writes **programs** for engines that do not exist yet.\n\n",
-            "",
-        ),
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "contact: {name: Ada, headline: E, email: a@b.c}\n"
+        "summary: s\n"
+        "experience:\n"
+        "  - id: e\n"
+        "    company: E\n"
+        "    roles:\n"
+        "      - {title: T, start: '2020', end: '2021', highlights: [{label: L, text: Did it.}]}\n",
         encoding="utf-8",
     )
-    answers = tmp_path / "raw" / "answers.md"
-    _answering(monkeypatch, "Principal Engineer, the engine that runs the numbers.", "Nine.", "")
-    assert cli.main(["review", str(path), "--interactive", "--answers", str(answers)]) == 0
-    out = capsys.readouterr().out
-    assert "Questions for you." in out
-    assert "Saved 2 answer(s)" in out
-    log = answers.read_text(encoding="utf-8")
-    assert f"· {path}" in log
-    assert "- **Q:** There is no Summary." in log
-    assert "  **A:** Principal Engineer, the engine that runs the numbers." in log
-    assert '(about: "Analytical Engine Programme — Principal Engineer")' in log
-    assert "  **A:** Nine." in log
-
-
-def test_review_of_a_clean_file_changes_nothing_and_asks_nothing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from tests.test_review import CLEAN
-
-    path = tmp_path / "resume.md"
-    path.write_text(CLEAN, encoding="utf-8")
-    assert cli.main(["review", str(path)]) == 0
-    out = capsys.readouterr().out
-    assert "(updated)" not in out
-    assert "Readability: 0 fixed · 0 suggestions · 0 questions" in out
-    assert "answer them" not in out
-    assert path.read_text(encoding="utf-8") == CLEAN
-
-
-def test_tailor_prints_advice_without_a_hint_when_nothing_is_asked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from resume_tailor.review import Finding, Level, Review
-    from resume_tailor.service import Application
-
-    posting = tmp_path / "jd.md"
-    posting.write_text("# Acme — Engineer\n\n- Work.\n", encoding="utf-8")
-    review = Review((Finding("tense", Level.ADVISE, 3, "Acme – Engineer", "bullets switch tense"),))
-
-    def fake_tailor(_posting: str, **_: object) -> Application:
-        directory = tmp_path / "applications" / "acme-engineer"
-        directory.mkdir(parents=True)
-        return Application("acme-engineer", directory, (), "Acme", "Engineer", review)
-
-    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-    argv = ["tailor", str(posting), "--profile", EXAMPLE_PROFILE]
-    assert cli.main([*argv, "--applications", str(tmp_path / "applications")]) == 0
-    out = capsys.readouterr().out
-    assert "~ line 3  tense: bullets switch tense" in out
-    assert "answer them" not in out
-
-
-def test_review_interactive_with_no_answers_says_so(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    _answering(monkeypatch, "")
-    answers = tmp_path / "answers.md"
-    assert cli.main(["review", str(path), "--interactive", "--answers", str(answers)]) == 0
-    assert "No answers recorded." in capsys.readouterr().out
-    assert not answers.exists()
-
-
-def test_review_stops_the_cycle_at_end_of_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-
-    def closed(_prompt: str = "") -> str:
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", closed)
-    answers = tmp_path / "answers.md"
-    assert cli.main(["review", str(path), "--interactive", "--answers", str(answers)]) == 0
-    assert "No answers recorded." in capsys.readouterr().out
-
-
-def test_review_is_interactive_by_default_on_a_terminal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    _answering(monkeypatch, "")
-    assert cli.main(["review", str(path), "--answers", str(tmp_path / "a.md")]) == 0
-    assert "Questions for you." in capsys.readouterr().out
-
-
-def test_review_refine_uses_the_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from resume_tailor.agent import RefineResult, Usage
-
-    path = _flawed_resume(tmp_path)
-
-    def editor(resume: str, *_: object, **__: object) -> RefineResult:
-        return RefineResult(
-            resume.replace("Corresponded with", "Wrote to"), ("Which year?",), Usage()
-        )
-
-    monkeypatch.setattr(cli, "refine_resume", editor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
-    monkeypatch.setattr(cli, "load_settings", lambda: None)
-    argv = ["review", str(path), "--refine", "--profile", EXAMPLE_PROFILE, "--no-interactive"]
-    assert cli.main(argv) == 0
-    assert "Wrote to Babbage" in path.read_text(encoding="utf-8")
-    out = capsys.readouterr().out
-    assert "? editor: Which year?" in out
-    assert "dates: an en dash" in out, "the fixes made before the edit are still reported"
-
-
-def test_review_reports_a_missing_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["review", str(tmp_path / "missing.md"), "--no-interactive"]) == 1
-    assert "error: cannot read" in capsys.readouterr().err
-
-
-def test_review_reports_an_unwritable_answers_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _flawed_resume(tmp_path)
-    blocked = tmp_path / "answers"
-    blocked.mkdir()
-    _answering(monkeypatch, "an answer")
-    assert cli.main(["review", str(path), "--interactive", "--answers", str(blocked)]) == 1
-    assert "error: cannot write" in capsys.readouterr().err
-
-
-def test_profile_review_walks_the_notes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    answers = tmp_path / "answers.md"
-    _answering(monkeypatch, "820ms to 510ms, measured in production.")
-    argv = ["profile", "review", EXAMPLE_PROFILE, "--interactive", "--answers", str(answers)]
-    assert cli.main(argv) == 0
-    out = capsys.readouterr().out
-    assert "? note: Confirm the exact settlement latency" in out
-    assert "Saved 1 answer(s)" in out
-    assert "**A:** 820ms to 510ms" in answers.read_text(encoding="utf-8")
-
-
-def test_profile_review_without_a_terminal_points_at_the_flag(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert cli.main(["profile", "review", EXAMPLE_PROFILE, "--no-interactive"]) == 0
-    assert "→ answer them: add --interactive" in capsys.readouterr().out
-
-
-def test_tailor_prints_the_second_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from resume_tailor.review import Finding, Level, Review
-    from resume_tailor.service import Application
-
-    posting = tmp_path / "jd.md"
-    posting.write_text("# Acme — Engineer\n\n- Work.\n", encoding="utf-8")
-    review = Review(
-        (Finding("no-outcome", Level.ASK, 14, "Did a thing", "What did this achieve?"),)
+    assert cli.main(["profile", "validate", str(profile)]) == 0
+    assert (
+        capsys.readouterr().out == f"✓ {profile} is valid — 1 employers, 1 roles, 0 technologies\n"
     )
 
-    def fake_tailor(_posting: str, **_: object) -> Application:
-        directory = tmp_path / "applications" / "acme-engineer"
-        directory.mkdir(parents=True)
-        written = directory / "resume.md"
-        written.write_text("# Ada\n", encoding="utf-8")
-        return Application("acme-engineer", directory, (written,), "Acme", "Engineer", review)
 
-    monkeypatch.setattr(cli, "tailor_application", fake_tailor)
-    monkeypatch.setattr(cli, "build_model", lambda _: _StubModel("x"))
+def test_only_the_first_open_notes_are_printed_with_a_count_of_the_rest(
+    tmp_path: Path,
+    raw: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: None)
-    argv = [
-        "tailor",
-        str(posting),
-        "--profile",
-        EXAMPLE_PROFILE,
-        "--applications",
-        str(tmp_path / "applications"),
-    ]
-    assert cli.main(argv) == 0
-    out = capsys.readouterr().out
-    assert "    Readability: 0 fixed · 0 suggestions · 1 questions" in out
-    assert "    → answer them: resume-tailor review" in out
+    monkeypatch.setattr(cli, "build_model", lambda *_, **__: object())
+    out = tmp_path / "master-profile.yaml"
+    notes = tuple(Finding("note", Level.ASK, 0, "", f"Question {n}?") for n in range(11))
+    monkeypatch.setattr(
+        cli,
+        "build_master_profile",
+        _Recorder(ProfileBuild(path=out, backup=None, review=Review(notes))),
+    )
+
+    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 0
+
+    printed = _flat(capsys.readouterr().out)
+    assert "? Question 7?" in printed
+    assert "? Question 8?" not in printed
+    assert "3 more are in its notes; `resume-tailor profile validate` lists them." in printed

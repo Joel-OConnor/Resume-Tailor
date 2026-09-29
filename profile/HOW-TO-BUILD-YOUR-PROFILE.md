@@ -1,8 +1,8 @@
 # How to build your master profile
 
-Your master profile (`profile/master-profile.yaml`) is the foundation — the better it is, the better
-every tailored resume. It should hold **everything**, because tailoring can only *select* from
-what's here.
+Your master profile (`profile/master-profile.yaml`) is the foundation: the better it is, the better
+every resume, LinkedIn profile and cover letter drawn from it. It should hold every real fact about
+your career, once, because every document can only *select* from what's here.
 
 It's structured YAML rather than prose on purpose: Claude can then pick roles by date, find the
 highlights tagged with a skill a posting asks for, and check the posting's exact wording against
@@ -10,7 +10,7 @@ your technology aliases — instead of re-reading paragraphs and guessing.
 
 ## The fastest path
 
-1. Drop whatever you have into [`raw/`](raw/) — see [raw/README.md](raw/README.md) for ideas. Old
+1. Drop whatever you have into [`raw/`](raw/) (see [raw/README.md](raw/README.md) for ideas). Old
    resumes (PDF, Word or text) and a LinkedIn export alone are a great start.
 2. Build it:
 
@@ -18,31 +18,30 @@ your technology aliases — instead of re-reading paragraphs and guessing.
    make profile
    ```
 
-   It names every file it read, and every file it could **not** read — a scanned PDF has no text
-   in it, so add a text or Word version of that one instead. It will not overwrite a profile you
-   already have; `make profile FORCE=--force` replaces one, keeping a timestamped backup beside it.
+   It names every file it read, and every file it could **not** read: a scanned PDF has no text
+   in it, so add a text or Word version of that one instead. Then it works in three passes:
 
-   In Claude Code you can instead say: **"Build my master profile from the files in profile/raw."**
-   Claude reads everything, writes `master-profile.yaml`, and asks about anything unclear.
-3. Check it and read it over:
+   - **Draft:** every distinct fact from your documents, recorded as YAML.
+   - **Refine:** a second read that records each fact once and in the right place. The same
+     accomplishment told by two documents becomes one highlight (keeping every number), each
+     highlight moves under the role whose dates it fits, accomplishments filed as skills and
+     other noise are dropped, and no level or years claim more than your documents show. It is
+     checked mechanically: refining can merge and tidy, but it can never add a fact or lose one.
+   - **Settle:** anything the documents left unclear (two different figures, a missing month) was
+     put in `notes`. Those come back as questions, asked right there. Answer in a sentence, or
+     press Enter to skip; answers go straight into the profile and into `raw/answers.md`.
+
+   It will not overwrite a profile you already have; `make profile FORCE=--force` replaces one,
+   keeping a timestamped backup beside it.
+
+3. Read it over:
 
    ```bash
-   make profile-check     # validates, and prints anything still unconfirmed
-   make profile-md        # renders profile/MASTER_PROFILE.md to proofread
+   .venv/bin/resume-tailor profile render      # writes profile/MASTER_PROFILE.md to proofread
+   .venv/bin/resume-tailor profile validate    # checks it, and lists what still needs a look
    ```
 
-4. Answer what it could not settle:
-
-   ```bash
-   .venv/bin/resume-tailor profile review
-   ```
-
-   It flags what would print badly (a highlight with no label, one that runs to a paragraph)
-   and asks the open questions from `notes` one by one. Answers are kept in
-   `profile/raw/answers.md`, so the next `make profile FORCE=--force` reads them like any other
-   document; or copy them into the YAML yourself.
-
-5. Correct anything wrong, and add accomplishments the old resumes left out.
+4. Correct anything wrong, and add accomplishments the old resumes left out.
 
 Starting by hand instead? Copy the worked example:
 
@@ -91,12 +90,14 @@ Your editor can validate as you type. The file already points at the schema:
 - **Fill in `scope`.** Team size, org, budget, traffic — the context a bullet can't carry but an
   interviewer will ask about.
 - **Keep it truthful.** Everything here should be defensible in an interview. If you're unsure a
-  number is right, put it in `notes` and fix it later — `make profile-check` will keep reminding
-  you, and Claude will raise it rather than print it.
+  number is right, put it in `notes` and fix it later: `resume-tailor profile validate` will keep
+  reminding you, and nothing in `notes` is ever printed.
 
 ## Keeping it fresh
 
-Update the profile whenever you finish a project or hit a milestone — it's much easier to capture a
+Update the profile whenever you finish a project or hit a milestone: it's much easier to capture a
 win the week it happens than to reconstruct it a year later at 11pm before an application. Run
-`make profile-check` after editing; it catches typos, bad dates, and technologies pointing at
-employers that don't exist.
+`resume-tailor profile validate` after editing; it catches typos, bad dates, technologies pointing
+at employers that don't exist, and anything recorded twice. The questions `make resume` and
+`make tailor` ask during their review also land here, so the profile gets better every time you
+use it.

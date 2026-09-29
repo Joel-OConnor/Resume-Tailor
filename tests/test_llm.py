@@ -226,3 +226,111 @@ def test_the_sdk_client_is_constructed_from_the_key() -> None:
 
     client = _make_client("sk-ant-not-a-real-key")
     assert hasattr(client, "messages")
+
+
+# --- choosing who answers -----------------------------------------------------------------------
+def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
+    for name in (
+        KEY,
+        "RESUME_TAILOR_LLM",
+        "RESUME_TAILOR_MODEL",
+        "RESUME_TAILOR_EFFORT",
+        "RESUME_TAILOR_MAX_TOKENS",
+        "RESUME_TAILOR_RELAY_DIR",
+        "RESUME_TAILOR_RELAY_TIMEOUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    path = tmp_path / ".env"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_the_api_is_the_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(_env(tmp_path, monkeypatch, f"{KEY}=k\n"))
+    assert (settings.provider, settings.effort) == ("anthropic", "")
+
+
+def test_claude_code_needs_no_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env = (
+        "RESUME_TAILOR_LLM=Claude-Code\nRESUME_TAILOR_RELAY_DIR=relay\n"
+        "RESUME_TAILOR_RELAY_TIMEOUT=5\n"
+    )
+    settings = load_settings(_env(tmp_path, monkeypatch, env))
+    assert settings.provider == "claude-code"
+    assert (str(settings.relay_dir), settings.relay_minutes) == ("relay", 5)
+
+
+def test_a_missing_key_names_the_relay_as_the_alternative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ConfigError, match="RESUME_TAILOR_LLM=claude-code"):
+        load_settings(_env(tmp_path, monkeypatch, ""))
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("RESUME_TAILOR_LLM=ollama", "RESUME_TAILOR_LLM must be one of anthropic, claude-code"),
+        ("RESUME_TAILOR_EFFORT=extreme", "RESUME_TAILOR_EFFORT must be blank or one of low"),
+        ("RESUME_TAILOR_RELAY_TIMEOUT=0", "RESUME_TAILOR_RELAY_TIMEOUT must be positive"),
+    ],
+)
+def test_a_bad_setting_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str, expected: str
+) -> None:
+    with pytest.raises(ConfigError, match=re.escape(expected)):
+        load_settings(_env(tmp_path, monkeypatch, f"{KEY}=k\n{line}\n"))
+
+
+def test_effort_is_read_and_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(_env(tmp_path, monkeypatch, f"{KEY}=k\nRESUME_TAILOR_EFFORT=Medium\n"))
+    assert settings.effort == "medium"
+    model = AnthropicModel(settings, _Client(_Message("hi")))
+    model.complete("s", "p")
+    assert model._client.messages.calls[0]["output_config"] == {"effort": "medium"}
+
+
+def test_no_effort_sends_no_output_config() -> None:
+    model = _model(_Message("hi"))
+    model.complete("s", "p")
+    assert "output_config" not in model._client.messages.calls[0]
+
+
+def test_the_relay_folder_can_be_read_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from resume_tailor.llm import load_relay_dir
+
+    assert str(load_relay_dir(_env(tmp_path, monkeypatch, "RESUME_TAILOR_LLM=nonsense\n"))) == (
+        ".relay"
+    ), "reading the folder must not trip over an unrelated bad setting"
+    env = _env(tmp_path, monkeypatch, "RESUME_TAILOR_RELAY_DIR=elsewhere\n")
+    assert str(load_relay_dir(env)) == "elsewhere"
+
+
+def test_the_repr_names_who_answers() -> None:
+    text = repr(Settings(api_key="sk-ant-secret-tail", provider="claude-code"))
+    assert "provider='claude-code'" in text
+    assert "secret" not in text
+
+
+def test_an_empty_credit_balance_says_what_to_do() -> None:
+    error = RuntimeError(
+        "{'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit "
+        "balance is too low to access the Anthropic API.'}}"
+    )
+    error.status_code = 400  # type: ignore[attr-defined]
+    with pytest.raises(ModelError, match="out of credits") as caught:
+        _model(error).complete("s", "p")
+    assert "RESUME_TAILOR_LLM=claude-code" in str(caught.value)
+
+
+def test_build_model_hands_claude_code_the_relay(tmp_path: Path) -> None:
+    from resume_tailor.llm import RelayModel
+
+    heard: list[str] = []
+    model = build_model(
+        Settings(provider="claude-code", relay_dir=tmp_path, relay_minutes=3), announce=heard.append
+    )
+    assert isinstance(model, RelayModel)
+    assert (model.directory, model.minutes, model.announce) == (tmp_path, 3, heard.append)

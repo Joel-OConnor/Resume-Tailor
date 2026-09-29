@@ -17,6 +17,9 @@
 !/applications/README.md
 !/applications/example-acme-backend/
 
+# The Claude Code relay (RESUME_TAILOR_LLM=claude-code): every request carries your profile
+/.relay/
+
 # --- generated documents (regenerate with `make export`) -------------------------------------------
 *.docx
 *.pdf

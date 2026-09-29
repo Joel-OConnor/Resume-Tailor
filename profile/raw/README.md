@@ -16,4 +16,5 @@ Great things to add:
 - **Transcripts, certificates, award letters.**
 - **Recommendations / peer feedback** — useful phrasing and proof points.
 
-Don't worry about formatting or duplication — just get it in here and ask Claude to build the profile.
+Don't worry about formatting or duplication: get it in here and run `make profile`. Building the
+profile merges what repeats and drops what isn't a career fact.
