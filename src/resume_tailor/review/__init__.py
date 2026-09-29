@@ -14,7 +14,7 @@ from resume_tailor.review.questions import (
     said,
 )
 from resume_tailor.review.report import format_review
-from resume_tailor.review.resume import apply_fixes, review_and_fix, review_resume
+from resume_tailor.review.resume import apply_fixes, review_resume
 
 __all__ = [
     "MAX_QUESTIONS",
@@ -28,7 +28,6 @@ __all__ = [
     "format_review",
     "from_findings",
     "gather",
-    "review_and_fix",
     "review_profile",
     "review_resume",
     "said",

@@ -5,18 +5,22 @@ resume with its cover letter, and the editor that reads any of them a second tim
 accepted only when:
 
 * it follows its format contract: the resume and the cover letter parse, and the LinkedIn profile
-  keeps LinkedIn's sections and limits;
+  keeps LinkedIn's sections and limits and gives every role in the profile its own entry, because
+  LinkedIn is the whole record;
 * it claims nothing the profile cannot support: :func:`resume_tailor.verify.verify_resume` runs on
   every document, the cover letter and the LinkedIn profile included, because an invented figure
   in a letter is as much a lie as one on the resume;
-* an edit keeps the resume's ``### `` entries exactly as they were, unless it is working in facts
-  the candidate has just supplied.
+* an edit keeps every ``### `` entry of the resume and the LinkedIn profile: every role, degree
+  and certification, with the same heading, in the same order. Working in facts the candidate has
+  just supplied may add an entry, and may bring a heading up to date with what the answers
+  complete or correct, but never drops or reorders one.
 
 Every failing document is reported in the same retry, so one attempt can fix all of them.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -36,12 +40,13 @@ from resume_tailor.agent.loop import (
 from resume_tailor.agent.prompts import COVER_LETTER, LINKEDIN, QUESTIONS, RESUME
 from resume_tailor.documents import parse
 from resume_tailor.errors import DocumentError
+from resume_tailor.match.tokens import normalise
 from resume_tailor.review import check_linkedin
 from resume_tailor.verify import format_violations, verify_resume
-from resume_tailor.verify.source import scan
+from resume_tailor.verify.source import Area, scan
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from resume_tailor.agent.loop import Progress
     from resume_tailor.llm import LanguageModel
@@ -200,6 +205,11 @@ def edit_documents(  # noqa: PLR0913 - one pass; every argument is a distinct in
     """
     revising = bool(answers)
     expected = prompts.edit_sections(documents, questions=not revising)
+    # A revision's profile already records the answers, so a heading they correct no longer
+    # verifies against it. Those are the headings the revision has to rewrite.
+    outdated = (
+        {kind: _outdated(text, profile) for kind, text in documents.items()} if revising else None
+    )
 
     def check(text: str) -> EditResult | Rejection:
         sections = split_sections(text)
@@ -207,17 +217,11 @@ def edit_documents(  # noqa: PLR0913 - one pass; every argument is a distinct in
             return rejection
         edited = {kind: unfence(sections[kind]) for kind in documents}
         found = check_documents(edited, profile)
-        if not revising and RESUME in documents:
-            before, after = _entries(documents[RESUME]), _entries(edited[RESUME])
-            if before != after:
-                moved = (
-                    "The edit changed the resume's ### entries. Keep every role and degree "
-                    f"heading exactly as it was, in the same order: {'; '.join(before)}"
-                )
-                return Rejection(
-                    f"{moved}\n\n{found.feedback}" if found else moved,
-                    fabricated=found is not None and found.fabricated,
-                )
+        if moved := _moved_entries(documents, edited, outdated):
+            return Rejection(
+                f"{moved}\n\n{found.feedback}" if found else moved,
+                fabricated=found is not None and found.fabricated,
+            )
         if found:
             return found
         asked = () if revising else questions(sections[QUESTIONS])
@@ -251,7 +255,7 @@ def check_documents(documents: Mapping[str, str], profile: Profile) -> Rejection
 def _check_document(kind: str, text: str, profile: Profile) -> Rejection | None:
     label = kind.lower()
     if kind == LINKEDIN:
-        if problems := check_linkedin(text):
+        if problems := [*check_linkedin(text), *_missing_positions(text, profile)]:
             return Rejection(
                 f"The linkedin profile breaks LinkedIn's format: {'; '.join(problems)}."
             )
@@ -269,6 +273,122 @@ def _check_document(kind: str, text: str, profile: Profile) -> Rejection | None:
     return None
 
 
+def _moved_entries(
+    documents: Mapping[str, str],
+    edited: Mapping[str, str],
+    outdated: Mapping[str, Collection[int]] | None,
+) -> str:
+    """Say which documents lost, renamed or reordered a ``### `` entry in the edit, if any did.
+
+    The review (``outdated`` is ``None``) must hand back the same entries. A revision works in the
+    candidate's answers, which may supply a role or degree and may complete or correct a heading,
+    so there the old entries need only survive, in their order, among the new: see :func:`_kept`.
+    The verifier still reads every heading the revision writes.
+    """
+    problems: list[str] = []
+    for kind in (RESUME, LINKEDIN):
+        if kind not in documents:
+            continue
+        before, after = _entries(documents[kind]), _entries(edited[kind])
+        if before == after or (outdated is not None and _kept(before, after, outdated[kind])):
+            continue
+        label = "linkedin profile" if kind == LINKEDIN else kind.lower()
+        rule = "as it was" if outdated is not None else "exactly as it was"
+        allowed = (
+            " Add an entry only for a role or degree the answers supply. Change a heading only"
+            " where the answers complete or correct it."
+            if outdated is not None
+            else ""
+        )
+        problems.append(
+            f"The edit changed the {label}'s ### entries. Keep every role and degree heading "
+            f"{rule}, in the same order: {'; '.join(before) or 'none'}.{allowed}"
+        )
+    return "\n\n".join(problems)
+
+
 def _entries(markdown: str) -> tuple[str, ...]:
     """Every ``### `` heading in the document, in order."""
     return tuple(entry.title for entry in scan(markdown).entries)
+
+
+def _outdated(markdown: str, profile: Profile) -> frozenset[int]:
+    """Return the positions of the ``### `` headings ``profile`` does not support as written."""
+    unsupported = {violation.line for violation in verify_resume(markdown, profile).violations}
+    entries = scan(markdown).entries
+    return frozenset(index for index, entry in enumerate(entries) if entry.line in unsupported)
+
+
+def _kept(before: Sequence[str], after: Sequence[str], outdated: Collection[int]) -> bool:
+    """Return whether every entry of ``before`` is still in ``after``, in the same order.
+
+    An entry is still there when its heading is unchanged or has only gained words, as a degree
+    does when the answers give its field. One the answers made untrue (its position is in
+    ``outdated``) may be rewritten outright, as a corrected title is. Whatever else ``after`` holds
+    is new.
+    """
+    remaining = iter(after)
+    # ``any`` consumes the iterator up to the match, so each entry must come after the last one.
+    return all(
+        any(index in outdated or _extends(heading, old) for heading in remaining)
+        for index, old in enumerate(before)
+    )
+
+
+def _extends(heading: str, old: str) -> bool:
+    """Return whether ``heading`` keeps every word of ``old``, in order, adding only words."""
+    words = iter(_words(heading))
+    return all(word in words for word in _words(old))
+
+
+# " – " between title and employer, as the formats write it, and the list separators a title can
+# hold. normalise() has already folded every dash to "-"; the spaces keep "Full-Stack" whole.
+_PARTS = re.compile(r"\s*[,;·|]\s*|\s+-\s+")
+
+
+def _missing_positions(markdown: str, profile: Profile) -> list[str]:
+    """Name every role in ``profile`` that no Experience entry of the LinkedIn profile gives.
+
+    An entry gives a role when one part of its heading names the employer and another the title,
+    each read as the verifier reads them, so a shortened name still counts.
+    """
+    given = [
+        [words for part in _PARTS.split(normalise(entry.title)) if (words := _words(part))]
+        for entry in scan(markdown).entries
+        if entry.area is Area.EXPERIENCE
+    ]
+    missing = [
+        f"{role.title} at {tenure.company}"
+        for tenure in profile.experience
+        for role in tenure.roles
+        if not any(_gives(parts, _words(tenure.company), _words(role.title)) for parts in given)
+    ]
+    if not missing:
+        return []
+    return [
+        (
+            f"the Experience section leaves out {'; '.join(missing)}, and LinkedIn lists every "
+            "role in the profile, each as its own ### entry"
+        )
+    ]
+
+
+def _gives(parts: list[tuple[str, ...]], company: tuple[str, ...], title: tuple[str, ...]) -> bool:
+    """Return whether one of a heading's ``parts`` names ``company`` and another ``title``."""
+    return any(
+        _within(part, company)
+        and any(_within(other, title) for other in parts[:at] + parts[at + 1 :])
+        for at, part in enumerate(parts)
+    )
+
+
+def _words(text: str) -> tuple[str, ...]:
+    """Reduce text to comparable words, dropping case, punctuation and emphasis."""
+    folded = normalise(text).casefold()
+    return tuple("".join(c if c.isalnum() else " " for c in folded).split())
+
+
+def _within(claim: tuple[str, ...], known: tuple[str, ...]) -> bool:
+    """Return whether every word of ``claim`` appears, in order and unbroken, inside ``known``."""
+    size = len(claim)
+    return any(known[at : at + size] == claim for at in range(len(known) - size + 1))

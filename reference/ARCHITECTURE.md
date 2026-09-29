@@ -6,9 +6,9 @@ deterministic half before it reaches a file.
 
 ```mermaid
 flowchart TB
-    raw["profile/raw/<br/>old resumes, LinkedIn export, answers.md"]
-    jd["a job posting<br/>(one file, named on the command line)"]
-    yaml[("profile/master-profile.yaml<br/><i>the single source of truth</i>")]
+    raw["my-documents/career-history/<br/>old resumes, LinkedIn export, answers.md"]
+    jd["a job posting<br/>my-documents/job-postings/ or any path"]
+    yaml[("output/master-profile.yaml<br/><i>the single source of truth</i>")]
 
     subgraph profile ["make profile"]
         draft["agent.build_profile<br/>draft"]
@@ -37,7 +37,7 @@ flowchart TB
     write --> review --> ask --> update --> export
     ask -- "no answers" --> export
     update --> yaml
-    export --> out["applications/general/ · applications/&lt;company&gt;-&lt;role&gt;/"]
+    export --> out["output/general/ · output/applications/&lt;company&gt;-&lt;role&gt;/"]
 
     draft -.-> loader
     refine -.-> changes
@@ -67,11 +67,11 @@ That is why "never fabricates" is a property of the system and not a hope about 
 
 `service/applications.py` runs the same review for both generating scripts: mechanical fixes
 (`review.apply_fixes`), an editor pass (`agent.edit_documents`, held to the same checks), then
-the questions only the candidate can answer. Answers are logged to `profile/raw/answers.md` and
-recorded in the profile by `agent.update_profile`; the documents are revised against the updated
-profile, re-verified, and only then exported. Questions reach the candidate through an `ask`
-callback, so the same run works at a terminal (the CLI asks), in a test (a stub answers), or with
-no one there (the questions come back unasked).
+the questions only the candidate can answer. Answers are logged to
+`my-documents/career-history/answers.md` and recorded in the profile by `agent.update_profile`;
+the documents are revised against the updated profile, re-verified, and only then exported.
+Questions reach the candidate through an `ask` callback, so the same run works at a terminal (the
+CLI asks), in a test (a stub answers), or with no one there (the questions come back unasked).
 
 ## Why the model sits behind a Protocol
 

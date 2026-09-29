@@ -168,7 +168,7 @@ def parse_posting(text: str, company: str = "") -> Posting:
     lines = source.splitlines()
     title, detected = _identify(lines)
     company = company or detected
-    suppress = _suppression(company, title)
+    suppress = _suppression(company)
 
     clauses: list[Clause] = []
     section = Section.UNKNOWN
@@ -193,12 +193,15 @@ def parse_posting(text: str, company: str = "") -> Posting:
 #: it wrong half the time, and a swapped header makes the whole report look untrustworthy.
 _ROLE_WORDS = frozenset(
     {
+        "admin",
         "administrator",
         "analyst",
         "architect",
         "consultant",
         "designer",
+        "dev",
         "developer",
+        "devops",
         "director",
         "engineer",
         "engineering",
@@ -210,8 +213,11 @@ _ROLE_WORDS = frozenset(
         "principal",
         "programmer",
         "scientist",
+        "sde",
         "specialist",
+        "sre",
         "staff",
+        "swe",
         "technician",
         "vp",
     }
@@ -219,7 +225,14 @@ _ROLE_WORDS = frozenset(
 
 
 def _identify(lines: list[str]) -> tuple[str, str]:
-    """Take the role title and company from the first heading, if there is one."""
+    """Take the role title and company from the first heading, if there is one.
+
+    When exactly one half of "Title — Company" reads as a role, that half is the title. When
+    neither half does, or both do ("Senior Python Developer — Data Engineering"), the order is
+    a guess, so the whole heading is the title and no company is claimed. The company is masked
+    out of the body, and a wrong guess there erases the posting's main requirement, while a
+    missed company costs at most one gap line.
+    """
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -227,9 +240,8 @@ def _identify(lines: list[str]) -> tuple[str, str]:
             parts = _TITLE_SPLIT.split(heading, maxsplit=1)
             if len(parts) == _TITLE_PARTS:
                 first, second = parts[0].strip(), parts[1].strip()
-                if _names_a_role(first) and not _names_a_role(second):
-                    return first, second
-                return second, first
+                if _names_a_role(first) != _names_a_role(second):
+                    return (first, second) if _names_a_role(first) else (second, first)
             return heading, ""
     return "", ""
 
@@ -239,15 +251,14 @@ def _names_a_role(text: str) -> bool:
     return any(word.strip(",.()").casefold() in _ROLE_WORDS for word in text.split())
 
 
-def _suppression(company: str, title: str) -> tuple[str, ...]:
-    """Words to blank out before scanning.
+def _suppression(company: str) -> tuple[str, ...]:
+    """Words of the company's name, blanked out before scanning.
 
-    A posting from a company called Granite must not match the profile's Granite, and a posting
-    titled "Node.js Engineer" should not have its own title double-counted as body evidence.
+    A posting from a company called Granite must not match the profile's Granite. The role title
+    is deliberately not masked: a "Senior Python Engineer" posting is asking for Python, and the
+    heading it sits in is never scanned as body text, so there is nothing to double-count.
     """
-    words: set[str] = set()
-    for phrase in (company, title):
-        words.update(w.casefold() for w in re.findall(r"[A-Za-z][A-Za-z0-9.+#-]*", phrase))
+    words = {w.casefold() for w in re.findall(r"[A-Za-z][A-Za-z0-9.+#-]*", company)}
     return tuple(sorted(w for w in words if len(w) >= _MIN_SUPPRESSED))
 
 

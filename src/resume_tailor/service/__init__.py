@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from resume_tailor.service.applications import (
     COVER_LETTER_FILE,
-    DEFAULT_APPLICATIONS_DIR,
+    DEFAULT_OUTPUT_DIR,
     GENERAL_SLUG,
     JOB_DESCRIPTION_FILE,
     LINKEDIN_FILE,
@@ -28,7 +28,7 @@ from resume_tailor.service.applications import (
 )
 from resume_tailor.service.profile import (
     DEFAULT_ANSWERS_PATH,
-    DEFAULT_RAW_DIR,
+    DEFAULT_CAREER_DIR,
     Asker,
     ProfileBuild,
     ProfileUpdate,
@@ -44,8 +44,8 @@ from resume_tailor.service.profile import (
 __all__ = [
     "COVER_LETTER_FILE",
     "DEFAULT_ANSWERS_PATH",
-    "DEFAULT_APPLICATIONS_DIR",
-    "DEFAULT_RAW_DIR",
+    "DEFAULT_CAREER_DIR",
+    "DEFAULT_OUTPUT_DIR",
     "GENERAL_SLUG",
     "JOB_DESCRIPTION_FILE",
     "LINKEDIN_FILE",

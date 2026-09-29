@@ -1,4 +1,4 @@
-"""Read and validate ``profile/master-profile.yaml`` into typed models.
+"""Read and validate ``output/master-profile.yaml`` into typed models.
 
 Validation is generic: it walks the dataclass type hints, so the models are the only place a
 field is ever declared. Errors carry the path to the offending value (``experience[0].roles[1]``)
@@ -12,25 +12,43 @@ import datetime
 import math
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
-from typing import Annotated, Any, get_args, get_origin, get_type_hints, override
+from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin, get_type_hints, override
 
 import yaml
 
 from resume_tailor.errors import ProfileError
+from resume_tailor.paths import PROFILE_PATH
 from resume_tailor.profile.models import Profile, Technology, Tenure
 
-__all__ = ["DEFAULT_PROFILE_PATH", "LEVELS", "load", "load_mapping", "loads"]
+if TYPE_CHECKING:
+    from pathlib import Path
 
-DEFAULT_PROFILE_PATH = Path("profile/master-profile.yaml")
+__all__ = [
+    "DATE_BODY",
+    "DEFAULT_PROFILE_PATH",
+    "LEVELS",
+    "PRESENT",
+    "SLUG_PATTERN",
+    "YEAR_BODY",
+    "load",
+    "load_mapping",
+    "loads",
+]
+
+DEFAULT_PROFILE_PATH = PROFILE_PATH
 LEVELS = ("exposure", "working", "proficient", "expert")
 
 # [0-9] rather than \d: \d also matches Devanagari and other non-ASCII digits, which pass
 # validation and then break date ordering, rendering, and the mirrored JSON Schema pattern.
-_DATE = re.compile(r"^(?:[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$")
-_YEAR = re.compile(r"^[0-9]{4}$")
-_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_PRESENT = "present"
+# The bodies are public because the schema composes its patterns from them, so the two can
+# never accept different values.
+DATE_BODY = r"[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2])"
+YEAR_BODY = r"[0-9]{4}"
+SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+PRESENT = "present"
+_DATE = re.compile(rf"^(?:{DATE_BODY})$")
+_YEAR = re.compile(rf"^{YEAR_BODY}$")
+_SLUG = re.compile(SLUG_PATTERN)
 
 
 def load(path: Path = DEFAULT_PROFILE_PATH) -> Profile:
@@ -261,7 +279,7 @@ def _check_tenure(tenure: Tenure, path: str, seen: set[str]) -> None:
         _require(role.title, f"{role_path}.title")
         _check_date(role.start, f"{role_path}.start", required=True)
         _check_date(role.end, f"{role_path}.end", required=True, allow_present=True)
-        if role.end != _PRESENT and _month(role.end, last=True) < _month(role.start, last=False):
+        if role.end != PRESENT and _month(role.end, last=True) < _month(role.start, last=False):
             msg = f"end {role.end!r} is before start {role.start!r}"
             raise ProfileError(msg, f"{role_path}.end")
         for highlight_index, highlight in enumerate(role.highlights):
@@ -291,7 +309,7 @@ def _check_date(
             msg = f"a date{suffix or ''} is required"
             raise ProfileError(msg, path)
         return
-    if allow_present and value == _PRESENT:
+    if allow_present and value == PRESENT:
         return
     if not _DATE.match(value):
         msg = f"expected YYYY or YYYY-MM{suffix}, got {value!r}"

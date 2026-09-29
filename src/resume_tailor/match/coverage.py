@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from resume_tailor.match.lexicon import Form, Provenance, Tier, is_tool_framed
+from resume_tailor.match.lexicon import Form, Provenance, admits, alternatives
 from resume_tailor.match.posting import Section
 from resume_tailor.match.tokens import Token, stem
 
@@ -134,7 +134,7 @@ def _scan(clause: Clause, lexicon: Lexicon) -> list[_Hit]:
                 # are single names — so only split when the whole token is not itself a form.
                 form = _split_alternate(keys[0], lexicon)
                 exact = form is not None
-            if form is not None and _admits(form, window, tokens, index):
+            if form is not None and admits(form, tokens, index):
                 # A hit whose neighbour extends it (AWS inside "AWS Lambda") is only partial.
                 following = index + size
                 sub_span = following < len(tokens) and _extends(tokens[following])
@@ -154,28 +154,7 @@ def _extends(token: Token) -> bool:
 
 def _split_alternate(key: str, lexicon: Lexicon) -> Form | None:
     """Find a lexicon form inside a slash-joined alternation."""
-    if "/" not in key or (key,) in lexicon.by_tokens:
-        return None
-    for part in key.split("/"):
-        if (form := lexicon.by_tokens.get((part,))) is not None and form.tier is Tier.SAFE:
-            return form
-    return None
-
-
-def _admits(form: Form, window: list[Token], tokens: list[Token], index: int) -> bool:
-    """Apply the form's ambiguity tier to a candidate occurrence."""
-    if form.tier is Tier.SAFE:
-        return True
-    token = window[0]
-    if form.tier is Tier.CASED:
-        # Casing carries the signal: "Go" is a language, "go" is a verb. A capitalised form at
-        # the very start of a sentence proves nothing, since every sentence starts capitalised.
-        if form.surface.isupper():
-            # An all-caps acronym is self-evidencing: "ITSM" is ITSM wherever it sits.
-            return token.all_caps
-        cased_ok = not form.surface[:1].isupper() or token.surface[:1].isupper()
-        return cased_ok and not token.sentence_initial
-    return is_tool_framed(tokens, index)
+    return next(iter(alternatives(key, lexicon.by_tokens)), None)
 
 
 def _match(technology: str, hits: list[_Hit], lexicon: Lexicon) -> Match:

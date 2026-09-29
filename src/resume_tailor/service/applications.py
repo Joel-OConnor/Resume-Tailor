@@ -1,8 +1,8 @@
 """The two things this project generates once the profile exists, and the review both go through.
 
 ``general_application`` writes the general resume and the LinkedIn profile into
-``applications/general/``; ``tailor_application`` writes a resume and cover letter for one posting
-into ``applications/<company>-<role>/``. Between drafting and exporting, both run the same review:
+``output/general/``; ``tailor_application`` writes a resume and cover letter for one posting into
+``output/applications/<company>-<role>/``. Between drafting and exporting, both run the same review:
 
 1. The mechanical fixes are applied to the resume (spacing, a missing full stop, a hyphen in a
    date range, a skill listed twice).
@@ -38,6 +38,7 @@ from resume_tailor.agent import (
     write_general,
 )
 from resume_tailor.errors import RenderError, ResumeTailorError
+from resume_tailor.paths import APPLICATIONS_FOLDER, GENERAL_FOLDER, OUTPUT_DIR
 from resume_tailor.profile import load
 from resume_tailor.render import Layout, build
 from resume_tailor.review import (
@@ -60,7 +61,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COVER_LETTER_FILE",
-    "DEFAULT_APPLICATIONS_DIR",
+    "DEFAULT_OUTPUT_DIR",
     "GENERAL_SLUG",
     "JOB_DESCRIPTION_FILE",
     "LINKEDIN_FILE",
@@ -71,9 +72,9 @@ __all__ = [
     "tailor_application",
 ]
 
-DEFAULT_APPLICATIONS_DIR = Path("applications")
+DEFAULT_OUTPUT_DIR = OUTPUT_DIR
 
-GENERAL_SLUG = "general"
+GENERAL_SLUG = GENERAL_FOLDER
 """The one application folder that is not a job: the general resume and the LinkedIn profile."""
 
 JOB_DESCRIPTION_FILE = "job-description.md"
@@ -141,7 +142,7 @@ def slugify(company: str, role: str) -> str:
 def general_application(  # noqa: PLR0913 - one run; every argument is a distinct input
     *,
     profile_path: Path,
-    applications_dir: Path,
+    output_dir: Path,
     model: LanguageModel,
     ask: Asker | None = None,
     answers_path: Path = DEFAULT_ANSWERS_PATH,
@@ -150,7 +151,7 @@ def general_application(  # noqa: PLR0913 - one run; every argument is a distinc
 ) -> Application:
     """Write, review and export the general resume and the LinkedIn profile.
 
-    The folder is always ``applications_dir / GENERAL_SLUG``, replaced whole on every run.
+    The folder is always ``output_dir / GENERAL_SLUG``, replaced whole on every run.
     Without ``ask`` the review's questions are returned unasked on the result.
 
     Raises:
@@ -173,7 +174,7 @@ def general_application(  # noqa: PLR0913 - one run; every argument is a distinc
         LINKEDIN_FILE: reviewed.documents[LINKEDIN],
     }
     directory = _publish(
-        applications_dir, GENERAL_SLUG, documents, export=_export_resume if export else None
+        output_dir, GENERAL_SLUG, documents, export=_export_resume if export else None
     )
     return reviewed.application(GENERAL_SLUG, directory)
 
@@ -182,7 +183,7 @@ def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct
     posting: str,
     *,
     profile_path: Path,
-    applications_dir: Path,
+    output_dir: Path,
     model: LanguageModel,
     ask: Asker | None = None,
     answers_path: Path = DEFAULT_ANSWERS_PATH,
@@ -191,6 +192,7 @@ def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct
 ) -> Application:
     """Write, review and export a resume and cover letter tailored to ``posting``.
 
+    The folder is ``output_dir / "applications" / <company>-<role>``, named from the posting.
     The writer's own questions (chiefly the posting's must-haves the profile does not support)
     are asked first. Without ``ask`` every question is returned unasked on the result.
 
@@ -217,7 +219,9 @@ def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct
         RESUME_FILE: reviewed.documents[RESUME],
         COVER_LETTER_FILE: reviewed.documents[COVER_LETTER],
     }
-    directory = _publish(applications_dir, slug, documents, export=_export if export else None)
+    directory = _publish(
+        output_dir / APPLICATIONS_FOLDER, slug, documents, export=_export if export else None
+    )
     return reviewed.application(
         slug, directory, company=draft.company, role=draft.role, fit=draft.fit
     )
@@ -336,18 +340,18 @@ def _flagged(review: Review) -> str:
 
 # --- writing the folder ---------------------------------------------------------------------------
 def _publish(
-    applications_dir: Path,
+    parent: Path,
     slug: str,
     documents: Mapping[str, str],
     *,
     export: Callable[[Path], None] | None,
 ) -> Path:
-    """Write ``documents`` into ``applications_dir / slug`` — all of them, or none.
+    """Write ``documents`` into ``parent / slug``: all of them, or none.
 
     The run builds into a hidden sibling directory and swaps it in at the end, so a failure
     anywhere below — a write, a render — leaves whatever was there before exactly as it was.
     """
-    staging = _staging_dir(applications_dir, slug)
+    staging = _staging_dir(parent, slug)
     with contextlib.ExitStack() as unwind:
         # Registered before the first write and cancelled only once everything is on disk, so
         # every failure path below discards the partial folder without an except clause of its
@@ -359,18 +363,18 @@ def _publish(
             export(staging)
         unwind.pop_all()
 
-    directory = applications_dir / slug
+    directory = parent / slug
     _swap(staging, directory)
     return directory
 
 
-def _staging_dir(applications_dir: Path, slug: str) -> Path:
+def _staging_dir(parent: Path, slug: str) -> Path:
     """Create the hidden sibling directory this run builds into."""
     try:
-        applications_dir.mkdir(parents=True, exist_ok=True)
-        return Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=applications_dir))
+        parent.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=parent))
     except OSError as exc:
-        msg = f"cannot write to {applications_dir}: {exc.strerror or exc}"
+        msg = f"cannot write to {parent}: {exc.strerror or exc}"
         raise RenderError(msg) from exc
 
 
@@ -397,19 +401,36 @@ def _export_resume(directory: Path) -> None:
 def _swap(staging: Path, directory: Path) -> None:
     """Put the finished ``staging`` directory in place of ``directory``.
 
-    A rename cannot land on a non-empty target, so regenerating the same folder removes the old
-    one first. The window that opens is microseconds wide, and ``staging`` is a sibling on the
-    same filesystem, so the rename that follows it does not fail for the reasons a cross-device
-    move would.
+    A rename cannot land on a non-empty target, so regenerating the same folder first renames the
+    old one aside, onto an empty hidden sibling reserved for it, rather than deleting it in place.
+    If the rename of ``staging`` then fails, the old folder is renamed back, so it is never left
+    half deleted; if that rename fails too, the error names the hidden folder that holds it. It
+    is removed only once the new one is in place, and a file that cannot be deleted (a Finder
+    lock, say) leaves the hidden copy behind without failing the write.
     """
+    aside: Path | None = None
     try:
         if directory.exists():
-            shutil.rmtree(directory)
+            aside = Path(tempfile.mkdtemp(prefix=f".{directory.name}-old-", dir=directory.parent))
+            try:
+                directory.replace(aside)  # a directory may be renamed onto an empty one
+            except OSError:
+                with contextlib.suppress(OSError):
+                    aside.rmdir()
+                aside = None  # from here on, ``aside`` is set only while it holds the old folder
+                raise
         staging.replace(directory)
     except OSError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
         msg = f"cannot write {directory}: {exc.strerror or exc}"
+        if aside is not None:
+            try:
+                aside.replace(directory)
+            except OSError:
+                msg += f"; the previous version is in {aside}"
+        shutil.rmtree(staging, ignore_errors=True)
         raise RenderError(msg) from exc
+    if aside is not None:
+        shutil.rmtree(aside, ignore_errors=True)
 
 
 def _files(directory: Path) -> tuple[Path, ...]:

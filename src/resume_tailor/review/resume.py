@@ -25,7 +25,7 @@ from resume_tailor.verify.source import Area, Kind, Line, scan
 if TYPE_CHECKING:
     from resume_tailor.verify.source import Source
 
-__all__ = ["apply_fixes", "review_and_fix", "review_resume"]
+__all__ = ["apply_fixes", "review_resume"]
 
 _LONG_BULLET_WORDS = 40
 _LONG_SUMMARY_WORDS = 70
@@ -38,10 +38,16 @@ _MIN_INFLECTED = 4
 _QUOTE_CHARS = 60
 _TERMINAL = ".!?"
 _UNFINISHED = ":;,"
+# Tools whose own spelling is all lowercase, for when the Skills section does not say how a word
+# after a lead-in is spelled: a capital would misspell them.
+_LOWERCASE_NAMES = frozenset(
+    ("npm", "pnpm", "pandas", "pytest", "kubectl", "webpack", "jq", "dbt", "uv", "esbuild", "etcd")
+)
 
 _INNER_SPACES = re.compile(r"(?<=\S)[ \t]{2,}(?=\S)")
 _LEAD_IN = re.compile(r"^(?P<lead>[-*] \*\*[^*]+?:\*\*)(?P<gap> *)(?P<rest>.*)$")
 _SKILL_LINE = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<items>.*)$")
+_SKILL_SEPARATORS = re.compile(r"[,;/()]")
 _DOUBLE_STOP = re.compile(r"(?<!\.)\.\.(?!\.)")
 _SPACE_BEFORE_PUNCT = re.compile(r" +([,.;:])(?=\s|$)")
 _HYPHEN_RANGE = re.compile(r"(?<=[0-9A-Za-z]) - (?=[0-9A-Za-z])")
@@ -243,12 +249,6 @@ def apply_fixes(markdown: str) -> tuple[str, tuple[Finding, ...]]:
     return markdown, tuple(applied)
 
 
-def review_and_fix(markdown: str) -> tuple[str, Review]:
-    """Fix what can be fixed, then review what remains; the review records the fixes made."""
-    fixed, applied = apply_fixes(markdown)
-    return fixed, Review(review_resume(fixed).findings, applied)
-
-
 # --- the document, grouped ------------------------------------------------------------------------
 def _roles(source: Source) -> list[_Role]:
     """Group the experience section into one role per ``### `` entry."""
@@ -312,8 +312,14 @@ def _whitespace(raw: list[str]) -> list[Finding]:
 
 
 def _lead_ins(source: Source) -> list[Finding]:
-    """Give a bold lead-in one space after it and a capital letter to follow."""
+    """Give a bold lead-in one space after it and a capital letter to follow.
+
+    A tool the Skills section names keeps the spelling it has there ("dbt" stays "dbt", "git"
+    becomes "Git", "numpy" becomes "NumPy"), so the capital never changes how a technology is
+    written; only the letter case of that first word changes.
+    """
     found: list[Finding] = []
+    spellings = _skill_spellings(source)
     for line in source.lines:
         if line.kind is not Kind.BULLET:
             continue
@@ -323,12 +329,30 @@ def _lead_ins(source: Source) -> list[Finding]:
         rest = match["rest"]
         first = rest.split(" ", 1)[0]
         if first.isalpha() and first.islower():
-            rest = rest[0].upper() + rest[1:]
+            default = first if first in _LOWERCASE_NAMES else first.capitalize()
+            rest = spellings.get(first, default) + rest[len(first) :]
         fixed = f"{match['lead']} {rest}"
         if fixed != line.text:
             message = "one space and a capital letter after the lead-in"
             found.append(Finding("lead-in", Level.FIX, line.number, line.text, message, fixed))
     return found
+
+
+def _skill_spellings(source: Source) -> dict[str, str]:
+    """How the Skills section spells each one-word item, keyed by the word in lowercase.
+
+    Items inside parentheses count too, so ``Python (pandas, NumPy)`` records all three.
+    """
+    spellings: dict[str, str] = {}
+    for line in source.lines:
+        if line.area is not Area.SKILLS or line.kind is Kind.HEADING:
+            continue
+        match = _SKILL_LINE.match(line.body)  # a skills line written as a bullet keeps its label
+        for item in _SKILL_SEPARATORS.split(match["items"] if match else line.body):
+            word = item.strip(" .*_")
+            if word.isalpha():
+                spellings.setdefault(word.lower(), word)
+    return spellings
 
 
 def _punctuation(source: Source) -> list[Finding]:

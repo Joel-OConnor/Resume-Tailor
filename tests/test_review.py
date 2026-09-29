@@ -18,7 +18,6 @@ from resume_tailor.review import (
     format_review,
     from_findings,
     gather,
-    review_and_fix,
     review_profile,
     review_resume,
     said,
@@ -57,9 +56,7 @@ def bulleted(*bullets: str) -> str:
 # --- a clean document -----------------------------------------------------------------------------
 def test_a_clean_resume_has_nothing_to_say() -> None:
     assert review_resume(CLEAN).findings == ()
-    fixed, review = review_and_fix(CLEAN)
-    assert fixed == CLEAN
-    assert review == Review()
+    assert apply_fixes(CLEAN) == (CLEAN, ())
 
 
 # --- FIX ------------------------------------------------------------------------------------------
@@ -83,9 +80,62 @@ def test_a_lead_in_gets_its_space_and_its_capital() -> None:
     assert [finding.rule for finding in applied] == ["lead-in"]
 
 
-def test_a_lowercase_product_name_after_the_lead_in_is_not_capitalised() -> None:
+def test_a_mixed_case_product_name_after_the_lead_in_is_not_capitalised() -> None:
     text = bulleted("- **Mobile:** iOS work cut crashes 50%.", "- **Web:** Cut load time 30%.")
     assert "lead-in" not in rules(text)
+
+
+def test_a_lowercase_tool_name_after_the_lead_in_keeps_its_spelling() -> None:
+    text = bulleted(
+        "- **Tooling:** npm workspaces cut install time 40%.",
+        "- **Data:**pandas pipelines cut report time 30%.",
+        "- **Web:** cut load time 20%.",
+    )
+    fixed, applied = apply_fixes(text)
+    assert "- **Tooling:** npm workspaces cut install time 40%." in fixed
+    assert "- **Data:** pandas pipelines cut report time 30%." in fixed, "the space is still fixed"
+    assert "- **Web:** Cut load time 20%." in fixed, "an ordinary word is still capitalised"
+    assert [finding.rule for finding in applied] == ["lead-in", "lead-in"]
+
+
+def test_a_tool_after_the_lead_in_is_spelled_the_way_the_skills_section_spells_it() -> None:
+    text = bulleted(
+        "- **Version control:** git branching cut merge conflicts 40%.",
+        "- **Frontend:** yarn workspaces cut install time 25%.",
+        "- **Modelling:** dbt models cut report time 30%.",
+        "- **Proxy:** nginx caching cut latency 20%.",
+        "- **Maths:** numpy vectorising cut run time 50%.",
+        "- **Web:** cut load time 20%.",
+    ).replace(
+        "**Languages:** Analytical Notation, Mathematics",
+        "**Tools:** Git, Yarn, nginx\n**Data:** dbt; Python (pandas, NumPy)",
+    )
+    fixed, _ = apply_fixes(text)
+    assert "- **Version control:** Git branching cut merge conflicts 40%." in fixed
+    assert "- **Frontend:** Yarn workspaces cut install time 25%." in fixed
+    assert "- **Modelling:** dbt models cut report time 30%." in fixed
+    assert "- **Proxy:** nginx caching cut latency 20%." in fixed
+    assert "- **Maths:** NumPy vectorising cut run time 50%." in fixed, "from inside parentheses"
+    assert "- **Web:** Cut load time 20%." in fixed, "a word Skills lacks is capitalised"
+
+
+def test_a_tool_that_takes_a_capital_gets_one_when_the_skills_section_is_silent() -> None:
+    text = bulleted(
+        "- **Version control:** git branching cut merge conflicts 40%.",
+        "- **Frontend:** yarn workspaces cut install time 25%.",
+    )
+    fixed, _ = apply_fixes(text)
+    assert "- **Version control:** Git branching cut merge conflicts 40%." in fixed
+    assert "- **Frontend:** Yarn workspaces cut install time 25%." in fixed
+
+
+def test_a_skills_line_written_as_a_bullet_keeps_its_own_spelling() -> None:
+    text = CLEAN.replace(
+        "**Languages:** Analytical Notation, Mathematics",
+        "- **Data:** dbt, Snowflake\n- **Tools:** git, Make",
+    )
+    fixed, _ = apply_fixes(text)
+    assert "- **Data:** dbt, Snowflake\n- **Tools:** git, Make" in fixed
 
 
 def test_a_missing_full_stop_follows_the_majority() -> None:

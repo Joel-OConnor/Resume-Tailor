@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from docx import Document as new_docx
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
@@ -35,16 +36,9 @@ def test_defaults_layer_over_span_emphasis() -> None:
         font="Calibri",
         size=10,
         italic=True,
-        color="444444",
     )
     assert [(run.bold, run.italic) for run in paragraph.runs] == [(False, True), (True, True)]
-    assert str(paragraph.runs[0].font.color.rgb) == "444444"
-
-
-def test_colour_is_left_alone_when_unset() -> None:
-    paragraph = new_docx().add_paragraph()
-    add_spans(paragraph, (Span("a"),), font="Calibri", size=10)
-    assert paragraph.runs[0].font.color.rgb is None
+    assert {(run.font.name, run.font.size) for run in paragraph.runs} == {("Calibri", Pt(10))}
 
 
 def _ppr_children(paragraph: DocxParagraph) -> list[str]:
@@ -54,12 +48,19 @@ def _ppr_children(paragraph: DocxParagraph) -> list[str]:
 
 
 def test_ppr_children_stay_in_schema_order() -> None:
-    """w:spacing, w:ind, w:contextualSpacing in that order; out of order, Word calls it corrupt."""
+    """w:spacing, w:ind, w:contextualSpacing, w:jc in order; out of order, Word calls it corrupt."""
     paragraph = new_docx().add_paragraph("Heading")
+    # A later sibling already in place, so appending the new element would land it after w:jc.
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     set_spacing(paragraph, before=10, line=13.5)
     set_indent(paragraph, left=0.25, right=0, hanging=0.25)
     children = _ppr_children(paragraph)
-    assert children.index("spacing") < children.index("ind") < children.index("contextualSpacing")
+    assert (
+        children.index("spacing")
+        < children.index("ind")
+        < children.index("contextualSpacing")
+        < children.index("jc")
+    )
 
 
 def test_spacing_is_absolute_and_lives_above_the_paragraph() -> None:
@@ -98,10 +99,22 @@ def test_cell_margins_are_zeroed() -> None:
 def test_cell_borders_accumulate_rather_than_replace() -> None:
     cell = new_docx().add_table(rows=1, cols=1).rows[0].cells[0]
     set_cell_border(cell, "right")
-    set_cell_border(cell, "top", color="FF0000")
+    set_cell_border(cell, "top")
     borders = cell._tc.find(qn("w:tcPr")).findall(qn("w:tcBorders"))
     assert len(borders) == 1
     assert {child.tag.split("}")[1] for child in borders[0]} == {"right", "top"}
+
+
+def test_a_cell_border_is_the_thin_black_rule_the_css_draws() -> None:
+    """``border-right: 1pt solid #000`` in the HTML; w:sz is in eighths of a point."""
+    cell = new_docx().add_table(rows=1, cols=1).rows[0].cells[0]
+    set_cell_border(cell, "right")
+    edge = cell._tc.find(qn("w:tcPr")).find(qn("w:tcBorders")).find(qn("w:right"))
+    assert (edge.get(qn("w:val")), edge.get(qn("w:sz")), edge.get(qn("w:color"))) == (
+        "single",
+        "8",
+        "000000",
+    )
 
 
 def test_indent_without_a_hanging_first_line() -> None:

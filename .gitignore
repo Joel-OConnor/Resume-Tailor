@@ -1,26 +1,23 @@
-# --- YOUR PERSONAL DATA — never committed ---------------------------------------------------------
-# Deny-by-default: everything under profile/ is the user's real career data. Only the two
-# guides that ship with the project are tracked. Listing files to ignore one by one meant any
-# new document added here — an outline, a technologies list — was tracked silently.
-/profile/*
-!/profile/HOW-TO-BUILD-YOUR-PROFILE.md
-!/profile/raw/
-/profile/raw/*
-!/profile/raw/README.md
+# --- YOUR PERSONAL DATA: never committed ----------------------------------------------------------
+# Deny-by-default. Everything in my-documents/ and output/ is the user's real career data, the jobs
+# they are looking at, and what was written for them; only the READMEs that explain each folder are
+# tracked. Listing files to ignore one by one meant any new document added here was tracked silently.
+/my-documents/*
+!/my-documents/README.md
+!/my-documents/career-history/
+/my-documents/career-history/*
+!/my-documents/career-history/README.md
+!/my-documents/job-postings/
+/my-documents/job-postings/*
+!/my-documents/job-postings/README.md
 
-# Job postings you drop in to tailor against — yours, and often under an NDA
-/jobs/*
-!/jobs/README.md
-
-# Applications are your data too; only the README and the demo example are tracked
-/applications/*
-!/applications/README.md
-!/applications/example-acme-backend/
+/output/*
+!/output/README.md
 
 # The Claude Code relay (RESUME_TAILOR_LLM=claude-code): every request carries your profile
 /.relay/
 
-# --- generated documents (regenerate with `make export`) -------------------------------------------
+# --- rendered documents (re-render a .md with `resume-tailor build`) ------------------------------
 *.docx
 *.pdf
 *.html

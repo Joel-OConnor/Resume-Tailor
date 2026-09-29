@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../schema/master-profile.schema.json
-# Example master profile — copy to profile/master-profile.yaml and replace with your own history.
+# Example master profile: copy it to output/master-profile.yaml and replace it with your own history.
 #
-#   cp templates/master-profile.example.yaml profile/master-profile.yaml
+#   cp examples/master-profile.yaml output/master-profile.yaml
 #   .venv/bin/resume-tailor profile validate   # validate and audit
 #   .venv/bin/resume-tailor profile render     # readable Markdown view
 #

@@ -91,6 +91,10 @@ five minutes of the interview is worse than no screen at all. Specifically, with
 
 - Never invent or adjust a metric. If a highlight says 38%, write 38%. If it carries no number, do
   not add one: "improved performance" must never become "improved performance by 40%".
+- Print only figures the profile states. One it spells out may be printed in digits ("six years"
+  as "6 years"), but never one you work out yourself, such as total years of experience added up
+  from the dates, a headcount, or a duration: the checks reject every figure the profile does not
+  state.
 - Never invent or inflate an employer, title, date, degree, certification, or skill. Do not widen a
   date range, promote a title, or turn two years into "several years".
 - Anything under the profile's "Notes" heading is UNCONFIRMED: a question the candidate has not
@@ -120,8 +124,8 @@ keywords, and the person who gives it ten seconds.
 {_TRUTH}
 WHAT A WELL-ROUNDED RESUME IS
 1. Aimed, not dumped. The title under the name is the profile's first target role. The summary is
-   two or three sentences: that role, the years and domains behind it, and the three or four
-   strengths the whole career backs up.
+   two or three sentences: that role, the years (as the profile states them) and domains behind
+   it, and the three or four strengths the whole career backs up.
 2. Selected. The profile is a superset; the resume is the best of it. Give the most recent roles
    four to six bullets, earlier roles two or three, and a role unrelated to the target roles one
    or none. Choose the accomplishments with the clearest outcomes and the most range between them:
@@ -196,8 +200,11 @@ WHAT YOU MAY CHANGE
 WHAT YOU MAY NOT CHANGE
 - Any fact. Every employer, title, date, credential, technology, number and outcome stays exactly
   as it is. The checks that run on your answer reject an invented or altered figure.
-- The resume's "### " entries: keep every role and degree, in the same order, with the same
-  heading text. Keep every section heading and the header lines.
+- The "### " entries of the resume and of the LinkedIn profile: keep every role, degree and
+  certification, in the same order, with the same heading text, and never drop one to save space.
+  The checks compare them and reject an edit that loses, renames or reorders one. Only the
+  candidate's answers can add an entry or change a heading, as the note with them explains. Keep
+  every section heading and the header lines.
 - Each document's format: the format contracts below are what the renderer and the checks accept.
 
 Where a line would only get better with a fact you do not have (an outcome, a number, a scope),
@@ -210,7 +217,9 @@ The candidate has just answered questions about these documents, and the profile
 records their answers. Work each new fact into the documents wherever it makes them stronger (a
 figure into the bullet it measures, a requirement they turn out to have into the summary, the
 skills and the role where they used it), and change nothing else. A new role or degree may add a
-"### " entry; every other entry stays as it is.
+"### " entry. Every entry already there stays, in the resume and the LinkedIn profile alike, in the
+same order and with the same heading, unless the answers complete or correct what that heading
+says (a degree's field, a corrected title): then it says what the profile now records.
 """
 
 PROFILE_SYSTEM = """\
@@ -338,7 +347,8 @@ shape is what lets a parser read it and a person skim it:
     a plain line after a ###       its dates, and its location if the profile records one:
                                    "Mar 2021 – Present | Austin, TX", or just "2016"
     **Label:** a, b, c             a skills line: bold label, comma-separated items
-    - bullet                       a bullet
+    - bullet                       a bullet, on one line however long it runs: a wrapped
+                                   line becomes a separate paragraph, not more of the bullet
     - **Lead-in:** text            a bullet with a bold lead-in
     *Tech Stack – a, b, c*         an italic note under a role's bullets
     **bold** and *italic*          inline emphasis, which nests
@@ -356,6 +366,9 @@ Rules:
 - The line under an entry carries only what the profile records for that entry. Never add a city,
   state or location the profile does not give for it, however well known.
 - Keep Skills, Education and Certifications entries short; they read as lists, not sentences.
+- Every item in Skills and in a Tech Stack note is a technology the profile records, under its
+  name or one of its aliases. A degree, certification or award is written in the profile's own
+  words: its name, issuer or school, and the dates and qualifiers its record gives.
 """
 
 COVER_LETTER_FORMAT = """\
@@ -402,8 +415,9 @@ its own LinkedIn field:
     **Job titles:** a, b, c
 
 Leave out a section the profile has nothing for. Under an entry, print only the dates and location
-the profile records for it. Use no other emphasis: LinkedIn prints asterisks literally, so the bold
-job titles and labels above are the only ones.
+the profile records for it. Every item on a Top Skills or Skills line is a technology the profile
+records, under its name or one of its aliases. Use no other emphasis: LinkedIn prints asterisks
+literally, so the bold job titles and labels above are the only ones.
 """
 
 _QUESTIONS_CONTRACT = """\

@@ -16,6 +16,36 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+MODEL_SETTINGS = (
+    "ANTHROPIC_API_KEY",
+    "RESUME_TAILOR_LLM",
+    "RESUME_TAILOR_MODEL",
+    "RESUME_TAILOR_EFFORT",
+    "RESUME_TAILOR_MAX_TOKENS",
+    "RESUME_TAILOR_RELAY_DIR",
+    "RESUME_TAILOR_RELAY_TIMEOUT",
+)
+"""Every environment variable ``load_settings`` reads."""
+
+
+@pytest.fixture(autouse=True)
+def _isolated_from_the_machine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Run every test without the developer's model settings, from an empty working directory.
+
+    ``load_settings`` prefers a real environment variable over the ``.env`` file it is given, so
+    an exported ``RESUME_TAILOR_LLM`` or ``RESUME_TAILOR_MODEL`` would otherwise decide what a
+    test sees. And every default path (``.env``, ``.relay/``, ``output/``, ``my-documents/``,
+    the schema) is relative to the working directory, which at the repo root holds the user's
+    real profile and key. From an empty folder, a test that forgets to pass a path reads nothing
+    real and writes nowhere that matters.
+    """
+    for name in MODEL_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+
+
 RESUME_MD = """\
 # Ada Lovelace
 Principal Engineer

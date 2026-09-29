@@ -88,6 +88,21 @@ def test_both_bullet_markers(marker: str) -> None:
     assert document.blocks[-1] == Bullet((Span("one"),))
 
 
+def test_a_bullet_is_one_line_and_a_wrapped_line_is_a_paragraph_of_its_own() -> None:
+    """Deliberate: like every other reader of these files, the grammar sees one bullet per line."""
+    # Joining an indented continuation here alone would make the review and the verifier, which
+    # also read line by line, disagree with the renderers about what the bullet says.
+    document = parse(
+        "# Ada\n\n## Experience\n- Led the migration of forty services\n"
+        "  to Kubernetes, cutting cost 30%.\n- Next"
+    )
+    assert document.blocks[2:] == (
+        Bullet((Span("Led the migration of forty services"),)),
+        Paragraph((Span("to Kubernetes, cutting cost 30%."),)),
+        Bullet((Span("Next"),)),
+    )
+
+
 def test_bullet_with_a_bold_lead_in() -> None:
     document = parse("# Ada\n\n## Experience\n- **Scope:** owned it")
     assert document.blocks[-1] == Bullet((Span("Scope:", bold=True), Span(" owned it")))

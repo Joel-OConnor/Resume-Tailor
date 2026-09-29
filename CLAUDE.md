@@ -10,10 +10,15 @@ applicant-tracking parsers that screen for them.
 There is one input step and two generating scripts. Nothing else generates anything.
 
 ```bash
-make profile                         # 1. documents in profile/raw/  ->  profile/master-profile.yaml
-make resume                          # 2. the general resume + the LinkedIn profile  ->  applications/general/
-make tailor JOB=jobs/<posting>.md    # 3. a resume + cover letter for that one job   ->  applications/<company>-<role>/
+make profile                         # 1. documents in my-documents/career-history/  ->  output/master-profile.yaml
+make resume                          # 2. the general resume + the LinkedIn profile  ->  output/general/
+make tailor JOB=<posting>            # 3. a resume + cover letter for that one job   ->  output/applications/<company>-<role>/
 ```
+
+The user brings everything in `my-documents/` (career documents in `career-history/`, job
+postings in `job-postings/`); everything the scripts write lands in `output/`. `JOB` is a path to
+the posting, or just its file name when it lives in `my-documents/job-postings/`
+(`make tailor JOB=stripe-staff-backend.md`).
 
 All three call a model, chosen by `RESUME_TAILOR_LLM` in `.env`: the Anthropic API
 (`anthropic`, with `ANTHROPIC_API_KEY`), or you, through the relay (`claude-code`, below). Steps 2
@@ -23,14 +28,14 @@ you run it from Claude Code) they are printed instead. See **The review step** b
 
 ## 1. The master profile
 
-`profile/master-profile.yaml` is the single source of truth. Every document is selected and
+`output/master-profile.yaml` is the single source of truth. Every document is selected and
 reframed from it and verified against it. It is validated against
 `schema/master-profile.schema.json`; `resume-tailor profile render` writes a readable view to
-`profile/MASTER_PROFILE.md` (generated, never edit it by hand).
+`output/master-profile.md` (generated, never edit it by hand).
 
-`make profile` builds it from whatever the user dropped into `profile/raw/` (old resumes as PDF,
-Word or text, a LinkedIn export, brag docs, and `answers.md`, the log of every question they
-have answered). It runs in three passes:
+`make profile` builds it from whatever the user dropped into `my-documents/career-history/` (old
+resumes as PDF, Word or text, a LinkedIn export, brag docs, and `answers.md`, the log of every
+question they have answered). It runs in three passes:
 
 1. **Draft.** A model records every distinct career fact from the documents as YAML.
 2. **Refine.** A second pass reads the draft against its sources and a mechanical audit, and
@@ -46,16 +51,17 @@ have answered). It runs in three passes:
    they are asked right away and the answers are recorded in the profile.
 
 It refuses to replace an existing profile without `FORCE=--force`, and keeps a timestamped
-backup when it does: a profile may hold corrections made by hand. **Never regenerate an existing
-profile without asking the user.** When they add new documents, the pattern is the same: drop
-them in `profile/raw/` and rebuild.
+backup in `output/backups/` when it does (so does every recorded answer): a profile may hold
+corrections made by hand. **Never regenerate an existing profile without asking the user.** When
+they add new documents, the pattern is the same: drop them in `my-documents/career-history/` and
+rebuild.
 
 When matching a posting's wording, use `technologies[].name` *and* `aliases`, and
 `highlights[].tags` to find evidence. Anything in `notes` is **unconfirmed**: never print it.
 
 ## 2. The general resume and the LinkedIn profile
 
-`make resume` writes `applications/general/`:
+`make resume` writes `output/general/`:
 
 - `resume.md` / `resume.docx` / `resume.pdf`: one well-rounded resume aimed at the profile's
   target roles. Selected, not dumped: the strongest, most distinct accomplishments, a skills list
@@ -68,8 +74,9 @@ When matching a posting's wording, use `technologies[].name` *and* `aliases`, an
 
 ## 3. A tailored application
 
-`make tailor JOB=jobs/<posting>.md` takes exactly one job description the user points at, and
-writes `applications/<company>-<role>/`:
+`make tailor JOB=<posting>` takes exactly one job description the user points at (a path, or the
+file name of a posting in `my-documents/job-postings/`), and writes
+`output/applications/<company>-<role>/`:
 
 - `resume.md` / `.docx` / `.pdf`: the resume tailored to that posting.
 - `cover-letter.md` / `.docx` / `.pdf`: a one-page letter for it.
@@ -88,14 +95,15 @@ Both scripts review what they wrote before anything is exported:
    same verifier as the draft.
 3. The questions only the user can answer are gathered (an unsupported must-have, an outcome with
    no number, a missing date), at most eight, most important first.
-4. At a terminal, each is asked. An answer that gives a fact is logged in `profile/raw/answers.md`
-   and recorded in `profile/master-profile.yaml` (checked by `verify/changes.py:check_update`,
-   which rejects anything the answers do not state), and the documents are revised to use it.
+4. At a terminal, each is asked. An answer that gives a fact is logged in
+   `my-documents/career-history/answers.md` and recorded in `output/master-profile.yaml` (checked
+   by `verify/changes.py:check_update`, which rejects anything the answers do not state), and the
+   documents are revised to use it.
 5. Then the final `.docx` and `.pdf` files are written.
 
 **From Claude Code there is no terminal**, so the script finishes with the open questions printed.
 Then *you* are the one who asks: put them to the user one at a time, record each real answer in
-`profile/master-profile.yaml` where it belongs (a figure into the highlight it measures, a
+`output/master-profile.yaml` where it belongs (a figure into the highlight it measures, a
 technology into `technologies` and the role's stack, a new accomplishment as a highlight with a
 label and tags), run `.venv/bin/resume-tailor profile validate`, and run the script again so the
 final files use the answers. Never answer a question by guessing, and never record a "no".
@@ -129,10 +137,11 @@ steps yourself and hold your output to the same checks:
   rejects:
 
   ```bash
-  .venv/bin/python -c "from resume_tailor.profile import load; from resume_tailor.verify import verify_resume, format_violations; import pathlib; v = verify_resume(pathlib.Path('applications/<slug>/resume.md').read_text(), load()); print(format_violations(v) or 'clean')"
+  .venv/bin/python -c "from resume_tailor.profile import load; from resume_tailor.verify import verify_resume, format_violations; import pathlib; v = verify_resume(pathlib.Path('output/applications/<slug>/resume.md').read_text(), load()); print(format_violations(v) or 'clean')"
   ```
 
-- Export with `.venv/bin/resume-tailor build applications/<slug>/resume.md` (and the cover letter).
+- Export with `.venv/bin/resume-tailor build output/applications/<slug>/resume.md` (and the cover
+  letter).
 - If you edit the profile, check your edit the way the scripts' edits are checked, e.g.
   `check_update(before, after, answers)` from `resume_tailor.verify.changes`.
 
@@ -183,7 +192,9 @@ make check     # ruff + mypy --strict + pytest with 100% coverage: all three mus
 
 ## Conventions
 
-- The user's real data lives only in `profile/`, `jobs/` and `applications/`, all **gitignored**
-  (as is `.env`), so personal info, the jobs they are looking at, and drafts never get committed.
+- The user's real data lives only in `my-documents/` (what they bring) and `output/` (what the
+  scripts write). Both are **gitignored** apart from their READMEs, and so is `.env`, so personal
+  info, the jobs they are looking at, and drafts never get committed. The worked examples in
+  `examples/` are fictional and tracked.
 - Application folder slugs: lowercase `company-role`, e.g. `stripe-staff-backend-engineer`.
 - Resume Markdown must follow `templates/resume.md`'s structure so the renderers work.

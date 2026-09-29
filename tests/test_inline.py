@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from resume_tailor.documents.blocks import Span
-from resume_tailor.documents.inline import parse_spans, spans_to_text
+from resume_tailor.documents.inline import parse_spans
 
 
 def test_plain_text_is_one_span() -> None:
@@ -69,14 +69,6 @@ def test_bold_wins_over_italic_at_the_same_position() -> None:
         Span(" and "),
         Span("it", italic=True),
     )
-
-
-def test_spans_to_text_round_trips_the_visible_text() -> None:
-    assert spans_to_text(parse_spans("a **b** *c*")) == "a b c"
-
-
-def test_spans_to_text_of_nothing() -> None:
-    assert spans_to_text(()) == ""
 
 
 # --- nesting -------------------------------------------------------------------------------------
@@ -149,7 +141,7 @@ def test_single_character_bold_italic_runs_do_not_merge() -> None:
 
 def test_many_delimiters_parse_without_blowing_up() -> None:
     """The matcher recurses; a pathological line must not hang or overflow the stack."""
-    assert spans_to_text(parse_spans("**a** " * 200)).strip() == ("a " * 200).strip()
+    assert "".join(s.text for s in parse_spans("**a** " * 200)).strip() == ("a " * 200).strip()
 
 
 def test_an_escaped_asterisk_inside_an_italic_run() -> None:

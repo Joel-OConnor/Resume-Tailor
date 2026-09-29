@@ -2,7 +2,7 @@
 
 Two halves, deliberately decoupled:
 
-* :mod:`resume_tailor.profile` reads ``profile/master-profile.yaml`` — the machine-readable
+* :mod:`resume_tailor.profile` reads ``output/master-profile.yaml`` — the machine-readable
   superset of a career — and validates it into typed models.
 * :mod:`resume_tailor.documents` and :mod:`resume_tailor.render` turn a *tailored* Markdown
   resume or cover letter into ``.docx``/``.pdf`` in either the ATS-safe or polished layout.

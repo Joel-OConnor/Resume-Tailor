@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Self
 import pytest
 
 from resume_tailor.errors import ConfigError, ModelError
-from resume_tailor.llm import AnthropicModel, LanguageModel, Reply, Settings, build_model
+from resume_tailor.llm import AnthropicModel, Reply, Settings, build_model
 from resume_tailor.llm.config import load_settings, read_env_file
 
 if TYPE_CHECKING:
@@ -144,7 +144,10 @@ def test_defaults_apply_when_only_a_key_is_set(
     for name in (KEY, "RESUME_TAILOR_MODEL", "RESUME_TAILOR_MAX_TOKENS"):
         monkeypatch.delenv(name, raising=False)
     settings = load_settings(path)
-    assert settings.model and settings.max_tokens > 0
+    assert settings.model
+    assert settings.max_tokens >= 32000, (
+        "a full master profile runs past 8,000 tokens; the old default truncated one"
+    )
 
 
 # --- the adapter ------------------------------------------------------------------------------
@@ -207,25 +210,35 @@ def test_api_failures_become_actionable_messages(status: int | None, expected: s
     assert "sk-test" not in str(caught.value), "the key must never appear in an error"
 
 
-def test_build_model_returns_something_satisfying_the_protocol(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_build_model_hands_the_api_the_anthropic_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default provider must call the API, not wait on relay files nobody is answering."""
     monkeypatch.setattr("resume_tailor.llm.client._make_client", lambda _: _Client(_Message("x")))
-    assert isinstance(build_model(Settings(api_key="k")), LanguageModel)
+    assert isinstance(build_model(Settings(api_key="k")), AnthropicModel)
 
 
 def test_the_sdk_client_is_built_when_none_is_injected(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = _Client(_Message("x"))
-    monkeypatch.setattr("resume_tailor.llm.client._make_client", lambda _: sentinel)
+    seen: list[str] = []
+
+    def make_client(key: str) -> _Client:
+        seen.append(key)
+        return sentinel
+
+    monkeypatch.setattr("resume_tailor.llm.client._make_client", make_client)
     assert AnthropicModel(Settings(api_key="k"))._client is sentinel
+    assert seen == ["k"], "the key from Settings, which is often read from .env, is the one used"
 
 
 def test_the_sdk_client_is_constructed_from_the_key() -> None:
-    """Exercises the real import path; the SDK builds a client without touching the network."""
+    """Exercises the real import path; the SDK builds a client without touching the network.
+
+    The SDK builds one happily with no key at all, so only the key itself shows it was passed.
+    """
     from resume_tailor.llm.client import _make_client
 
     client = _make_client("sk-ant-not-a-real-key")
     assert hasattr(client, "messages")
+    assert client.api_key == "sk-ant-not-a-real-key"
 
 
 # --- choosing who answers -----------------------------------------------------------------------

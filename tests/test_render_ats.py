@@ -108,6 +108,13 @@ def test_every_run_uses_the_design_face(resume: Document, tmp_path: Path) -> Non
     assert fonts == {ats.FONT}
 
 
+def test_the_normal_style_carries_the_body_face(resume: Document, tmp_path: Path) -> None:
+    """Word sizes a line, and the List Bullet glyph, by the paragraph mark, which takes Normal's."""
+    normal = _render(resume, tmp_path).styles["Normal"].font
+    assert normal.name == "Arial"
+    assert normal.size == Pt(10)
+
+
 def test_the_header_sets_the_name_title_and_contact_line_apart(
     resume: Document, tmp_path: Path
 ) -> None:

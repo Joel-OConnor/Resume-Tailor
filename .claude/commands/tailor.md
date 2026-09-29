@@ -6,14 +6,15 @@ $ARGUMENTS
 If the job description above is empty, ask me to paste it or tell you which file it's in.
 
 Do all of this:
-1. If I pasted the posting, save it as `jobs/<company>-<role>.md` (lowercase slug). If I named a
-   file, use that file.
-2. Make sure `profile/master-profile.yaml` exists. If it doesn't, tell me to run `make profile`
+1. If I pasted the posting, save it as `my-documents/job-postings/<company>-<role>.md` (lowercase
+   slug). If I named a file, use that file (a bare file name means one in
+   `my-documents/job-postings/`).
+2. Make sure `output/master-profile.yaml` exists. If it doesn't, tell me to run `make profile`
    first and stop.
-3. Run `make tailor JOB=<that file>`. It writes `applications/<company>-<role>/` with the tailored
-   resume and cover letter, and prints a fit summary and the review's open questions.
+3. Run `make tailor JOB=<that file>`. It writes `output/applications/<company>-<role>/` with the
+   tailored resume and cover letter, and prints a fit summary and the review's open questions.
 4. Tell me the fit summary in a sentence or two. Then ask me the open questions one at a time.
-   For each real answer, record the fact in `profile/master-profile.yaml` where it belongs (a
+   For each real answer, record the fact in `output/master-profile.yaml` where it belongs (a
    figure into the highlight it measures, a technology into `technologies` and the role's stack,
    a new accomplishment as a highlight with a label and tags), and run
    `.venv/bin/resume-tailor profile validate`. Record nothing for a "no" or a skip, and never

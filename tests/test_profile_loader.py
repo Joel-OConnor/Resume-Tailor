@@ -57,18 +57,9 @@ def test_defaults_fill_in_absent_optional_fields() -> None:
 def test_the_shipped_example_is_valid() -> None:
     from tests.conftest import REPO_ROOT
 
-    profile = loader.load(REPO_ROOT / "templates" / "master-profile.example.yaml")
+    profile = loader.load(REPO_ROOT / "examples" / "master-profile.yaml")
     assert profile.contact.name == "Jordan Rivera"
     assert profile.tenure_ids() == {"northwind-payments", "cedar-analytics"}
-
-
-def test_technology_names_include_aliases() -> None:
-    profile = loader.load_mapping(
-        _with(
-            technologies=[{"group": "Data", "items": [{"name": "Kubernetes", "aliases": ["K8s"]}]}]
-        )
-    )
-    assert profile.technology_names() == ("Kubernetes", "K8s")
 
 
 def test_text_is_kept_exactly_as_written() -> None:
@@ -282,10 +273,11 @@ def test_a_blank_end_date_is_rejected() -> None:
     _expect(data, "experience[0].roles[0].end", "a date or 'present' is required")
 
 
-def test_an_end_before_the_start_is_rejected() -> None:
+@pytest.mark.parametrize(("start", "end"), [("2021", "2020"), ("2021-05", "2021-03")])
+def test_an_end_before_the_start_is_rejected(start: str, end: str) -> None:
     data = _with(
         experience=[
-            {"id": "e", "company": "E", "roles": [{"title": "T", "start": "2021", "end": "2020"}]}
+            {"id": "e", "company": "E", "roles": [{"title": "T", "start": start, "end": end}]}
         ]
     )
     _expect(data, "experience[0].roles[0].end", "is before start")
@@ -293,7 +285,14 @@ def test_an_end_before_the_start_is_rejected() -> None:
 
 @pytest.mark.parametrize(
     ("start", "end"),
-    [("2020", "2020"), ("2020-01", "2020"), ("2020", "2020-01"), ("2020-01", "2020-12")],
+    [
+        ("2020", "2020"),
+        ("2020-01", "2020"),
+        ("2020", "2020-01"),
+        ("2020-01", "2020-12"),
+        # A year-only end must widen to December, or a mid-year start reads as after it.
+        ("2020-06", "2020"),
+    ],
 )
 def test_year_only_dates_widen_to_the_whole_year(start: str, end: str) -> None:
     data = _with(

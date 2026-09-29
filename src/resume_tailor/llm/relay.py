@@ -11,11 +11,19 @@ The protocol, all inside the relay folder:
 * the answerer writes the whole reply to ``<id>.response.md`` (``<id>.error.md`` to give up on
   the request, with a line saying why);
 * the script reads the reply once the file has stopped growing, and moves both into ``answered/``.
+  A request it stops waiting for (no reply in time, or the script interrupted) moves there too.
+
+A script can also be killed before it tidies up (a terminal closed, a background job stopped), and
+then its request stays in the folder. So the script holds a lock on each request while it waits,
+which the operating system releases however the script ends, and :func:`pending_requests` passes
+over a request nobody holds. The next answerer is handed only a request a script is waiting for.
 """
 
 from __future__ import annotations
 
+import fcntl
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -25,6 +33,7 @@ from resume_tailor.llm.client import Reply
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from io import BufferedReader
     from pathlib import Path
 
 __all__ = [
@@ -56,14 +65,47 @@ def error_for(request: Path) -> Path:
 
 
 def pending_requests(directory: Path) -> tuple[Path, ...]:
-    """Return every request in ``directory`` with no reply yet, oldest first."""
+    """Return every request in ``directory`` a script is still waiting on, oldest first.
+
+    A request with a reply or a decline is answered, and one whose script is gone is left behind:
+    nobody would read its reply.
+    """
     if not directory.is_dir():
         return ()
     return tuple(
         request
         for request in sorted(directory.glob(f"*{_REQUEST}"))
-        if not response_for(request).exists() and not error_for(request).exists()
+        if not response_for(request).exists()
+        and not error_for(request).exists()
+        and not _left_behind(request)
     )
+
+
+def _left_behind(request: Path) -> bool:
+    """Return whether the script that wrote ``request`` has ended without taking it away.
+
+    The script holds a lock on the request while it waits (see :func:`_awaited`), and the operating
+    system releases it when the script ends, however it ends. A lock this call can take is one
+    nobody holds. When the lock cannot be tried at all, the request counts as awaited.
+    """
+    try:
+        with request.open("rb") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _awaited(path: Path) -> BufferedReader:
+    """Open ``path`` and lock it, the mark that its script is waiting for the reply.
+
+    The lock lasts until the returned file is closed or the script ends. On a filesystem without
+    locks the request goes unmarked, and :func:`_left_behind` then counts it as awaited too.
+    """
+    handle = path.open("rb")
+    with suppress(OSError):
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return handle
 
 
 def wait_for_request(
@@ -107,17 +149,23 @@ class RelayModel:
             ModelError: the request could not be written, the answerer declined it, the reply
                 was empty, or none arrived in time.
         """
-        request = self._write(system, prompt)
-        if self.announce is not None:
-            self.announce(f"waiting for Claude Code to answer {request}")
-        text = self._await(request)
-        self._archive(request)
+        request, waiting = self._write(system, prompt)
+        try:
+            if self.announce is not None:
+                self.announce(f"waiting for Claude Code to answer {request}")
+            text = self._await(request)
+        finally:
+            # Answered, declined, timed out or interrupted, the request is finished. Left in the
+            # folder, it would be the oldest pending one, and the next answerer would take it first.
+            waiting.close()
+            self._archive(request)
         if not text.strip():
             msg = f"the reply to {request.name} was empty"
             raise ModelError(msg)
         return Reply(text.strip(), stop_reason="end_turn")
 
-    def _write(self, system: str, prompt: str) -> Path:
+    def _write(self, system: str, prompt: str) -> tuple[Path, BufferedReader]:
+        """Put the request in the folder, locked as awaited, and return it with its lock."""
         self._sent += 1
         stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
         request = self.directory / f"{stamp}-{self._sent:03d}{_REQUEST}"
@@ -127,15 +175,20 @@ class RelayModel:
             f"decline, write the reason to `{error_for(request)}`.\n\n"
             f"## System\n\n{system.strip()}\n\n## Prompt\n\n{prompt.strip()}\n"
         )
+        waiting = None
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             partial = request.with_name(request.name + ".partial")
             partial.write_text(body, encoding="utf-8")
+            # Locked before it can be seen, so no answerer ever takes it for one left behind.
+            waiting = _awaited(partial)
             partial.replace(request)
         except OSError as exc:
+            if waiting is not None:
+                waiting.close()
             msg = f"cannot write the relay request to {self.directory}: {exc.strerror or exc}"
             raise ModelError(msg) from exc
-        return request
+        return request, waiting
 
     def _await(self, request: Path) -> str:
         """Wait for the reply to exist and stop growing, then read it."""
@@ -145,7 +198,6 @@ class RelayModel:
         while self.clock() < deadline:
             if declined.exists():
                 reason = declined.read_text(encoding="utf-8").strip() or "no reason given"
-                self._archive(request)
                 msg = f"Claude Code declined {request.name}: {reason}"
                 raise ModelError(msg)
             if response.exists():

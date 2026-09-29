@@ -39,9 +39,7 @@ def match_posting(text: str, profile: Profile, company: str = "") -> Report:
     """Match posting ``text`` against ``profile`` and return a renderable report."""
     lexicon = build_lexicon(profile)
     posting = parse_posting(text, company)
-    coverage = find_coverage(posting, lexicon)
-    covered = frozenset(m.matched_text.casefold() for m in coverage.matches)
-    return Report(posting, coverage, find_gaps(posting, lexicon, covered))
+    return Report(posting, find_coverage(posting, lexicon), find_gaps(posting, lexicon))
 
 
 def read_posting(path: Path) -> str:

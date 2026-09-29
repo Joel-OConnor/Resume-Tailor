@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from resume_tailor.errors import RenderError
-from resume_tailor.render import exporter
+from resume_tailor.render import ats, exporter, polished
 from resume_tailor.render.exporter import Layout, build
 from resume_tailor.render.pdf import NO_BROWSER, PdfResult
 from tests.conftest import RESUME_MD
@@ -106,6 +106,30 @@ def test_the_sidebar_selection_reaches_the_polished_renderer(source: Path, tmp_p
     rail = [p.text.strip() for p in table.rows[0].cells[0].paragraphs if p.text.strip()]
     assert "Summary" in rail
     assert "Skills" not in rail
+
+
+def test_each_pdf_is_printed_from_its_own_layouts_html(
+    source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resume.pdf is the file people submit, so it must be the one column a parser can read."""
+    printed: dict[str, str] = {}
+
+    def record(html: str, out: Path) -> PdfResult:
+        printed[out.name] = html
+        out.write_bytes(b"%PDF-1.4\n")
+        return PdfResult(ok=True)
+
+    monkeypatch.setattr(exporter, "html_to_pdf", record)
+    build(source, layout=Layout.BOTH, sidebar_sections=("summary",))
+    document = exporter.read_source(source)
+
+    assert set(printed) == {"resume.pdf", "resume-polished.pdf"}
+    assert printed["resume.pdf"] == ats.render_html(document)
+    assert "<aside" not in printed["resume.pdf"]
+    # The polished PDF honours the rail choice, as its .docx twin does.
+    assert printed["resume-polished.pdf"] == polished.render_html(document, ("summary",))
+    rail = printed["resume-polished.pdf"].split('<aside class="rail">')[1].split("</aside>")[0]
+    assert "<h2>Summary</h2>" in rail
 
 
 def test_the_layout_enum_round_trips_through_strings() -> None:
@@ -236,3 +260,33 @@ def test_an_explicit_layout_never_deletes_the_other_one(tmp_path: Path) -> None:
     build(source, layout=Layout.BOTH, pdf=False)
     build(source, layout=Layout.ATS, pdf=False)
     assert (tmp_path / "resume-polished.docx").is_file()
+
+
+def test_no_pdf_clears_the_previous_pdf_and_its_fallback(tmp_path: Path) -> None:
+    """Last build's resume.pdf would otherwise pass for the new resume.docx's twin."""
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    (tmp_path / "resume.pdf").write_bytes(b"%PDF-1.4\nLAST WEEK")
+    (tmp_path / "resume.html").write_text("<p>last week</p>", encoding="utf-8")
+    assert _names(source, pdf=False) == ["resume.docx"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["resume.docx", "resume.md"]
+
+
+def test_no_pdf_leaves_a_layout_it_did_not_build_alone(tmp_path: Path) -> None:
+    """Only the rebuilt layout's PDF is stale; an explicitly skipped layout keeps its files."""
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    build(source, layout=Layout.BOTH)
+    build(source, layout=Layout.ATS, pdf=False)
+    assert not (tmp_path / "resume.pdf").exists()
+    assert (tmp_path / "resume-polished.docx").is_file()
+    assert (tmp_path / "resume-polished.pdf").is_file()
+
+
+def test_no_pdf_on_both_layouts_clears_both_previous_pdfs(tmp_path: Path) -> None:
+    source = tmp_path / "resume.md"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    build(source, layout=Layout.BOTH)
+    assert _names(source, layout=Layout.BOTH, pdf=False) == ["resume.docx", "resume-polished.docx"]
+    assert not (tmp_path / "resume.pdf").exists()
+    assert not (tmp_path / "resume-polished.pdf").exists()

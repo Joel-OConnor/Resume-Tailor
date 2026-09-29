@@ -125,7 +125,9 @@ def render_docx(document: Document, out: Path) -> None:
 
 
 def _configure(docx: DocxDocument) -> None:
-    # The bullet glyph takes the paragraph's default font, so Normal carries the body face.
+    # Word sizes each line, and the List Bullet glyph (Symbol's bullet from the template's
+    # numbering), by the paragraph mark, which takes Normal's font. So Normal carries the body
+    # face and size; left at python-docx's Cambria 11pt, lines would stand taller than the PDF's.
     normal = docx.styles["Normal"].font
     normal.name = FONT
     normal.size = Pt(BODY_PT)

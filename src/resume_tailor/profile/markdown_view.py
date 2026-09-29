@@ -82,7 +82,7 @@ def render_markdown(profile: Profile) -> str:
     out: list[str] = [
         f"# Master Profile — {_line(profile.contact.name)}",
         "",
-        "> Generated from `profile/master-profile.yaml`. Edit the YAML, not this file.",
+        "> Generated from `output/master-profile.yaml`. Edit the YAML, not this file.",
         "",
     ]
     _contact(profile, out)

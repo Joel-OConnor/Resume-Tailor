@@ -13,7 +13,8 @@
     ### **Title** – Company         bold only the job title (or degree); the company stays regular
     a plain line right after ###    the dates/location line (italic)
     **Label:** a, b, c              a skills line: bold label + comma-separated items
-    - bullet  (or * bullet)         a bullet point
+    - bullet  (or * bullet)         a bullet point, on one line however long it runs. Don't
+                                    wrap it: a wrapped line becomes a separate paragraph
     - **Lead-in:** text             a bullet with a bold lead-in (both layouts keep the glyph)
     *Tech Stack — a, b, c*          a plain line after the bullets: an italic note, no bullet glyph
     a line ending in "\"            a hard line break (prose lines are otherwise joined)

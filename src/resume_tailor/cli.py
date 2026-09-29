@@ -2,9 +2,9 @@
 
 Three commands make things, in the order a user runs them:
 
-    resume-tailor profile build              draft, refine and write profile/master-profile.yaml
+    resume-tailor profile build              draft, refine and write output/master-profile.yaml
     resume-tailor resume                     the general resume and the LinkedIn profile
-    resume-tailor tailor path/to/posting.md  a resume and cover letter for that one job
+    resume-tailor tailor posting.md          a resume and cover letter for that one job
 
 Each reviews what it wrote before exporting it, and at a terminal asks the questions only the
 candidate can answer. The rest are utilities:
@@ -35,6 +35,7 @@ from resume_tailor.llm import (
     wait_for_request,
 )
 from resume_tailor.match import read_posting
+from resume_tailor.paths import JOB_POSTINGS_DIR, PROFILE_VIEW_PATH, SCHEMA_PATH
 from resume_tailor.profile import DEFAULT_PROFILE_PATH, build_schema, load, render_markdown
 from resume_tailor.render import Layout, build
 from resume_tailor.render.exporter import is_sectioned, read_source
@@ -42,8 +43,8 @@ from resume_tailor.render.polished import DEFAULT_SIDEBAR_SECTIONS
 from resume_tailor.review import MAX_QUESTIONS, Answer, format_review, from_findings, review_profile
 from resume_tailor.service import (
     DEFAULT_ANSWERS_PATH,
-    DEFAULT_APPLICATIONS_DIR,
-    DEFAULT_RAW_DIR,
+    DEFAULT_CAREER_DIR,
+    DEFAULT_OUTPUT_DIR,
     build_master_profile,
     general_application,
     read_raw_documents,
@@ -58,8 +59,6 @@ if TYPE_CHECKING:
 
 __all__ = ["main"]
 
-_DEFAULT_MARKDOWN_VIEW = Path("profile/MASTER_PROFILE.md")
-_DEFAULT_SCHEMA_PATH = Path("schema/master-profile.schema.json")
 _STOP_WORDS = frozenset({"done", "stop", "quit", "q"})
 _SECONDS_PER_MINUTE = 60
 _WIDTH = 96
@@ -87,7 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     job = commands.add_parser(
         "tailor", help="write a resume and cover letter for one job posting (needs an API key)"
     )
-    job.add_argument("posting", type=Path, help="the job description, as a .md or .txt file")
+    job.add_argument(
+        "posting",
+        type=Path,
+        help=f"the job description as a .md or .txt file: a path, or a name in {JOB_POSTINGS_DIR}/",
+    )
     _add_output_arguments(job)
     job.set_defaults(handler=_tailor)
 
@@ -140,14 +143,19 @@ def _add_profile_actions(profile: argparse.ArgumentParser) -> None:
     actions = profile.add_subparsers(dest="action", required=True)
 
     generate = actions.add_parser(
-        "build", help="draft and refine the profile from profile/raw/ (needs an API key)"
+        "build", help=f"draft and refine the profile from {DEFAULT_CAREER_DIR}/ (needs an API key)"
     )
-    generate.add_argument("--raw", type=Path, default=DEFAULT_RAW_DIR)
+    generate.add_argument(
+        "--documents",
+        type=Path,
+        default=DEFAULT_CAREER_DIR,
+        help=f"the career documents to build from (default: {DEFAULT_CAREER_DIR})",
+    )
     generate.add_argument("-o", "--out", type=Path, default=DEFAULT_PROFILE_PATH)
     generate.add_argument(
         "--force",
         action="store_true",
-        help="replace an existing profile, keeping a timestamped backup beside it",
+        help="replace an existing profile, keeping a timestamped copy in backups/ beside it",
     )
     _add_question_arguments(generate)
     generate.set_defaults(handler=_build_profile)
@@ -158,18 +166,23 @@ def _add_profile_actions(profile: argparse.ArgumentParser) -> None:
 
     render = actions.add_parser("render", help="write the readable Markdown view of the profile")
     render.add_argument("path", nargs="?", type=Path, default=DEFAULT_PROFILE_PATH)
-    render.add_argument("-o", "--out", type=Path, default=_DEFAULT_MARKDOWN_VIEW)
+    render.add_argument("-o", "--out", type=Path, default=PROFILE_VIEW_PATH)
     render.set_defaults(handler=_render)
 
     schema = actions.add_parser("schema", help="write the JSON Schema for the profile")
-    schema.add_argument("-o", "--out", type=Path, default=_DEFAULT_SCHEMA_PATH)
+    schema.add_argument("-o", "--out", type=Path, default=SCHEMA_PATH)
     schema.set_defaults(handler=_schema)
 
 
 def _add_output_arguments(parser: argparse.ArgumentParser) -> None:
     """Declare what the two generating commands share: inputs, outputs, and the questions."""
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
-    parser.add_argument("--applications", type=Path, default=DEFAULT_APPLICATIONS_DIR)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"where the documents are written (default: {DEFAULT_OUTPUT_DIR})",
+    )
     parser.add_argument("--no-export", action="store_true", help="skip the .docx/.pdf render")
     _add_question_arguments(parser)
 
@@ -203,9 +216,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 # --- the three runs -------------------------------------------------------------------------------
 def _build_profile(args: argparse.Namespace) -> int:
     """Draft, refine and write the master profile, then ask what it could not settle."""
-    raw = read_raw_documents(args.raw)
+    raw = read_raw_documents(args.documents)
     if not raw.documents:
-        print(f"error: no readable documents in {args.raw}", file=sys.stderr)
+        print(f"error: no readable documents in {args.documents}", file=sys.stderr)
         _report_skipped(raw.skipped)
         return 1
     if args.out.exists() and not args.force:
@@ -215,7 +228,7 @@ def _build_profile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"  reading {len(raw.documents)} document(s) from {args.raw}")
+    print(f"  reading {len(raw.documents)} document(s) from {args.documents}")
     for name in raw.documents:
         print(f"    · {name}")
     _report_skipped(raw.skipped)
@@ -238,7 +251,7 @@ def _resume(args: argparse.Namespace) -> int:
     model = build_model(load_settings(), announce=_progress)
     application = general_application(
         profile_path=args.profile,
-        applications_dir=args.applications,
+        output_dir=args.output,
         model=model,
         ask=_asker(args),
         answers_path=args.answers,
@@ -251,7 +264,7 @@ def _resume(args: argparse.Namespace) -> int:
 
 def _tailor(args: argparse.Namespace) -> int:
     """Write, review and export a resume and cover letter for the one posting named."""
-    posting: Path = args.posting
+    posting = _find_posting(args.posting)
     if not posting.is_file():
         problem = "not found" if not posting.exists() else "not a file"
         print(f"error: {problem}: {posting}", file=sys.stderr)
@@ -269,7 +282,7 @@ def _tailor(args: argparse.Namespace) -> int:
     application = tailor_application(
         text,
         profile_path=args.profile,
-        applications_dir=args.applications,
+        output_dir=args.output,
         model=model,
         ask=_asker(args),
         answers_path=args.answers,
@@ -278,6 +291,17 @@ def _tailor(args: argparse.Namespace) -> int:
     )
     _print_application(application, args.profile)
     return 0
+
+
+def _find_posting(posting: Path) -> Path:
+    """Return ``posting``, or the file of that name in the job-postings folder if only it exists.
+
+    So ``make tailor JOB=stripe.md`` works for a posting saved where the README says to save it.
+    """
+    if posting.exists() or posting.is_absolute():
+        return posting
+    saved = JOB_POSTINGS_DIR / posting
+    return saved if saved.exists() else posting
 
 
 # --- asking ---------------------------------------------------------------------------------------
@@ -318,7 +342,11 @@ def _progress(message: str) -> None:
 
 
 def _print_build(built: ProfileBuild) -> None:
-    kept = f"  (previous profile kept as {built.backup.name})" if built.backup else ""
+    kept = (
+        f"  (previous profile kept as {built.backup.parent.name}/{built.backup.name})"
+        if built.backup
+        else ""
+    )
     print(f"  ✓ {built.path}{kept}")
     if built.refine_error:
         print(

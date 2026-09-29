@@ -177,15 +177,6 @@ class Profile:
         tuple[str, ...], Doc("Open questions and facts to confirm; never printed on a resume.")
     ] = ()
 
-    def technology_names(self) -> tuple[str, ...]:
-        """Every technology name and alias, for coverage checks against a posting."""
-        names: list[str] = []
-        for group in self.technologies:
-            for item in group.items:
-                names.append(item.name)
-                names.extend(item.aliases)
-        return tuple(names)
-
     def tenure_ids(self) -> frozenset[str]:
         """Every employer id, used to validate ``technology.used_at`` references."""
         return frozenset(tenure.id for tenure in self.experience)

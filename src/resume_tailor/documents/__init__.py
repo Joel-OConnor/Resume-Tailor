@@ -17,7 +17,7 @@ from resume_tailor.documents.blocks import (
     SkillLine,
     Span,
 )
-from resume_tailor.documents.inline import parse_spans, spans_to_text
+from resume_tailor.documents.inline import parse_spans
 from resume_tailor.documents.parser import parse
 
 __all__ = [
@@ -36,5 +36,4 @@ __all__ = [
     "Span",
     "parse",
     "parse_spans",
-    "spans_to_text",
 ]

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from docx.enum.text import WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt
 
 if TYPE_CHECKING:
     from docx.table import Table, _Cell
@@ -80,7 +80,6 @@ def add_spans(  # noqa: PLR0913 - every argument is one independent text attribu
     size: float,
     bold: bool = False,
     italic: bool = False,
-    color: str | None = None,
 ) -> None:
     """Append ``spans`` to ``paragraph``, layering each span's emphasis over the defaults."""
     for span in spans:
@@ -91,12 +90,10 @@ def add_spans(  # noqa: PLR0913 - every argument is one independent text attribu
         run.italic = italic or span.italic
         run.font.name = font
         run.font.size = Pt(size)
-        if color is not None:
-            run.font.color.rgb = RGBColor.from_string(color)
 
 
-def set_cell_border(cell: _Cell, edge: str, *, color: str = "000000", size: int = 8) -> None:
-    """Draw a single border edge (``left``/``right``/``top``/``bottom``) on a table cell."""
+def set_cell_border(cell: _Cell, edge: str) -> None:
+    """Draw a thin black border edge (``left``/``right``/``top``/``bottom``) on a table cell."""
     properties = cell._tc.get_or_add_tcPr()  # noqa: SLF001
     borders = properties.find(qn("w:tcBorders"))
     if borders is None:
@@ -104,9 +101,9 @@ def set_cell_border(cell: _Cell, edge: str, *, color: str = "000000", size: int 
         properties.append(borders)
     element = OxmlElement(f"w:{edge}")
     element.set(qn("w:val"), "single")
-    element.set(qn("w:sz"), str(size))
+    element.set(qn("w:sz"), "8")  # eighths of a point: a 1pt rule
     element.set(qn("w:space"), "0")
-    element.set(qn("w:color"), color)
+    element.set(qn("w:color"), "000000")
     borders.append(element)
 
 

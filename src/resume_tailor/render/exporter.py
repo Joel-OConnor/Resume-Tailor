@@ -80,6 +80,10 @@ def build(
     (``resume.docx``); the opt-in polished one is suffixed (``resume-polished.docx``) so both can
     sit in the same application folder when both are asked for.
 
+    With ``pdf=False`` an earlier build's ``.pdf`` and ``.html`` for each layout rendered here are
+    removed rather than left beside the new ``.docx``, so the folder never pairs this version of
+    the document with a previous one.
+
     ``Layout.BOTH`` skips the polished pass for a cover letter — a letter is prose with no
     sections, so the two-column rail would come out empty and the docs promise letters are always
     single-column. Asking for ``Layout.POLISHED`` explicitly still renders one.
@@ -123,7 +127,7 @@ def build(
 
 
 def _discard(paths: tuple[Path, ...]) -> None:
-    """Remove artifacts of a layout this build is not producing."""
+    """Remove earlier artifacts this build is not replacing."""
     for path in paths:
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
@@ -149,6 +153,9 @@ def _one(  # noqa: PLR0913, PLR0917 - one renderer pass; each argument is a dist
 
     artifacts = [Artifact(docx_path, layout)]
     if not pdf:
+        # No PDF was asked for, not the last one kept: an earlier build's PDF or printable HTML
+        # would sit beside the new .docx under the same name, passing for its current twin.
+        _discard((pdf_path, html_path))
         return artifacts
     try:
         result = html_to_pdf(render_html(document), pdf_path)

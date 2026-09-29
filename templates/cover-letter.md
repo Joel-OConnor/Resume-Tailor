@@ -8,7 +8,7 @@
                            \* \_ \\ print that character literally
 
   Keep it to one page (~250–350 words). Export with:
-    .venv/bin/resume-tailor build applications/<folder>/cover-letter.md
+    .venv/bin/resume-tailor build output/applications/<folder>/cover-letter.md
   Everything in this comment is stripped on export.
 -->
 

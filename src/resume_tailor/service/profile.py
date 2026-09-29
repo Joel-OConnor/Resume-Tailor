@@ -1,14 +1,14 @@
 """Build the master profile from the user's documents, and keep it current as they answer questions.
 
 Building is two model passes and one mechanical one. The first pass drafts the YAML from everything
-in ``profile/raw/``; the second refines it (one record per fact, each in the right place, no noise),
-held by :func:`resume_tailor.verify.changes.check_refinement` to adding nothing and losing nothing;
-then the audit in :func:`resume_tailor.review.review_profile` says what still needs a look, and the
-open questions go to the candidate.
+in ``my-documents/career-history/``; the second refines it (one record per fact, each in the right
+place, no noise), held by :func:`resume_tailor.verify.changes.check_refinement` to adding nothing
+and losing nothing; then the audit in :func:`resume_tailor.review.review_profile` says what still
+needs a look, and the open questions go to the candidate.
 
-Answers are recorded twice, on purpose. They are appended to ``profile/raw/answers.md``, which is
-source material like any other document there, so the next full rebuild keeps them. And they are
-written straight into ``master-profile.yaml`` by a model held to
+Answers are recorded twice, on purpose. They are appended to ``answers.md`` in the same folder,
+which is source material like any other document there, so the next full rebuild keeps them. And
+they are written straight into ``master-profile.yaml`` by a model held to
 :func:`resume_tailor.verify.changes.check_update`, so the documents being reviewed can use them now
 rather than after a rebuild.
 """
@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from resume_tailor.agent import build_profile, refine_profile, update_profile
 from resume_tailor.errors import FabricationError, ModelError, ProfileError, RenderError
+from resume_tailor.paths import ANSWERS_PATH, BACKUPS_FOLDER, CAREER_HISTORY_DIR, SCHEMA_PATH
 from resume_tailor.profile import loads
 from resume_tailor.review import Review, from_findings, gather, review_profile
 from resume_tailor.verify.changes import describe_changes
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_ANSWERS_PATH",
-    "DEFAULT_RAW_DIR",
+    "DEFAULT_CAREER_DIR",
     "Asker",
     "ProfileBuild",
     "ProfileUpdate",
@@ -50,14 +51,13 @@ __all__ = [
     "write_profile",
 ]
 
-DEFAULT_RAW_DIR = Path("profile/raw")
-DEFAULT_ANSWERS_PATH = DEFAULT_RAW_DIR / "answers.md"
-"""Where answers are kept: in the raw folder, as source material for the next rebuild."""
+DEFAULT_CAREER_DIR = CAREER_HISTORY_DIR
+DEFAULT_ANSWERS_PATH = ANSWERS_PATH
+"""Where answers are kept: with the user's documents, as source material for the next rebuild."""
 
-SCHEMA_PATH = Path("schema/master-profile.schema.json")
 _SCHEMA_COMMENT = "# yaml-language-server: $schema="
 _RAW_GUIDE = "README.md"
-"""The project's own instructions in profile/raw/ — not the user's career history."""
+"""The project's own instructions for the folder, not the user's career history."""
 
 type Asker = Callable[[tuple[Question, ...]], Sequence[Answer]]
 """Put questions to the candidate and return what they answered (blank answers are skips)."""
@@ -266,7 +266,8 @@ def _back_up(path: Path) -> Path | None:
     if not path.exists():
         return None
     stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S-%f")
-    backup = path.with_name(f"{path.name}.{stamp}.bak")
+    backup = path.parent / BACKUPS_FOLDER / f"{path.stem}.{stamp}{path.suffix}"
+    backup.parent.mkdir(exist_ok=True)
     shutil.copy2(path, backup)
     return backup
 

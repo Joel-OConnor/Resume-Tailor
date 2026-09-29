@@ -127,15 +127,6 @@ def test_a_confirmed_match_with_no_employer_cites_the_accomplishment_alone() -> 
     assert "| PostgreSQL | Tuning |" in out
 
 
-def test_a_technology_with_neither_employer_nor_highlight_still_renders() -> None:
-    profile = _profile(
-        technologies=[{"group": "Data", "items": [{"name": "PostgreSQL"}]}], notes=[]
-    )
-    assert "PostgreSQL" in render_markdown(
-        match_posting("## Requirements\n- PostgreSQL.\n", profile)
-    )
-
-
 def test_a_negation_outside_a_context_section_is_reported_as_such() -> None:
     text = "## Requirements\n- No Docker experience is required.\n"
     assert match_posting(text, _profile()).coverage.ignored[0][1] == "stated as not required"

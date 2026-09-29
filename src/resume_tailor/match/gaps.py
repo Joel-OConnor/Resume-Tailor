@@ -151,6 +151,7 @@ _NOISE = frozenset(
         "salary",
         "senior",
         "skills",
+        "software",
         "stack",
         "staff",
         "strong",
@@ -288,15 +289,20 @@ class Gap:
     """A profile technology this looks like — a prompt to add an alias rather than a real gap."""
 
 
-def find_gaps(posting: Posting, lexicon: Lexicon, covered: frozenset[str]) -> tuple[Gap, ...]:
-    """Return the posting's apparent requirements that ``covered`` does not account for."""
+def find_gaps(posting: Posting, lexicon: Lexicon) -> tuple[Gap, ...]:
+    """Return the posting's apparent requirements that the profile's lexicon does not know.
+
+    Every spelling coverage can match is in the lexicon, so a term the lexicon knows is never a
+    gap, whether or not coverage admitted it in this posting.
+    """
     known = _known_tokens(lexicon)
+    names = frozenset(" ".join(form.tokens) for form in lexicon.forms)
     seen: dict[str, set[int]] = {}
 
     for clause in posting.requirement_clauses:
         tokens = list(clause.tokens)
-        for term in _candidates(tokens) + _prose(tokens):
-            if not _is_gap(term, known, covered):
+        for term in _candidates(tokens, names) + _prose(tokens):
+            if not _is_gap(term, known):
                 continue
             seen.setdefault(term, set()).add(clause.line)
 
@@ -414,15 +420,17 @@ _GENERIC_TERMS = frozenset(
 )
 
 
-def _is_gap(term: str, known: frozenset[str], covered: frozenset[str]) -> bool:
+def _is_gap(term: str, known: frozenset[str]) -> bool:
     """Report whether a term is a gap: neither it nor an alternation branch is accounted for."""
     key = term.casefold()
-    if key in known or key in covered:
+    if key in known:
         return False
     if " " not in key and key in _GENERIC_TERMS:
         return False
-    # "PostgreSQL/MySQL" is not a gap when PostgreSQL is covered — the posting offered a choice.
-    return not any(part in known or part in covered for part in key.split("/") if part)
+    parts = [part for part in key.split("/") if part]
+    # "PostgreSQL/MySQL" is not a gap when PostgreSQL is known: the posting offered a choice.
+    # "Staff/Lead" offers nothing but posting furniture.
+    return not any(part in known for part in parts) and not all(part in _NOISE for part in parts)
 
 
 def _known_tokens(lexicon: Lexicon) -> frozenset[str]:
@@ -432,7 +440,7 @@ def _known_tokens(lexicon: Lexicon) -> frozenset[str]:
     return frozenset(known)
 
 
-def _candidates(tokens: list[Token]) -> list[str]:
+def _candidates(tokens: list[Token], names: frozenset[str]) -> list[str]:
     """Merge runs of technology-shaped tokens into candidate terms.
 
     A run is broken by a token that is not technology-shaped *and* by punctuation between two
@@ -441,30 +449,68 @@ def _candidates(tokens: list[Token]) -> list[str]:
     requirements, and welding them produced a term no profile could ever match.
     """
     terms: list[str] = []
-    run: list[str] = []
+    run: list[Token] = []
     for token in tokens:
         if not _is_term_shaped(token):
-            terms += _flush(run)
+            terms += _flush(run, names)
             run = []
             continue
         if token.break_before:
-            terms += _flush(run)
+            terms += _flush(run, names)
             run = []
-        run.append(token.surface)
-    return terms + _flush(run)
+        run.append(token)
+    return terms + _flush(run, names)
 
 
-def _flush(run: list[str]) -> list[str]:
-    return [" ".join(run)] if run else []
+#: Words that only qualify the name after them: "Advanced SQL" is SQL, "Apache Kafka" is Kafka.
+#: A closed list on purpose. Any other capitalised word in front of a known name may be a
+#: product the profile lacks ("Snowflake SQL", "Azure Postgres"), and dropping it hides a gap.
+_QUALIFIERS = (
+    _SENTENCE_STARTERS
+    | _GENERIC_TERMS
+    | frozenset({"advanced", "apache", "expert", "fluent", "idiomatic", "proficient"})
+)
+
+
+def _flush(run: list[Token], names: frozenset[str]) -> list[str]:
+    """Join a run into one term, first dropping qualifiers in front of a name the profile knows.
+
+    Kept, "Advanced SQL" and "Modern Python" were reported as gaps, and the prompt then forbade
+    the skill the report had just confirmed. Only a word from :data:`_QUALIFIERS` is dropped,
+    and only when what remains is a whole name in the lexicon, never a fragment of one: "Java
+    Development" is not the profile's "Test-driven development", and "Microsoft SQL Server" is
+    not its SQL.
+    """
+    start = 0
+    while start < len(run) - 1 and not _spells(run[start:], names) and _qualifies(run[start]):
+        start += 1
+    kept = run[start:] if _spells(run[start:], names) else run
+    return [" ".join(token.surface for token in kept)] if kept else []
+
+
+def _spells(run: list[Token], names: frozenset[str]) -> bool:
+    """Report whether ``run`` is exactly one of the lexicon's names, token for token."""
+    return " ".join(token.lower for token in run) in names
+
+
+def _qualifies(token: Token) -> bool:
+    """Report whether a word only qualifies a name, reading "Expert-level" by its lead word."""
+    return token.lower in _QUALIFIERS or token.lower.split("-", 1)[0] in _QUALIFIERS
+
+
+def _structurally_term_shaped(token: Token) -> bool:
+    """Report whether a token is an acronym, internally capitalised, punctuated or always a term."""
+    surface = token.surface
+    acronym = token.all_caps and _ACRONYM_MIN <= len(surface) <= _ACRONYM_MAX
+    punctuated = any(c in surface for c in "+#./") and any(c.isalpha() for c in surface)
+    return token.lower in _ALWAYS_TERM or acronym or token.has_inner_capital or punctuated
 
 
 def _is_term_shaped(token: Token) -> bool:
     surface = token.surface
     if token.lower in _NOISE:
         return False
-    acronym = token.all_caps and _ACRONYM_MIN <= len(surface) <= _ACRONYM_MAX
-    punctuated = any(c in surface for c in "+#./") and any(c.isalpha() for c in surface)
-    if token.lower in _ALWAYS_TERM or acronym or token.has_inner_capital or punctuated:
+    if _structurally_term_shaped(token):
         return True
     # A capitalised word proves less at the start of a sentence, but suppressing all of them
     # loses every bullet that opens with its keyword — which is how requirement bullets are

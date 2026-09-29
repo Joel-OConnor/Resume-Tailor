@@ -43,7 +43,7 @@ def test_period_formatting(start: str, end: str, expected: str) -> None:
 def test_the_minimal_profile_renders_the_core_sections() -> None:
     markdown = _render()
     assert markdown.startswith("# Master Profile — Ada\n")
-    assert "> Generated from `profile/master-profile.yaml`" in markdown
+    assert "> Generated from `output/master-profile.yaml`" in markdown
     assert "## Contact & links" in markdown
     assert "- **Name:** Ada" in markdown
     assert "## Professional summary" in markdown
@@ -198,7 +198,7 @@ def test_notes_render_under_a_warning_heading() -> None:
 
 
 def test_the_shipped_example_renders() -> None:
-    profile = loader.load(REPO_ROOT / "templates" / "master-profile.example.yaml")
+    profile = loader.load(REPO_ROOT / "examples" / "master-profile.yaml")
     markdown = render_markdown(profile)
     assert "# Master Profile — Jordan Rivera" in markdown
     assert "March 2021 – Present" in markdown

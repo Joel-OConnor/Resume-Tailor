@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
-from resume_tailor.profile.loader import LEVELS
+from resume_tailor.profile.loader import DATE_BODY, LEVELS, PRESENT, SLUG_PATTERN, YEAR_BODY
 from resume_tailor.profile.models import Doc, Profile
 
 __all__ = ["SCHEMA_ID", "build_schema"]
@@ -21,13 +21,15 @@ SCHEMA_ID = "https://github.com/resume-tailor/schema/master-profile.schema.json"
 _PRIMITIVES: dict[object, str] = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
 # Constraints that live in the loader's semantic checks; mirrored here so the schema is useful
-# to editors that only speak JSON Schema.
+# to editors that only speak JSON Schema. The patterns are composed from the loader's own
+# pattern bodies, so the schema cannot accept a date, year or id the loader rejects. The empty
+# alternatives are the optional fields: the loader skips an empty value there.
 _CONSTRAINTS: dict[tuple[str, str], dict[str, Any]] = {
-    ("Role", "start"): {"pattern": r"^(?:[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$"},
-    ("Role", "end"): {"pattern": r"^(?:present|[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$"},
-    ("Education", "completed"): {"pattern": r"^(?:|[0-9]{4}|[0-9]{4}-(?:0[1-9]|1[0-2]))$"},
-    ("Credential", "year"): {"pattern": r"^(?:|[0-9]{4})$"},
-    ("Tenure", "id"): {"pattern": r"^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    ("Role", "start"): {"pattern": f"^(?:{DATE_BODY})$"},
+    ("Role", "end"): {"pattern": f"^(?:{PRESENT}|{DATE_BODY})$"},
+    ("Education", "completed"): {"pattern": f"^(?:|{DATE_BODY})$"},
+    ("Credential", "year"): {"pattern": f"^(?:|{YEAR_BODY})$"},
+    ("Tenure", "id"): {"pattern": SLUG_PATTERN},
     ("Technology", "level"): {"enum": ["", *LEVELS]},
     ("Technology", "years"): {"minimum": 0},
     ("Profile", "schema_version"): {"const": 1},
@@ -46,7 +48,7 @@ _CONSTRAINTS: dict[tuple[str, str], dict[str, Any]] = {
     ("Highlight", "text"): {"minLength": 1},
     ("TechnologyGroup", "group"): {"minLength": 1},
     ("Technology", "name"): {"minLength": 1},
-    ("Technology", "used_at"): {"items": {"pattern": r"^[a-z0-9]+(?:-[a-z0-9]+)*$"}},
+    ("Technology", "used_at"): {"items": {"pattern": SLUG_PATTERN}},
     ("Education", "credential"): {"minLength": 1},
     ("Education", "institution"): {"minLength": 1},
     ("Credential", "name"): {"minLength": 1},

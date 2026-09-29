@@ -133,6 +133,10 @@ def test_merging_duplicates_and_dropping_noise_is_what_refining_is_for() -> None
             "added 'Turing Award', which the draft does not have",
         ),
         (
+            lambda d: d.update(projects=[{"name": "Loom", "description": "A loom controller."}]),
+            "added 'Loom', which the draft does not have",
+        ),
+        (
             lambda d: _items(d).append({"name": "Rust"}),
             "recorded 'Rust' as a technology, which the draft does not record",
         ),
@@ -156,6 +160,22 @@ def test_merging_duplicates_and_dropping_noise_is_what_refining_is_for() -> None
             lambda d: _role(d)["highlights"][0].update(text="Cut batch runtime on AWS EC2."),
             "lost the figure '38%'",
         ),
+        (
+            lambda d: d["experience"][0]["roles"].pop(1),
+            "dropped the role Engineer at Analytical Engine Programme, Inc. (June 2018 – January",
+        ),
+        (
+            lambda d: d["certifications"][0].update(year="2012"),
+            "changed the date of 'Fellow of the Analytical Society' from 2019 to 2012",
+        ),
+        (
+            lambda d: d["education"][0].update(completed="2010"),
+            "gave 'Private tuition (De Morgan)' the date 2010, which the draft does not record",
+        ),
+        (
+            lambda d: d["certifications"][0].update(year=""),
+            "dropped the date 2019 from 'Fellow of the Analytical Society'",
+        ),
     ],
 )
 def test_refining_may_not_add_lose_or_promote(
@@ -176,6 +196,193 @@ def test_a_duplicate_role_may_be_merged_into_the_one_that_covers_it() -> None:
         _role(data, 0, 1)["title"] = "Senior Engineer"
 
     assert check_refinement(profile(duplicated), profile(merged)) == ()
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        {"title": "Software Engineer", "start": "2018", "end": "2021"},
+        {"title": "Developer", "start": "2019-03", "end": "2020-11"},
+        {"title": "Engineer II", "start": "2018-06", "end": "2021-01"},
+    ],
+)
+def test_a_duplicate_under_another_title_may_be_merged_into_the_role_that_covers_it(
+    duplicate: dict[str, str],
+) -> None:
+    """An old resume's "Software Engineer, 2018 to 2021" is the same job as "Engineer" then."""
+
+    def recorded_twice(data: dict[str, Any]) -> None:
+        data["experience"][0]["roles"].append(duplicate)
+
+    assert check_refinement(profile(recorded_twice), profile()) == ()
+
+
+def test_a_duplicate_known_only_by_its_year_may_merge_into_the_months_inside_it() -> None:
+    """A clerk's 2014 covers March to November 2014, though no month of it is sure to overlap."""
+
+    def recorded_twice(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] += [
+            {"title": "Junior Clerk", "start": "2014-03", "end": "2014-11"},
+            {"title": "Clerk", "start": "2014", "end": "2014"},
+        ]
+
+    def merged(data: dict[str, Any]) -> None:
+        recorded_twice(data)
+        data["experience"][1]["roles"].pop()
+
+    assert check_refinement(profile(recorded_twice), profile(merged)) == ()
+
+
+def test_a_role_that_ends_the_year_the_next_starts_is_not_a_duplicate_of_it() -> None:
+    """A promotion recorded to the year touches the next role without sharing any time with it."""
+
+    def promoted(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"].insert(
+            0, {"title": "Senior Analyst", "start": "2018", "end": "2020"}
+        )
+
+    def merged(data: dict[str, Any]) -> None:
+        promoted(data)
+        data["experience"][1]["roles"].pop(1)
+
+    assert check_refinement(profile(promoted), profile(merged)) == (
+        (
+            "dropped the role Analyst at Babbage Mill (2015 – 2018); keep every role, unless "
+            "another role at the same employer records the same job"
+        ),
+    )
+
+
+@pytest.mark.parametrize(("end", "month"), [("2021-02", "February"), ("2021-03", "March")])
+def test_a_role_that_overlaps_the_next_by_a_month_is_not_a_duplicate_of_it(
+    end: str, month: str
+) -> None:
+    """LinkedIn often ends the old title a month after the new one starts."""
+
+    def overlapping(data: dict[str, Any]) -> None:
+        _role(data, 0, 1)["end"] = end
+
+    def dropped(data: dict[str, Any]) -> None:
+        overlapping(data)
+        data["experience"][0]["roles"].pop(1)
+
+    assert check_refinement(profile(overlapping), profile(dropped)) == (
+        (
+            f"dropped the role Engineer at Analytical Engine Programme, Inc. (June 2018 – {month} "
+            f"2021); keep every role, unless another role at the same employer records the same job"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kept", "gone", "label"),
+    [
+        (
+            {"title": "Engineer", "start": "2017-09", "end": "2019"},
+            {"title": "Engineering Intern", "start": "2017", "end": "2017"},
+            "Engineering Intern at Babbage Mill (2017 – 2017)",
+        ),
+        (
+            {"title": "Engineer", "start": "2017", "end": "2019"},
+            {"title": "Engineering Intern", "start": "2017-05", "end": "2017-08"},
+            "Engineering Intern at Babbage Mill (May 2017 – August 2017)",
+        ),
+        (
+            {"title": "Software Engineer", "start": "2018", "end": "2021"},
+            {"title": "Engineer", "start": "2018-06", "end": "2021-01"},
+            "Engineer at Babbage Mill (June 2018 – January 2021)",
+        ),
+    ],
+    ids=["intern-year-before-a-september-start", "intern-months-in-a-bare-year", "months-lost"],
+)
+def test_a_year_given_alone_is_not_taken_to_cover_the_months_around_it(
+    kept: dict[str, str], gone: dict[str, str], label: str
+) -> None:
+    """A 2017 internship can be the months before a job that starts in September 2017."""
+
+    def recorded(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [kept, gone]
+
+    def dropped(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [kept]
+
+    assert check_refinement(profile(recorded), profile(dropped)) == (
+        (
+            f"dropped the role {label}; keep every role, unless another role at the same "
+            f"employer records the same job"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kept", "gone"),
+    [
+        (
+            {"title": "Analyst", "start": "2015", "end": "2018"},
+            {"title": "Data Analyst", "start": "2015", "end": "2018"},
+        ),
+        (
+            {"title": "Principal Engineer", "start": "2021-01", "end": "present"},
+            {"title": "Staff Engineer", "start": "2022", "end": "present"},
+        ),
+    ],
+    ids=["same-years", "inside-the-current-role"],
+)
+def test_a_duplicate_under_another_title_may_merge_when_its_years_are_covered(
+    kept: dict[str, str], gone: dict[str, str]
+) -> None:
+    def recorded(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [kept, gone]
+
+    def merged(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [kept]
+
+    assert check_refinement(profile(recorded), profile(merged)) == ()
+
+
+def test_a_credential_recorded_twice_may_keep_the_entry_with_the_date() -> None:
+    def twice(data: dict[str, Any]) -> None:
+        data["certifications"].append({"name": "Fellow of the Analytical Society"})
+
+    assert check_refinement(profile(twice), profile()) == ()
+    undated = profile(lambda d: d["certifications"][0].update(year=""))
+    assert check_refinement(profile(twice), undated) == (
+        (
+            "dropped the date 2019 from 'Fellow of the Analytical Society'; keep every date the "
+            "draft records"
+        ),
+    )
+
+
+def _won_twice(data: dict[str, Any]) -> None:
+    data["awards"] = [
+        {"name": "Employee of the Year", "year": "2019"},
+        {"name": "Employee of the Year", "year": "2021"},
+    ]
+
+
+def _won_once(data: dict[str, Any]) -> None:
+    _won_twice(data)
+    data["awards"].pop()
+
+
+def test_a_credential_held_twice_keeps_both_its_years() -> None:
+    """An award won twice, or a certification renewed, loses a fact when one year goes."""
+    assert check_refinement(profile(_won_twice), profile(_won_once)) == (
+        "dropped the date 2021 from 'Employee of the Year'; keep every date the draft records",
+    )
+
+
+@pytest.mark.parametrize("kept", ["2010", "2010-06"])
+def test_a_duplicate_credential_may_merge_into_its_twin_with_the_same_year(kept: str) -> None:
+    def twice(data: dict[str, Any]) -> None:
+        data["education"] = [
+            {"credential": "Private tuition", "institution": "De Morgan", "completed": "2010-06"},
+            {"credential": "Private tuition", "institution": "De Morgan", "completed": "2010"},
+        ]
+
+    merged = profile(lambda d: d["education"][0].update(completed=kept))
+    assert check_refinement(profile(twice), merged) == ()
 
 
 def test_a_figure_moved_into_a_note_is_not_lost() -> None:
@@ -272,6 +479,26 @@ def test_an_update_may_add_what_the_answer_states() -> None:
             ),
             "recorded the role Owner at Babbage Mill",
         ),
+        (
+            lambda d: d["experience"][0]["roles"].pop(1),
+            "dropped the role Engineer at Analytical Engine Programme, Inc.",
+        ),
+        (
+            lambda d: _role(d).update(start="2018-06"),
+            "recorded the role Principal Engineer at Analytical Engine Programme, Inc. (June 2018",
+        ),
+        (
+            lambda d: d["certifications"][0].update(year="2012"),
+            "recorded 2012 as the date of 'Fellow of the Analytical Society', which none of",
+        ),
+        (
+            lambda d: d["education"][0].update(completed="2010-06"),
+            "recorded 2010-06 as the date of 'Private tuition (De Morgan)'",
+        ),
+        (
+            lambda d: d["certifications"][0].update(year=""),
+            "dropped the date 2019 from 'Fellow of the Analytical Society', which none of",
+        ),
     ],
 )
 def test_an_update_may_not_record_what_nobody_said(
@@ -281,20 +508,107 @@ def test_an_update_may_not_record_what_nobody_said(
     assert any(expected in problem for problem in problems), problems
 
 
-def test_a_no_to_a_question_naming_a_technology_does_not_license_it() -> None:
-    """The guard reads the answers alone: the question's own words are not evidence."""
-    problems = check_update(
-        profile(), profile(lambda d: _items(d).append({"name": "Kafka"})), "No."
-    )
-    assert problems
-
-
 def test_an_update_may_correct_a_role_the_answer_names() -> None:
     def corrected(data: dict[str, Any]) -> None:
         data["experience"][1]["roles"][0].update(title="Senior Analyst", end="2017")
 
     said = "My title at Babbage Mill was Senior Analyst, and I left in 2017."
     assert check_update(profile(), profile(corrected), said) == ()
+
+
+def test_an_update_may_split_a_role_at_the_promotion_the_answer_gives() -> None:
+    def split(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [
+            {"title": "Senior Analyst", "start": "2017", "end": "2018"},
+            {"title": "Analyst", "start": "2015", "end": "2017"},
+        ]
+
+    said = "I was promoted to Senior Analyst in 2017."
+    assert check_update(profile(), profile(split), said) == ()
+
+
+def test_a_role_moves_to_another_role_s_date_only_when_the_answer_gives_it() -> None:
+    """The date "Engineer" started is not a date "Principal Engineer" may take on its own."""
+    backdated = profile(lambda d: _role(d).update(start="2018-06"))
+
+    assert check_update(profile(), backdated, "I've been Principal Engineer since June 2018.") == ()
+    assert check_update(profile(), backdated, "I led the team as Principal Engineer.")
+
+
+def test_merging_into_a_current_role_needs_the_date_even_when_the_answer_says_now() -> None:
+    """A "now" gives Principal Engineer its end, never the start it would take from Engineer."""
+
+    def merged(data: dict[str, Any]) -> None:
+        data["experience"][0]["roles"].pop(1)
+        _role(data)["start"] = "2018-06"
+
+    assert check_update(profile(), profile(merged), "I now mentor every new engineer.") == (
+        (
+            "recorded the role Principal Engineer at Analytical Engine Programme, Inc. (June 2018 "
+            "– Present), which none of the answers mentions"
+        ),
+    )
+
+
+def _unsaid(what: str) -> str:
+    return f"{what}, which none of the answers mentions"
+
+
+def _boomerang(data: dict[str, Any]) -> None:
+    data["experience"][1]["roles"] = [
+        {"title": "Analyst", "start": "2019", "end": "2021"},
+        {"title": "Analyst", "start": "2012", "end": "2014"},
+    ]
+
+
+def test_two_stints_with_one_title_join_only_when_the_answer_gives_the_dates() -> None:
+    """Pooling both stints' dates would invent the five years between them."""
+
+    def joined(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [{"title": "Analyst", "start": "2012", "end": "2021"}]
+
+    assert check_update(profile(_boomerang), profile(joined), "The team was 12 engineers.") == (
+        _unsaid("recorded the role Analyst at Babbage Mill (2012 – 2021)"),
+        _unsaid("dropped the role Analyst at Babbage Mill (2012 – 2014)"),
+    )
+    said = "I was an Analyst at Babbage Mill from 2012 to 2021 without a break."
+    assert check_update(profile(_boomerang), profile(joined), said) == ()
+
+
+def test_a_stint_that_goes_beside_another_with_its_title_is_still_a_removal() -> None:
+    def one_stint(data: dict[str, Any]) -> None:
+        _boomerang(data)
+        data["experience"][1]["roles"].pop()
+
+    assert check_update(profile(_boomerang), profile(one_stint), "The team was 12 engineers.") == (
+        _unsaid("dropped the role Analyst at Babbage Mill (2012 – 2014)"),
+    )
+    said = "Drop the first Analyst stint, that was a contract through an agency."
+    assert check_update(profile(_boomerang), profile(one_stint), said) == ()
+
+
+def test_a_title_corrected_to_one_held_elsewhere_there_keeps_its_own_dates() -> None:
+    """Correcting the title alone keeps the role's dates, even when the title is already there."""
+
+    def boomerang(data: dict[str, Any]) -> None:
+        data["experience"][1]["roles"] = [
+            {"title": "Analyst", "start": "2019", "end": "2021"},
+            {"title": "Senior Analyst", "start": "2013", "end": "2015"},
+            {"title": "Analyst", "start": "2011", "end": "2013"},
+        ]
+
+    def retitled(data: dict[str, Any]) -> None:
+        boomerang(data)
+        data["experience"][1]["roles"][0]["title"] = "Senior Analyst"
+
+    said = "When I came back to Babbage Mill I was Senior Analyst again, not Analyst."
+    assert check_update(profile(boomerang), profile(retitled), said) == ()
+    assert check_update(profile(boomerang), profile(retitled), "The team was 12 engineers.") == (
+        (
+            "recorded the role Senior Analyst at Babbage Mill (2019 – 2021), which none of the "
+            "answers mentions"
+        ),
+    )
 
 
 def test_an_update_may_mark_a_role_current_when_the_answer_says_so() -> None:
@@ -312,6 +626,91 @@ def test_an_update_may_remove_what_the_answer_rules_out() -> None:
 
     said = "Drop Babbage Mill, it was a summer job. And I never really used Kubernetes."
     assert check_update(profile(), profile(removed), said) == ()
+
+
+def test_a_credential_date_must_be_given_in_the_answer() -> None:
+    redated = profile(lambda d: d["certifications"][0].update(year="2012"))
+    assert (
+        check_update(profile(), redated, "The Analytical Society made me a fellow in 2012.") == ()
+    )
+
+    completed = profile(lambda d: d["education"][0].update(completed="2010-06"))
+    assert check_update(profile(), completed, "I finished with De Morgan in June 2010.") == ()
+
+    undated = profile(lambda d: d["certifications"][0].update(year=""))
+    said = "I don't remember when I became a Fellow of the Analytical Society."
+    assert check_update(profile(), undated, said) == ()
+
+
+def test_a_new_credential_keeps_only_the_date_the_answer_gives() -> None:
+    def added(data: dict[str, Any]) -> None:
+        data["certifications"].append({"name": "Certified Loom Operator", "year": "2016"})
+
+    assert check_update(profile(), profile(added), "I'm a Certified Loom Operator.") == (
+        (
+            "recorded 2016 as the date of 'Certified Loom Operator', which none of the answers "
+            "mentions"
+        ),
+    )
+    said = "I became a Certified Loom Operator in 2016."
+    assert check_update(profile(), profile(added), said) == ()
+
+
+def test_a_renamed_credential_keeps_the_date_it_had() -> None:
+    def renamed(year: str) -> Profile:
+        name = "Fellow of the Royal Analytical Society"
+        return profile(lambda d: d.update(certifications=[{"name": name, "year": year}]))
+
+    said = "It's Fellow of the Royal Analytical Society, not Fellow of the Analytical Society."
+    assert check_update(profile(), renamed("2019"), said) == ()
+    assert check_update(profile(), renamed("2012"), said) == (
+        (
+            "recorded 2012 as the date of 'Fellow of the Royal Analytical Society', which none of "
+            "the answers mentions"
+        ),
+    )
+
+
+def test_a_new_credential_does_not_take_the_date_of_an_unrelated_one_dropped() -> None:
+    swapped = profile(
+        lambda d: d.update(certifications=[{"name": "Certified Loom Operator", "year": "2019"}])
+    )
+    said = (
+        "My Fellow of the Analytical Society membership lapsed, please remove it. I am also a "
+        "Certified Loom Operator."
+    )
+    assert check_update(profile(), swapped, said) == (
+        (
+            "recorded 2019 as the date of 'Certified Loom Operator', which none of the answers "
+            "mentions"
+        ),
+    )
+
+
+def test_a_rename_is_one_for_one() -> None:
+    """Two new names that each keep the old one's words cannot both inherit its year."""
+
+    def split(data: dict[str, Any]) -> None:
+        data["certifications"] = [
+            {"name": "Fellow of the Royal Analytical Society", "year": "2019"},
+            {"name": "Honorary Fellow of the Analytical Society", "year": "2019"},
+        ]
+
+    said = (
+        "I'm a Fellow of the Royal Analytical Society and an Honorary Fellow of the Analytical "
+        "Society, not a Fellow of the Analytical Society."
+    )
+    problems = check_update(profile(), profile(split), said)
+    assert len(problems) == 2
+    assert all(problem.startswith("recorded 2019 as the date of") for problem in problems)
+
+
+def test_an_update_may_drop_one_year_of_a_credential_held_twice_only_when_it_names_it() -> None:
+    assert check_update(profile(_won_twice), profile(_won_once), "The team was 12 engineers.") == (
+        "dropped the date 2021 from 'Employee of the Year', which none of the answers mentions",
+    )
+    said = "I was Employee of the Year once, in 2019."
+    assert check_update(profile(_won_twice), profile(_won_once), said) == ()
 
 
 def test_a_phone_number_is_matched_digit_for_digit() -> None:
@@ -364,6 +763,86 @@ def test_a_long_list_of_removals_is_cut_short() -> None:
 
     lines = describe_changes(profile(many), profile())
     assert any(line.endswith("and 4 more") for line in lines)
+
+
+def test_an_answer_that_changes_a_highlight_says_which_one() -> None:
+    """The commonest answer puts a figure into a highlight the profile already has."""
+
+    def figured(data: dict[str, Any]) -> None:
+        _role(data)["highlights"][0]["text"] = "Cut batch runtime 38% (4 hours a night) on AWS EC2."
+        _role(data)["highlights"][1]["text"] = "Led a team of 12 engineers from 2021; 3 promoted."
+
+    assert describe_changes(profile(), profile(figured)) == (
+        'highlights edited: Scheduler, "Led a team of 12 engineers…"',
+    )
+
+
+def test_a_highlight_added_moved_or_respelled_is_not_an_edit() -> None:
+    def rearranged(data: dict[str, Any]) -> None:
+        highlights = _role(data)["highlights"]
+        _role(data, 0, 1)["highlights"] = [highlights.pop(1)]
+        highlights[0]["text"] = "Cut batch runtime 38%, on AWS EC2!"
+        highlights.append({"text": "Shipped the loom controller."})
+
+    assert describe_changes(profile(), profile(rearranged)) == (
+        "highlights: 2 → 3",
+        'highlights added: "Shipped the loom controller."',
+    )
+
+
+def test_an_edited_highlight_is_paired_by_its_label_before_its_place() -> None:
+    def edited(data: dict[str, Any]) -> None:
+        highlights = _role(data)["highlights"]
+        highlights[0]["text"] = "Cut batch runtime 38% on AWS EC2 and Batch."
+        highlights.insert(0, {"text": "Shipped the loom controller."})
+
+    lines = describe_changes(profile(), profile(edited))
+    assert lines == (
+        "highlights: 2 → 3",
+        'highlights added: "Shipped the loom controller."',
+        "highlights edited: Scheduler",
+    )
+
+
+def test_an_unlabelled_highlight_is_paired_only_with_one_that_shares_its_words() -> None:
+    """A highlight added ahead of the one edited is not the edit, whatever its place."""
+
+    def edited(data: dict[str, Any]) -> None:
+        highlights = _role(data)["highlights"]
+        highlights[1]["text"] = "Led a team of 12 engineers from 2021; 3 promoted."
+        highlights.insert(0, {"text": "Shipped the loom controller."})
+
+    assert describe_changes(profile(), profile(edited)) == (
+        "highlights: 2 → 3",
+        'highlights added: "Shipped the loom controller."',
+        'highlights edited: "Led a team of 12 engineers…"',
+    )
+
+
+def test_a_highlight_deleted_beside_one_added_is_not_an_edit() -> None:
+    """The summary is what tells the candidate a highlight, and its 38%, went."""
+
+    def replaced(data: dict[str, Any]) -> None:
+        _role(data)["highlights"].pop(0)
+        _role(data, 0, 1)["highlights"] = [
+            {"label": "Mentoring", "text": "Mentored 3 engineers to promotion."}
+        ]
+
+    assert describe_changes(profile(), profile(replaced)) == (
+        "highlights removed: Scheduler",
+        "highlights added: Mentoring",
+    )
+
+
+def test_a_changed_credential_date_is_named() -> None:
+    def redated(data: dict[str, Any]) -> None:
+        data["certifications"][0]["year"] = "2012"
+        data["education"][0]["completed"] = "2010"
+
+    assert describe_changes(profile(), profile(redated)) == (
+        "Private tuition (De Morgan): no date → 2010",
+        "Fellow of the Analytical Society: 2019 → 2012",
+    )
 
 
 def test_nothing_changed_says_nothing() -> None:

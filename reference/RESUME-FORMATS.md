@@ -42,8 +42,8 @@ skills and education beside a wide column carrying the name, summary and experie
 hairline rule. Neither script produces it; render it from a resume when you want it:
 
 ```bash
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout polished   # two-column only
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout both       # the pair
+.venv/bin/resume-tailor build output/applications/<folder>/resume.md --layout polished   # two-column only
+.venv/bin/resume-tailor build output/applications/<folder>/resume.md --layout both       # the pair
 ```
 
 **Do not upload it to an application portal.** Its two columns are a Word table. Most parsers read

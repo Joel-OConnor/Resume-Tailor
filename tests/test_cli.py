@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-EXAMPLE_PROFILE = str(REPO_ROOT / "templates" / "master-profile.example.yaml")
+EXAMPLE_PROFILE = str(REPO_ROOT / "examples" / "master-profile.yaml")
 
 
 @pytest.fixture(autouse=True)
@@ -199,11 +199,22 @@ def test_profile_schema_writes_json(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8").endswith("\n")
 
 
-def test_the_profile_commands_default_to_the_repo_paths() -> None:
-    args = cli.build_parser().parse_args(["profile", "validate"])
-    assert args.path.as_posix() == "profile/master-profile.yaml"
-    args = cli.build_parser().parse_args(["profile", "schema"])
-    assert args.out.as_posix() == "schema/master-profile.schema.json"
+def test_every_command_defaults_to_the_documented_folders() -> None:
+    """The README promises these folders; a default drifting from them strands the user's files."""
+    parse = cli.build_parser().parse_args
+    build = parse(["profile", "build"])
+    assert build.documents.as_posix() == "my-documents/career-history"
+    assert build.out.as_posix() == "output/master-profile.yaml"
+    assert build.answers.as_posix() == "my-documents/career-history/answers.md"
+    assert parse(["profile", "validate"]).path.as_posix() == "output/master-profile.yaml"
+    assert parse(["profile", "render"]).out.as_posix() == "output/master-profile.md"
+    assert parse(["profile", "schema"]).out.as_posix() == "schema/master-profile.schema.json"
+    for command in (["resume"], ["tailor", "posting.md"]):
+        args = parse(command)
+        assert (args.profile.as_posix(), args.output.as_posix()) == (
+            "output/master-profile.yaml",
+            "output",
+        )
 
 
 def test_out_dir_refuses_sources_that_would_overwrite_each_other(
@@ -389,7 +400,7 @@ def test_the_clash_guard_reads_sections_the_way_the_parser_does(tmp_path: Path) 
 def test_validate_counts_technologies_not_aliases(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`technology_names()` includes aliases by design; a headcount must not use it."""
+    """Aliases are spellings, not technologies; a headcount must not include them."""
     profile = tmp_path / "profile.yaml"
     profile.write_text(
         "contact: {name: Ada, headline: E, email: a@b.c}\n"
@@ -433,14 +444,19 @@ class _Recorder:
 
 
 @pytest.fixture
-def keyed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pretend an API key is configured, and hand out a model nobody consults."""
+def keyed(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    """Pretend an API key is configured, and record how each run asks for its model.
+
+    The model it hands out is never consulted: the runs it is passed to are recorders too.
+    """
     monkeypatch.setattr(cli, "load_settings", lambda: None)
-    monkeypatch.setattr(cli, "build_model", lambda *_, **__: object())
+    model = _Recorder(object())
+    monkeypatch.setattr(cli, "build_model", model)
+    return model
 
 
 def _application(tmp_path: Path, **fields: object) -> Application:
-    directory = tmp_path / "applications" / "general"
+    directory = tmp_path / "output" / "general"
     directory.mkdir(parents=True, exist_ok=True)
     resume = directory / "resume.md"
     resume.write_text(RESUME_MD, encoding="utf-8")
@@ -453,16 +469,24 @@ _REVIEWED = Review(
 )
 
 
-@pytest.mark.usefixtures("keyed")
 def test_resume_runs_the_general_application_and_reports_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    keyed: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run = _Recorder(_application(tmp_path, review=_REVIEWED))
     monkeypatch.setattr(cli, "general_application", run)
+    profile, answers = tmp_path / "p.yaml", tmp_path / "a.md"
 
-    argv = ["resume", "--applications", str(tmp_path / "applications"), "--no-export"]
+    argv = ["resume", "--output", str(tmp_path / "output"), "--no-export"]
+    argv += ["--profile", str(profile), "--answers", str(answers)]
     assert cli.main([*argv, "--no-interactive"]) == 0
 
+    assert keyed.kwargs.get("announce") is cli._progress, "a relay run says what it waits for"
+    assert run.kwargs["model"] is keyed.result
+    assert (run.kwargs["profile_path"], run.kwargs["answers_path"]) == (profile, answers)
+    assert run.kwargs["output_dir"] == tmp_path / "output"
     assert run.kwargs["export"] is False
     assert run.kwargs["ask"] is None
     out = capsys.readouterr().out
@@ -487,7 +511,7 @@ def test_unasked_questions_are_listed_with_how_to_answer_them(
     assert "? How many users?" in out
     assert '"Built the thing"' in out
     assert "Run it again at a terminal" in out
-    assert "add the facts to profile/master-profile.yaml" in out
+    assert "add the facts to output/master-profile.yaml" in out
 
 
 @pytest.mark.usefixtures("keyed")
@@ -506,7 +530,7 @@ def test_asked_questions_are_not_listed_again(
 
     out = capsys.readouterr().out
     assert "Open questions" not in out
-    assert "✓ recorded 1 answer in profile/master-profile.yaml" in out
+    assert "✓ recorded 1 answer in output/master-profile.yaml" in out
     assert "highlights: 3 → 4" in out
 
 
@@ -523,24 +547,71 @@ def test_problems_that_did_not_stop_the_run_are_reported(
     assert cli.main(["resume"]) == 0
 
     err = _flat(capsys.readouterr().err)
-    assert "could not be recorded in profile/master-profile.yaml automatically: rate limited" in err
+    assert "could not be recorded in output/master-profile.yaml automatically: rate limited" in err
     assert "! the documents do not use them yet" in err
 
 
-@pytest.mark.usefixtures("keyed")
 def test_tailor_runs_on_the_one_posting_named_and_shows_the_fit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    keyed: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     posting = tmp_path / "jd.md"
     posting.write_text("# Acme — Engineer\n\n## Requirements\n- Work.\n", encoding="utf-8")
     run = _Recorder(_application(tmp_path, company="Acme", role="Engineer", fit="Strong on Go."))
     monkeypatch.setattr(cli, "tailor_application", run)
+    profile, answers = tmp_path / "p.yaml", tmp_path / "a.md"
 
-    assert cli.main(["tailor", str(posting), "--no-interactive"]) == 0
+    argv = ["tailor", str(posting), "--profile", str(profile), "--answers", str(answers)]
+    assert cli.main([*argv, "--no-interactive"]) == 0
 
+    assert keyed.kwargs.get("announce") is cli._progress, "a relay run says what it waits for"
+    assert run.kwargs["model"] is keyed.result
+    assert (run.kwargs["profile_path"], run.kwargs["answers_path"]) == (profile, answers)
     assert run.args == ("# Acme — Engineer\n\n## Requirements\n- Work.\n",)
     assert run.kwargs["export"] is True
     assert "Fit: Strong on Go." in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("keyed")
+def test_tailor_finds_a_posting_named_without_its_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``make tailor JOB=acme.md`` works for a posting saved where the README says to save it."""
+    monkeypatch.chdir(tmp_path)
+    saved = tmp_path / "my-documents" / "job-postings" / "acme.md"
+    saved.parent.mkdir(parents=True)
+    saved.write_text("# Acme, Engineer\n\n- Work.\n", encoding="utf-8")
+    run = _Recorder(_application(tmp_path))
+    monkeypatch.setattr(cli, "tailor_application", run)
+
+    assert cli.main(["tailor", "acme.md", "--no-interactive"]) == 0
+    assert run.args == ("# Acme, Engineer\n\n- Work.\n",)
+
+
+@pytest.mark.usefixtures("keyed")
+def test_a_posting_path_that_exists_wins_over_one_in_the_postings_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "acme.md").write_text("# Here\n\n- The one named.\n", encoding="utf-8")
+    saved = tmp_path / "my-documents" / "job-postings" / "acme.md"
+    saved.parent.mkdir(parents=True)
+    saved.write_text("# There\n\n- The saved one.\n", encoding="utf-8")
+    run = _Recorder(_application(tmp_path))
+    monkeypatch.setattr(cli, "tailor_application", run)
+
+    assert cli.main(["tailor", "acme.md", "--no-interactive"]) == 0
+    assert run.args == ("# Here\n\n- The one named.\n",)
+
+
+def test_a_posting_in_neither_place_is_reported_by_the_name_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["tailor", "ghost.md"]) == 1
+    assert "not found: ghost.md" in capsys.readouterr().err
 
 
 def test_tailor_needs_a_posting(capsys: pytest.CaptureFixture[str]) -> None:
@@ -656,14 +727,17 @@ def raw(tmp_path: Path) -> Path:
     return folder
 
 
-@pytest.mark.usefixtures("keyed")
 def test_profile_build_reads_the_documents_and_reports_what_it_did(
-    tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    raw: Path,
+    keyed: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     out = tmp_path / "master-profile.yaml"
     built = ProfileBuild(
         path=out,
-        backup=tmp_path / "master-profile.yaml.20260925.bak",
+        backup=tmp_path / "backups" / "master-profile.20260925.yaml",
         changes=("Merged two highlights about the migration.",),
         difference=("highlights: 12 → 11",),
         review=Review(
@@ -676,18 +750,21 @@ def test_profile_build_reads_the_documents_and_reports_what_it_did(
     )
     run = _Recorder(built)
     monkeypatch.setattr(cli, "build_master_profile", run)
+    answers = tmp_path / "a.md"
 
-    assert (
-        cli.main(["profile", "build", "--raw", str(raw), "-o", str(out), "--no-interactive"]) == 0
-    )
+    argv = ["profile", "build", "--documents", str(raw), "-o", str(out), "--answers", str(answers)]
+    assert cli.main([*argv, "--no-interactive"]) == 0
 
+    assert keyed.kwargs.get("announce") is cli._progress, "a relay run says what it waits for"
+    assert run.kwargs["model"] is keyed.result
+    assert run.kwargs["answers_path"] == answers
     assert run.kwargs["out"] == out
     assert run.kwargs["force"] is False
     assert run.kwargs["ask"] is None
     printed = _flat(capsys.readouterr().out)
     assert "reading 1 document(s)" in printed
     assert "· old.md" in printed
-    assert "(previous profile kept as master-profile.yaml.20260925.bak)" in printed
+    assert "(previous profile kept as backups/master-profile.20260925.yaml)" in printed
     assert "Merged two highlights about the migration." in printed
     assert "highlights: 12 → 11" in printed
     assert "~ overlapping-roles: overlaps" in printed
@@ -709,7 +786,7 @@ def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
     )
     monkeypatch.setattr(cli, "build_master_profile", _Recorder(built))
 
-    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 0
+    assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out)]) == 0
 
     captured = capsys.readouterr()
     assert "refining did not pass its checks" in captured.err
@@ -721,7 +798,7 @@ def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
 def test_profile_build_reports_an_empty_raw_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["profile", "build", "--raw", str(tmp_path / "empty")]) == 1
+    assert cli.main(["profile", "build", "--documents", str(tmp_path / "empty")]) == 1
     assert "no readable documents" in capsys.readouterr().err
 
 
@@ -732,7 +809,7 @@ def test_profile_build_names_what_it_could_not_read(
     raw = tmp_path / "raw"
     raw.mkdir()
     (raw / "scan.pdf").write_bytes(pdf_bytes(""))
-    assert cli.main(["profile", "build", "--raw", str(raw)]) == 1
+    assert cli.main(["profile", "build", "--documents", str(raw)]) == 1
     assert "scan.pdf" in capsys.readouterr().err
 
 
@@ -743,7 +820,7 @@ def test_profile_build_refuses_to_replace_a_profile(
     out = tmp_path / "master-profile.yaml"
     out.write_text("summary: hand written\n", encoding="utf-8")
 
-    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 1
+    assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out)]) == 1
     assert out.read_text(encoding="utf-8") == "summary: hand written\n"
     assert "--force" in capsys.readouterr().err
 
@@ -757,7 +834,7 @@ def test_profile_build_with_force_goes_ahead(
     run = _Recorder(ProfileBuild(path=out, backup=None))
     monkeypatch.setattr(cli, "build_master_profile", run)
 
-    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out), "--force"]) == 0
+    assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out), "--force"]) == 0
     assert run.kwargs["force"] is True
 
 
@@ -802,7 +879,7 @@ def test_only_the_first_open_notes_are_printed_with_a_count_of_the_rest(
         _Recorder(ProfileBuild(path=out, backup=None, review=Review(notes))),
     )
 
-    assert cli.main(["profile", "build", "--raw", str(raw), "-o", str(out)]) == 0
+    assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out)]) == 0
 
     printed = _flat(capsys.readouterr().out)
     assert "? Question 7?" in printed

@@ -14,7 +14,7 @@ import re
 
 from resume_tailor.documents.blocks import Span
 
-__all__ = ["parse_spans", "spans_to_text"]
+__all__ = ["parse_spans"]
 
 # Order matters: an escape wins over everything, then the longest delimiter — ``***`` before
 # ``**`` before ``*``. Notes on the parts that are not obvious:
@@ -80,8 +80,3 @@ def parse_spans(text: str, *, bold: bool = False, italic: bool = False) -> tuple
         position = match.end()
     _push(spans, text[position:], bold=bold, italic=italic)
     return tuple(spans)
-
-
-def spans_to_text(spans: tuple[Span, ...]) -> str:
-    """Flatten spans back to plain text — used for slugs, logging, and assertions."""
-    return "".join(span.text for span in spans)

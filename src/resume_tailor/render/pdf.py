@@ -59,12 +59,12 @@ def html_to_pdf(html: str, out: Path) -> PdfResult:
     removed, so the caller can tell the user how to finish by hand and the directory never holds
     a PDF that does not correspond to the current source.
     """
+    # An earlier build's PDF must not be mistaken for this one's output, whichever way this ends.
+    _remove(out)
     chrome = find_chrome()
     if chrome is None:
         return _fall_back(html, out, NO_BROWSER)
 
-    # An earlier build's PDF must not be mistaken for this one's output.
-    _remove(out)
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "document.html"
         source.write_text(html, encoding="utf-8")

@@ -9,6 +9,24 @@ written to work for both.
 > checked against it before it is written. A resume that wins an interview and then falls apart
 > in the conversation helps no one.
 
+## Where things go
+
+You put your documents in `my-documents/`, and everything the project writes lands in `output/`:
+
+```text
+my-documents/
+  career-history/        your old resumes (PDF, Word, text), a LinkedIn PDF export, brag docs, notes
+  job-postings/          one .md or .txt file per job you want to apply to
+output/
+  master-profile.yaml    your career as structured data, built by `make profile`
+  general/               `make resume`: your general resume and LinkedIn profile
+  applications/          `make tailor`: a resume and cover letter for each job
+examples/                a fictional profile and tailored application, to see what you'll get
+```
+
+Both [`my-documents/`](my-documents/) and [`output/`](output/) are gitignored, apart from the
+README in each folder that says what goes in it.
+
 ## Setup
 
 ```bash
@@ -29,14 +47,14 @@ Then choose who answers the scripts, with `RESUME_TAILOR_LLM` in `.env`:
 ## How to use it
 
 **1. Build your master profile.** Drop anything about your career into
-[`profile/raw/`](profile/raw/): old resumes (PDF, Word or text), a LinkedIn export, brag docs,
-performance reviews. Then:
+[`my-documents/career-history/`](my-documents/career-history/): old resumes (PDF, Word or text),
+a LinkedIn export, brag docs, performance reviews. Then:
 
 ```bash
 make profile
 ```
 
-It drafts `profile/master-profile.yaml` from everything it can read, then **refines** it: the same
+It drafts `output/master-profile.yaml` from everything it can read, then **refines** it: the same
 accomplishment told by two documents is recorded once, each accomplishment sits under the role it
 belongs to, noise and accomplishments-posing-as-skills are dropped, and levels and years never
 claim more than your documents show. The refinement is checked mechanically, so it can merge and
@@ -44,8 +62,9 @@ tidy but can never add a fact or lose one. Anything it could not settle becomes 
 right there; your answers go into the profile.
 
 It names every file it read and every file it could not. It will not replace a profile you have
-already corrected unless you say so (`make profile FORCE=--force`, which keeps a backup). Added
-new documents later? Drop them in `profile/raw/` and rebuild.
+already corrected unless you say so (`make profile FORCE=--force`, which keeps a backup in
+`output/backups/`). Added new documents later? Drop them in `my-documents/career-history/` and
+rebuild.
 
 **2. Your general resume and LinkedIn profile.**
 
@@ -53,23 +72,24 @@ new documents later? Drop them in `profile/raw/` and rebuild.
 make resume
 ```
 
-Writes `applications/general/`:
+Writes `output/general/`:
 
 | File | What it is |
 |---|---|
 | `resume.docx` / `resume.pdf` | One well-rounded resume aimed at your target roles: your strongest, most distinct work, one or two pages |
 | `linkedin.md` | Everything to put on LinkedIn, section by section and within LinkedIn's limits: headline, About, top skills, every position, education, certifications, skills, Open to Work titles |
 
-**3. A resume and cover letter for one job.** Save the posting as a `.md` or `.txt` file (in
-[`jobs/`](jobs/) is a good place) and point at it:
+**3. A resume and cover letter for one job.** Save the posting as a `.md` or `.txt` file in
+[`my-documents/job-postings/`](my-documents/job-postings/) and name it:
 
 ```bash
-make tailor JOB=jobs/stripe-staff-backend.md
+make tailor JOB=stripe-staff-backend.md
 ```
 
-Writes `applications/<company>-<role>/` with `resume.docx` / `resume.pdf` tailored to that
-posting, `cover-letter.docx` / `cover-letter.pdf`, and the posting itself for reference. It also
-tells you how strong the match is and where the gaps are.
+A posting in `my-documents/job-postings/` needs only its file name; one saved anywhere else takes
+its path. Writes `output/applications/<company>-<role>/` with `resume.docx` / `resume.pdf`
+tailored to that posting, `cover-letter.docx` / `cover-letter.pdf`, and the posting itself for
+reference. It also tells you how strong the match is and where the gaps are.
 
 ### The review before the final files
 
@@ -80,8 +100,9 @@ Steps 2 and 3 review what they wrote before any Word or PDF file exists:
 3. You get the questions only you can answer: a must-have the posting asks for that your profile
    never mentions, an accomplishment with no outcome, a missing date. At most eight, most
    important first. Answer in a sentence, press Enter to skip, type `done` to finish.
-4. Your answers go into your master profile (and a log in `profile/raw/answers.md`), the
-   documents are revised to use them, and *then* the final files are written.
+4. Your answers go into your master profile (and a log in
+   `my-documents/career-history/answers.md`), the documents are revised to use them, and *then*
+   the final files are written.
 
 Run without a terminal (in CI, or from Claude Code) and it skips the asking: the final files are
 written and the open questions are printed, so you can add the facts to your profile and run it
@@ -94,18 +115,19 @@ Word files are the most reliably parsed format. `resume.pdf` is the same documen
 only takes PDF, or for an email. Both are single-column, standard headings, no tables or graphics,
 contact details in the body, set in Arial. [Why that layout →](reference/RESUME-FORMATS.md)
 
-Edited a `.md` by hand? Re-render it with `.venv/bin/resume-tailor build <file.md>`.
+Edited a `.md` by hand? Re-render it with
+`.venv/bin/resume-tailor build output/applications/<folder>/resume.md` (or whichever file you edited).
 
 ## In Claude Code
 
 Open the folder and ask. *"Build my master profile"*, *"make my general resume"* and *"tailor my
-resume to jobs/acme.md"* run the same scripts; Claude then asks you the review's questions in the
+resume to acme.md"* run the same scripts; Claude then asks you the review's questions in the
 chat, records your answers in the profile, and reruns the script for the final files. `/tailor`
 does the tailoring step directly.
 
 ## The master profile
 
-Your career lives in `profile/master-profile.yaml` as structured data, not prose, so every
+Your career lives in `output/master-profile.yaml` as structured data, not prose, so every
 document can be drawn from it precisely and checked against it:
 
 ```yaml
@@ -132,15 +154,17 @@ experience:
 ```
 
 `resume-tailor profile validate` checks it and lists what its audit still flags;
-`resume-tailor profile render` writes a readable copy to `profile/MASTER_PROFILE.md`. The schema is
+`resume-tailor profile render` writes a readable copy to `output/master-profile.md`. The schema is
 generated from the code, so an editor that understands `# yaml-language-server:` autocompletes
-and validates it as you type. See [the guide](profile/HOW-TO-BUILD-YOUR-PROFILE.md).
+and validates it as you type. A complete fictional one is in
+[`examples/master-profile.yaml`](examples/master-profile.yaml). See
+[the guide](reference/HOW-TO-BUILD-YOUR-PROFILE.md).
 
 ## Your privacy
 
-Your data (`profile/`, `jobs/` and `applications/`) is **gitignored** and never leaves your
-machine except in the requests to the model, and so is `.env` with your API key. Only the
-templates, tooling, schema and docs are tracked.
+Your data (`my-documents/` and `output/`) is **gitignored** and never leaves your machine except
+in the requests to the model, and so is `.env` with your API key. Only the templates, examples,
+tooling, schema and docs are tracked.
 
 ## Developing
 
@@ -157,5 +181,6 @@ Source is in `src/resume_tailor/`, tests mirror it in `tests/`. All three gates 
 - [CLAUDE.md](CLAUDE.md): the workflow and rules Claude follows
 - [reference/RESUME-FORMATS.md](reference/RESUME-FORMATS.md): the resume layout, and why
 - [reference/ATS-PLAYBOOK.md](reference/ATS-PLAYBOOK.md): how resume screeners work and how to pass them honestly
-- [profile/HOW-TO-BUILD-YOUR-PROFILE.md](profile/HOW-TO-BUILD-YOUR-PROFILE.md): building and keeping your profile
-- [templates/](templates/): the resume, cover-letter and profile formats
+- [reference/HOW-TO-BUILD-YOUR-PROFILE.md](reference/HOW-TO-BUILD-YOUR-PROFILE.md): building and keeping your profile
+- [templates/](templates/): the resume and cover-letter formats
+- [examples/](examples/): a fictional master profile and a tailored application, as worked examples

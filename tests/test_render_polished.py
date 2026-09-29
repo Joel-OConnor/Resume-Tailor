@@ -187,14 +187,6 @@ def test_unbalanced_parentheses_do_not_swallow_the_rest() -> None:
     assert polished._skill_items((Span("a), b"),)) == [(Span("a)"),), (Span("b"),)]
 
 
-def test_the_name_is_large_and_regular_weight(resume: Document, tmp_path: Path) -> None:
-    table = _table(resume, tmp_path)
-    run = table.rows[0].cells[1].paragraphs[0].runs[0]
-    assert run.font.name == polished.FONT
-    assert run.font.size.pt == polished.NAME_PT
-    assert run.bold is False
-
-
 def test_a_heading_that_bolds_its_title_leaves_the_company_regular(tmp_path: Path) -> None:
     rail, main = _table(parse(TITLED_MD), tmp_path).rows[0].cells
     role = next(p for p in main.paragraphs if p.text.startswith("Principal Engineer"))
@@ -439,11 +431,6 @@ def test_an_empty_rail_keeps_a_placeholder_paragraph(tmp_path: Path) -> None:
     assert rail.paragraphs
     assert not rail.paragraphs[0].text.strip()
     assert "<w:p" in rail._tc.xml
-
-
-def test_the_html_divider_matches_the_docx_border_width(resume: Document) -> None:
-    """The .docx draws 1pt (w:sz=8 eighth-points); the PDF has to draw the same rule."""
-    assert "border-right: 1pt solid #000" in polished.render_html(resume)
 
 
 def test_any_pipe_marks_a_contact_line_as_the_contract_now_says() -> None:

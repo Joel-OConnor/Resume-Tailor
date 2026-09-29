@@ -8,6 +8,7 @@ an answer that ran out of tokens halfway down page one.
 
 from __future__ import annotations
 
+import copy
 import textwrap
 from typing import TYPE_CHECKING, Any
 
@@ -33,12 +34,14 @@ from resume_tailor.agent.loop import one_line, questions, unfence
 from resume_tailor.agent.writing import check_documents
 from resume_tailor.errors import FabricationError, ModelError, ProfileError
 from resume_tailor.llm import LanguageModel, Reply
+from resume_tailor.match import match_posting
+from resume_tailor.match import render_markdown as render_match
 from resume_tailor.profile import load_mapping, loads
 from resume_tailor.review import Answer, Question
 from resume_tailor.verify import format_violations, verify_resume
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from resume_tailor.profile.models import Profile
 
@@ -243,6 +246,72 @@ def test_an_invented_figure_on_linkedin_is_a_fabrication_like_any_other(profile:
 
     with pytest.raises(FabricationError, match="60%"):
         write_general(profile, model, max_attempts=2)
+
+
+def _earlier_employer(data: dict[str, Any]) -> None:
+    data["experience"].append(
+        {
+            "id": "royal",
+            "company": "Royal Institution",
+            "roles": [{"title": "Research Engineer", "start": "2015-01", "end": "2020-12"}],
+        }
+    )
+
+
+def _promoted(data: dict[str, Any]) -> None:
+    data["experience"][0]["roles"].append(
+        {"title": "Research Engineer", "start": "2015-01", "end": "2020-12"}
+    )
+
+
+def _with(change: Callable[[dict[str, Any]], object]) -> Profile:
+    """Return the test profile with ``change`` applied to a copy of its data."""
+    data = copy.deepcopy(_PROFILE_DATA)
+    change(data)
+    return load_mapping(data)
+
+
+@pytest.mark.parametrize(
+    ("change", "employer"),
+    [(_earlier_employer, "Royal Institution"), (_promoted, "Analytical Engine Programme")],
+    ids=["another-employer", "same-employer"],
+)
+def test_a_linkedin_profile_that_leaves_out_a_role_is_sent_back(
+    change: Callable[[dict[str, Any]], object], employer: str
+) -> None:
+    """LinkedIn is the whole record: a role missing from the draft would be missing for good."""
+    profile = _with(change)
+    position = f"### **Research Engineer** – {employer}\n2015 – 2020\nI built engines.\n"
+    whole = LINKEDIN_MD.replace("\n## Skills", "\n" + position + "\n## Skills")
+    model = FakeModel([general(), general(linkedin=whole)])
+
+    result = write_general(profile, model)
+
+    assert result.usage.attempts == 2
+    feedback = _feedback(model)
+    assert f"leaves out Research Engineer at {employer}" in feedback
+    assert "Principal Engineer at" not in feedback, "the role it kept is not named"
+    assert result.linkedin == whole.strip()
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "### **Engineer** – Analytical Engine",
+        "### Analytical Engine Programme – **Principal Engineer**",
+    ],
+    ids=["shortened", "employer-first"],
+)
+def test_a_role_the_verifier_accepts_the_heading_of_counts_as_listed(
+    profile: Profile, heading: str
+) -> None:
+    """A heading the verifier passes as true names its role here too, so no true draft fails."""
+    linkedin = LINKEDIN_MD.replace(
+        "### **Principal Engineer** – Analytical Engine Programme", heading
+    )
+
+    assert verify_resume(linkedin, profile).ok, "the fixture only means anything while it verifies"
+    assert check_documents({LINKEDIN: linkedin}, profile) is None
 
 
 def test_a_general_answer_missing_the_linkedin_section_is_retried(profile: Profile) -> None:
@@ -529,8 +598,211 @@ def test_a_revision_works_answers_in_and_asks_nothing(profile: Profile) -> None:
     assert "### **Engineer**" in result.documents[RESUME]
     prompt = model.prompts[0]
     assert "Q: How large was the batch?\nA: About 40 jobs a night." in prompt
+    assert "unless the answers complete or correct what that heading says" in _unwrapped(prompt)
     assert prompts.marker(prompts.QUESTIONS) not in prompt
     assert "<mechanical-review>" not in prompt
+
+
+def _feedback(model: FakeModel) -> str:
+    """Return what the first retry said was wrong, without the original request it repeats."""
+    return model.prompts[1].removesuffix(model.prompts[0])
+
+
+POSITION = LINKEDIN_MD[LINKEDIN_MD.index("### ") : LINKEDIN_MD.index("\n## Skills")]
+REVISED_ANSWERS = (Answer(Question("How large was the batch?"), "About 40 jobs a night."),)
+SECOND_ROLE = "\n### **Engineer** – Analytical Engine Programme\n2021 – Present\n"
+
+
+def test_a_review_edit_that_drops_a_linkedin_position_is_sent_back(profile: Profile) -> None:
+    """linkedin.md is written from the review pass, so a position cut there is cut for good."""
+    cut = LINKEDIN_MD.replace(POSITION, "")
+    model = FakeModel(
+        [
+            delimited(RESUME=EDITED, LINKEDIN=cut, QUESTIONS="- none"),
+            delimited(RESUME=EDITED, LINKEDIN=LINKEDIN_MD, QUESTIONS="- none"),
+        ]
+    )
+
+    result = edit_documents({RESUME: RESUME_MD, LINKEDIN: LINKEDIN_MD}, profile, model)
+
+    assert result.usage.attempts == 2
+    feedback = _feedback(model)
+    assert "linkedin" in feedback.lower(), "the retry names the document that lost it"
+    assert "resume's" not in feedback, "the resume kept its entry, so it is not blamed"
+    assert "**Principal Engineer** – Analytical Engine Programme" in feedback
+    assert result.documents[LINKEDIN] == LINKEDIN_MD.strip(), "an edit that keeps it is taken"
+
+
+def test_a_review_edit_may_not_add_a_linkedin_position_either(profile: Profile) -> None:
+    """Every role is in the draft already, so a review's new entry is invented or duplicated."""
+    grown = LINKEDIN_MD.replace(POSITION, POSITION + POSITION)
+    model = FakeModel([delimited(LINKEDIN=grown, QUESTIONS="- none")] * 3)
+
+    with pytest.raises(ModelError, match="linkedin profile's ### entries"):
+        edit_documents({LINKEDIN: LINKEDIN_MD}, profile, model)
+
+
+def test_one_retry_names_every_document_that_lost_an_entry(profile: Profile) -> None:
+    resume_cut = EDITED[: EDITED.index("### ")]
+    linkedin_cut = LINKEDIN_MD.replace(POSITION, "")
+    model = FakeModel(
+        [
+            delimited(RESUME=resume_cut, LINKEDIN=linkedin_cut, QUESTIONS="- none"),
+            delimited(RESUME=EDITED, LINKEDIN=LINKEDIN_MD, QUESTIONS="- none"),
+        ]
+    )
+
+    edit_documents({RESUME: RESUME_MD, LINKEDIN: LINKEDIN_MD}, profile, model)
+
+    feedback = _feedback(model)
+    assert "resume's ### entries" in feedback
+    assert "linkedin profile's ### entries" in feedback
+
+
+def test_a_revision_that_drops_a_role_is_sent_back(profile: Profile) -> None:
+    """Answers may add an entry, never lose one: the revised resume is the one exported."""
+    role = EDITED[EDITED.index("### ") :]
+    model = FakeModel(
+        [
+            delimited(RESUME=EDITED.replace(role, ""), COVER_LETTER=LETTER),
+            delimited(RESUME=EDITED, COVER_LETTER=LETTER),
+        ]
+    )
+
+    result = _edit(model, profile, answers=REVISED_ANSWERS)
+
+    assert result.usage.attempts == 2
+    feedback = _feedback(model)
+    assert "resume" in feedback.lower(), "the retry names the document that lost it"
+    assert "Add an entry only for a role or degree the answers supply." in feedback
+    assert result.documents[RESUME] == EDITED.strip()
+
+
+def test_a_revision_that_reorders_the_roles_is_sent_back(profile: Profile) -> None:
+    two_roles = RESUME_MD + SECOND_ROLE
+    swapped = RESUME_MD.replace("### **Principal", SECOND_ROLE.lstrip() + "\n### **Principal")
+    model = FakeModel([delimited(RESUME=swapped, COVER_LETTER=LETTER)] * 3)
+
+    with pytest.raises(ModelError, match="resume's ### entries"):
+        edit_documents(
+            {RESUME: two_roles, COVER_LETTER: LETTER}, profile, model, answers=REVISED_ANSWERS
+        )
+
+
+def test_a_revision_may_add_a_position_ahead_of_the_ones_it_keeps(profile: Profile) -> None:
+    """A new entry can land wherever the dates put it, as long as the old ones keep their order."""
+    position = POSITION.replace("**Principal Engineer**", "**Engineer**")
+    grown = LINKEDIN_MD.replace(POSITION, position + "\n" + POSITION)
+    model = FakeModel([delimited(LINKEDIN=grown)])
+
+    result = edit_documents({LINKEDIN: LINKEDIN_MD}, profile, model, answers=REVISED_ANSWERS)
+
+    assert result.usage.attempts == 1
+    assert result.documents[LINKEDIN] == grown.strip()
+
+
+DEGREE_ANSWERS = (
+    Answer(Question("The posting asks for a BS in Computer Science. What was yours in?"), "CS."),
+)
+TITLE_ANSWERS = (Answer(Question("Was Principal Engineer your title?"), "It was Chief Engineer."),)
+DEGREE = "\n## Education\n\n### **B.S.** – University of London\n1835\n"
+HEADING = "### **Principal Engineer** – Analytical Engine Programme"
+
+
+def _schooled(data: dict[str, Any]) -> None:
+    data["education"] = [
+        {
+            "credential": "B.S. Computer Science",
+            "institution": "University of London",
+            "completed": "1835",
+        }
+    ]
+
+
+def _retitled(data: dict[str, Any]) -> None:
+    data["experience"][0]["roles"][0]["title"] = "Chief Engineer"
+
+
+def test_a_revision_may_complete_a_heading_with_what_the_answers_supply() -> None:
+    """The profile now records the degree's field, and the heading is where a degree says it."""
+    profile = _with(_schooled)
+    completed = (RESUME_MD + DEGREE).replace("**B.S.**", "**B.S. Computer Science**")
+    model = FakeModel([delimited(RESUME=completed, COVER_LETTER=LETTER)])
+
+    result = edit_documents(
+        {RESUME: RESUME_MD + DEGREE, COVER_LETTER: LETTER}, profile, model, answers=DEGREE_ANSWERS
+    )
+
+    assert result.usage.attempts == 1
+    assert "### **B.S. Computer Science** – University of London" in result.documents[RESUME]
+
+
+def test_a_revision_may_correct_a_heading_the_answers_made_untrue() -> None:
+    """Keeping the old title would fail the verifier, so rewriting it is the only true answer."""
+    profile = _with(_retitled)
+    corrected = HEADING.replace("Principal", "Chief")
+    documents = {RESUME: RESUME_MD, LINKEDIN: LINKEDIN_MD}
+    model = FakeModel(
+        [
+            delimited(
+                RESUME=RESUME_MD.replace(HEADING, corrected),
+                LINKEDIN=LINKEDIN_MD.replace(HEADING, corrected),
+            )
+        ]
+    )
+
+    result = edit_documents(documents, profile, model, answers=TITLE_ANSWERS)
+
+    assert result.usage.attempts == 1
+    assert corrected in result.documents[RESUME]
+    assert corrected in result.documents[LINKEDIN]
+    assert not verify_resume(RESUME_MD, profile).ok, "the old heading really is untrue now"
+
+
+def test_a_revision_may_not_drop_a_heading_the_answers_made_untrue() -> None:
+    profile = _with(_retitled)
+    role = EDITED[EDITED.index("### ") :]
+    kept = RESUME_MD.replace(HEADING, HEADING.replace("Principal", "Chief"))
+    model = FakeModel(
+        [
+            delimited(RESUME=EDITED.replace(role, ""), COVER_LETTER=LETTER),
+            delimited(RESUME=kept, COVER_LETTER=LETTER),
+        ]
+    )
+
+    result = edit_documents(
+        {RESUME: RESUME_MD, COVER_LETTER: LETTER}, profile, model, answers=TITLE_ANSWERS
+    )
+
+    assert result.usage.attempts == 2
+    assert "resume's ### entries" in _feedback(model)
+
+
+def test_a_revision_may_not_rename_a_heading_the_answers_left_true(profile: Profile) -> None:
+    """A shorter title still verifies, but the answers gave no reason to touch the heading."""
+    renamed = EDITED.replace("**Principal Engineer** –", "**Engineer** –")
+    model = FakeModel([delimited(RESUME=renamed, COVER_LETTER=LETTER), edited()])
+
+    result = _edit(model, profile, answers=REVISED_ANSWERS)
+
+    assert result.usage.attempts == 2
+    feedback = _feedback(model)
+    assert "Change a heading only where the answers complete or correct it." in feedback
+
+
+def test_a_heading_completed_with_what_the_profile_does_not_say_is_a_fabrication() -> None:
+    """Growing a heading is allowed only because the verifier still reads what it grew into."""
+    profile = _with(_schooled)
+    invented = (RESUME_MD + DEGREE).replace("**B.S.**", "**B.S. Physics**")
+    model = FakeModel([delimited(RESUME=invented, COVER_LETTER=LETTER)] * 3)
+
+    with pytest.raises(FabricationError, match="Physics"):
+        edit_documents(
+            {RESUME: RESUME_MD + DEGREE, COVER_LETTER: LETTER},
+            profile,
+            model,
+            answers=DEGREE_ANSWERS,
+        )
 
 
 def test_check_documents_passes_clean_documents(profile: Profile) -> None:
@@ -747,29 +1019,54 @@ def test_the_tailor_prompt_carries_the_posting_the_profile_and_the_contracts(
     assert POSTING.strip() in prompt
     assert "Confirm whether the punched-card work" in prompt, "notes are shown, marked unconfirmed"
     assert prompts.COVER_LETTER_FORMAT.strip() in prompt
-    assert "Kubernetes" in prompt, "the mechanical gap analysis rides along"
+    assert render_match(match_posting(POSTING, profile)).strip() in prompt, (
+        "the matcher's gaps ride along, so the model knows what it must not claim"
+    )
     for section in prompts.TAILOR_SECTIONS:
         assert prompts.marker(section) in prompt
 
 
+def _unwrapped(text: str) -> str:
+    """Undo a prompt's line wrapping, so a rule is found however its paragraph is wrapped."""
+    return " ".join(text.split())
+
+
 def test_the_system_prompts_state_the_rules_the_checks_enforce() -> None:
     """The checks catch fabrication; the prompts are what keep them from having to."""
-    for system in (prompts.GENERAL_SYSTEM, prompts.TAILOR_SYSTEM):
+    general = _unwrapped(prompts.GENERAL_SYSTEM)
+    tailoring = _unwrapped(prompts.TAILOR_SYSTEM)
+    profiling = _unwrapped(prompts.PROFILE_SYSTEM)
+    refining = _unwrapped(prompts.REFINE_PROFILE_SYSTEM)
+    updating = _unwrapped(prompts.UPDATE_PROFILE_SYSTEM)
+    for system in (general, tailoring):
         assert "NEVER FABRICATE" in system
         assert "UNCONFIRMED" in system
         assert '"exposure" or "working"' in system
-    assert "220 characters" in prompts.GENERAL_SYSTEM
-    assert "Add anything" in prompts.REFINE_PROFILE_SYSTEM
-    assert "Lose anything" in prompts.REFINE_PROFILE_SYSTEM
-    assert "the answers themselves do not state" in prompts.UPDATE_PROFILE_SYSTEM
-    assert "Bold the job title" in prompts.RESUME_FORMAT
-    assert "no\n  level recorded may be listed only where the profile shows it in real use" in (
-        prompts.TAILOR_SYSTEM
+        assert "never one you work out yourself" in system
+    assert "the years (as the profile states them)" in general
+    assert "a Tech Stack note is a technology the profile records" in _unwrapped(
+        prompts.RESUME_FORMAT
     )
-    assert '"core", "daily" or "main stack" is proficient' in prompts.PROFILE_SYSTEM
-    for system in (prompts.PROFILE_SYSTEM, prompts.REFINE_PROFILE_SYSTEM):
+    assert "a Top Skills or Skills line is a technology the profile records" in _unwrapped(
+        prompts.LINKEDIN_FORMAT
+    )
+    assert "220 characters" in general
+    assert "Experience: every role in the profile" in general
+    assert "Add anything" in refining
+    assert "Lose anything" in refining
+    assert "the answers themselves do not state" in updating
+    assert "Bold the job title" in _unwrapped(prompts.RESUME_FORMAT)
+    assert "a wrapped line becomes a separate paragraph" in _unwrapped(prompts.RESUME_FORMAT)
+    editing = _unwrapped(prompts.EDIT_SYSTEM)
+    assert 'The "### " entries of the resume and of the LinkedIn profile' in editing
+    assert "reject an edit that loses, renames or reorders one" in editing
+    assert "no level recorded may be listed only where the profile shows it in real use" in (
+        tailoring
+    )
+    assert '"core", "daily" or "main stack" is proficient' in profiling
+    for system in (profiling, refining):
         assert "in the second person" in system
-    assert "never\n  put a settled answer there" in prompts.UPDATE_PROFILE_SYSTEM
+    assert "never put a settled answer there" in updating
 
 
 def test_the_profile_prompt_carries_the_schema_and_every_document() -> None:
