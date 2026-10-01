@@ -26,9 +26,10 @@ your technology aliases, instead of re-reading paragraphs and guessing.
    - **Draft:** every distinct fact from your documents, recorded as YAML.
    - **Refine:** a second read that records each fact once and in the right place. The same
      accomplishment told by two documents becomes one highlight (keeping every number), each
-     highlight moves under the role whose dates it fits, accomplishments filed as skills and
-     other noise are dropped, and no level or years claim more than your documents show. It is
-     checked mechanically: refining can merge and tidy, but it can never add a fact or lose one.
+     highlight moves under the role whose dates it fits, an accomplishment filed as a skill moves
+     out of the skills list, other noise is dropped, and no level or years claim more than your
+     documents show. It is checked mechanically: refining can merge and tidy, but it can never
+     add a fact or lose one.
    - **Settle:** anything the documents left unclear (two different figures, a missing month) was
      put in `notes`. Those come back as questions, asked right there. Answer in a sentence, or
      press Enter to skip; answers go straight into the profile and into
@@ -92,15 +93,20 @@ Your editor can validate as you type. The file already points at the schema:
   (`**Data Layer Design:** Designed normalized schemas…`), which is what a ten-second skim reads.
 - **Fill in `scope`.** Team size, org, budget, traffic: the context a bullet can't carry but an
   interviewer will ask about.
+- **Give each technology a `level`** (`expert`, `proficient`, `working` or `exposure`) where you
+  know it. A resume's Skills section lists only what is `expert` or `proficient`, plus anything
+  with no level that a role's `stack` or an accomplishment shows you really used; `working` and
+  `exposure` stay out of it. Building the profile never raises a level on its own, so this one is
+  yours to set.
 - **Keep it truthful.** Everything here should be defensible in an interview. If you're unsure a
-  number is right, put it in `notes` and fix it later: `resume-tailor profile validate` will keep
-  reminding you, and nothing in `notes` is ever printed.
+  number is right, put it in `notes` and fix it later: `.venv/bin/resume-tailor profile validate`
+  will keep reminding you, and nothing in `notes` is ever printed.
 
 ## Keeping it fresh
 
 Update the profile whenever you finish a project or hit a milestone: it's much easier to capture a
 win the week it happens than to reconstruct it a year later at 11pm before an application. Run
-`resume-tailor profile validate` after editing; it catches typos, bad dates, technologies pointing
-at employers that don't exist, and anything recorded twice. The questions `make resume` and
-`make tailor` ask during their review also land here, so the profile gets better every time you
-use it.
+`.venv/bin/resume-tailor profile validate` after editing; it catches typos, bad dates,
+technologies pointing at employers that don't exist, and anything recorded twice. The questions
+`make resume` and `make tailor` ask during their review also land here, so the profile gets
+better every time you use it.

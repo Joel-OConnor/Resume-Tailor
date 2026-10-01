@@ -9,7 +9,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from resume_tailor.paths import PROFILE_PATH
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from resume_tailor.profile.models import Profile, Role, Tenure
 
 __all__ = ["format_date", "format_period", "render_markdown"]
@@ -77,12 +81,17 @@ def format_period(start: str, end: str) -> str:
     return f"{format_date(start)} – {format_date(end)}"
 
 
-def render_markdown(profile: Profile) -> str:
-    """Render the whole profile as Markdown."""
+def render_markdown(profile: Profile, *, source: Path = PROFILE_PATH) -> str:
+    """Render the whole profile as Markdown.
+
+    ``source`` is the YAML file the profile was loaded from. The header names it as the file to
+    edit, so a view rendered from a backup or the example never points the reader at the live
+    profile instead.
+    """
     out: list[str] = [
         f"# Master Profile — {_line(profile.contact.name)}",
         "",
-        "> Generated from `output/master-profile.yaml`. Edit the YAML, not this file.",
+        f"> Generated from `{_line(source.as_posix())}`. Edit the YAML, not this file.",
         "",
     ]
     _contact(profile, out)

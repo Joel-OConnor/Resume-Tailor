@@ -11,14 +11,12 @@ from resume_tailor.match import (
     find_coverage,
     match_posting,
     parse_posting,
-    read_posting,
     render_markdown,
 )
-from resume_tailor.profile import load_mapping
+from resume_tailor.profile import load, load_mapping
+from tests.conftest import REPO_ROOT
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from resume_tailor.profile.models import Profile
 
 POSTING = """\
@@ -144,6 +142,19 @@ def test_a_more_specific_product_downgrades_the_match() -> None:
     assert "- **Docker** — the posting names a more specific product" in render_markdown(report)
 
 
+def test_the_example_postings_skill_list_leaves_aws_confirmed() -> None:
+    """The shipped example asks for "AWS, Kubernetes, and infrastructure-as-code (Terraform)".
+
+    The profile records AWS as expert with an accomplishment behind it, yet the comma after it
+    used to qualify it as naming "a more specific product" in every tailoring prompt.
+    """
+    profile = load(REPO_ROOT / "examples" / "master-profile.yaml")
+    posting = REPO_ROOT / "examples" / "tailored-application" / "job-description.md"
+    out = render_markdown(match_posting(posting.read_text(encoding="utf-8"), profile))
+    assert "| Amazon Web Services (AWS) | northwind-payments, cedar-analytics " in out
+    assert "more specific product" not in out
+
+
 def test_ignored_lines_are_only_listed_when_they_mention_something() -> None:
     quiet = match_posting("## Life at Acme\n- We drink coffee.\n", _profile())
     assert not quiet.coverage.ignored
@@ -152,12 +163,6 @@ def test_ignored_lines_are_only_listed_when_they_mention_something() -> None:
 def test_coverage_of_an_empty_posting() -> None:
     coverage = find_coverage(parse_posting(""), build_lexicon(_profile()))
     assert coverage.matches == ()
-
-
-def test_read_posting_strips_a_byte_order_mark(tmp_path: Path) -> None:
-    path = tmp_path / "jd.md"
-    path.write_bytes(b"\xef\xbb\xbf## Requirements\n- PostgreSQL.\n")
-    assert read_posting(path).startswith("## Requirements")
 
 
 def test_a_qualified_match_can_carry_no_caveat_at_all() -> None:

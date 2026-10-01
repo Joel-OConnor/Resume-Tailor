@@ -23,8 +23,9 @@ the posting, or just its file name when it lives in `my-documents/job-postings/`
 All three call a model, chosen by `RESUME_TAILOR_LLM` in `.env`: the Anthropic API
 (`anthropic`, with `ANTHROPIC_API_KEY`), or you, through the relay (`claude-code`, below). Steps 2
 and 3 end the same way: a review that fixes and edits the drafts, then questions for the user, then
-the final Word and PDF files. At a terminal the questions are asked as the script runs; with no terminal (including when
-you run it from Claude Code) they are printed instead. See **The review step** below.
+the final Word and PDF files. At a terminal the questions are asked as the script runs; with no
+terminal (including when you run it from Claude Code) they are printed instead. See **The review
+step** below.
 
 ## 1. The master profile
 
@@ -85,16 +86,21 @@ file name of a posting in `my-documents/job-postings/`), and writes
 The terminal also shows a short fit summary (how strong the match is, the biggest gap), and the
 posting's unsupported must-haves are the first questions in the review.
 
+Rerunning either script replaces its folder, but first moves the old one into `output/backups/`
+(`general.<timestamp>/`, `applications/<company>-<role>.<timestamp>/`), so hand edits are never
+lost. A different posting that yields the same company and role gets its own folder (`-2`, `-3`).
+
 ## The review step
 
 Both scripts review what they wrote before anything is exported:
 
-1. The mechanical fixes are applied (spacing, a missing full stop, a hyphen in a date range, a
-   skill listed twice).
+1. The mechanical fixes are applied to the resume (spacing, a missing full stop, a hyphen in a
+   date range, a skill listed twice), and the terminal names each one.
 2. An editor pass tightens every document for readability without changing a fact, held to the
    same verifier as the draft.
 3. The questions only the user can answer are gathered (an unsupported must-have, an outcome with
-   no number, a missing date), at most eight, most important first.
+   no number, a missing date), at most eight, most important first. An answer that only declines
+   or hedges ("no", "not sure") is logged but changes nothing in the profile.
 4. At a terminal, each is asked. An answer that gives a fact is logged in
    `my-documents/career-history/answers.md` and recorded in `output/master-profile.yaml` (checked
    by `verify/changes.py:check_update`, which rejects anything the answers do not state), and the
@@ -105,25 +111,30 @@ Both scripts review what they wrote before anything is exported:
 Then *you* are the one who asks: put them to the user one at a time, record each real answer in
 `output/master-profile.yaml` where it belongs (a figure into the highlight it measures, a
 technology into `technologies` and the role's stack, a new accomplishment as a highlight with a
-label and tags), run `.venv/bin/resume-tailor profile validate`, and run the script again so the
-final files use the answers. Never answer a question by guessing, and never record a "no".
+label and tags), and log it in `my-documents/career-history/answers.md` the way the scripts do (a
+dated `## ` heading, then a `- **Q:**` line and an `**A:**` line per answer) so a rebuild keeps
+it. Then run `.venv/bin/resume-tailor profile validate`, and run the script again so the final
+files use the answers. Never answer a question by guessing, and never record a "no".
 
 ## Answering the relay (`RESUME_TAILOR_LLM=claude-code`)
 
 In this mode each model call becomes a file: the script writes `.relay/<id>.request.md` (a system
-prompt and a prompt) and waits for `.relay/<id>.response.md`. You answer it:
+prompt and a prompt) and waits for `.relay/<id>.response.md`. If you started the script yourself,
+run it in the background, or it blocks you from answering it. You answer it:
 
 1. Run `.venv/bin/resume-tailor relay wait` in the background. It exits as soon as a request is
    waiting and prints the request's path and the path to write the reply to.
 2. Read the request in full. Write the complete reply, exactly in the shape its output contract
-   asks for and nothing else (no preamble, no fences around a whole answer), to the reply path in
-   one write.
+   asks for and nothing else (no preamble, no fences around a whole answer), to the reply path
+   with `.tmp` added, then move that file onto the reply path, as the request itself says. The
+   script never reads a reply that is still being written.
 3. Wait again, until the script finishes.
 
 A reply is checked exactly like an API reply. When it fails a check, the next request opens with
 the precise problems: fix every one. Everything in **Truthfulness** below applies to your replies
 as it does to any model. To give up on a request, write the reason to `.relay/<id>.error.md`; the
-script stops with that reason. Answered requests move to `.relay/answered/`.
+script stops with that reason (or, for a step it can do without, such as refining the profile,
+skips the step and says why). Answered requests move to `.relay/answered/`.
 
 ## Doing it by hand
 

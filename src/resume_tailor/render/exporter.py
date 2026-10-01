@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from resume_tailor.documents import parse
-from resume_tailor.documents.blocks import Section
+from resume_tailor.documents.blocks import is_sectioned
 from resume_tailor.errors import RenderError
 from resume_tailor.render import ats, polished
 from resume_tailor.render.pdf import html_to_pdf
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from resume_tailor.documents.blocks import Document
 
@@ -61,7 +62,7 @@ def read_source(source: Path) -> Document:
         msg = f"cannot read {source}: {exc.strerror or exc}"
         raise RenderError(msg) from exc
     except UnicodeDecodeError as exc:
-        msg = f"{source} is not UTF-8 text — re-save it as UTF-8"
+        msg = f"{source} is not UTF-8 text: re-save it as UTF-8"
         raise RenderError(msg) from exc
     return parse(text)
 
@@ -87,9 +88,13 @@ def build(
     ``Layout.BOTH`` skips the polished pass for a cover letter — a letter is prose with no
     sections, so the two-column rail would come out empty and the docs promise letters are always
     single-column. Asking for ``Layout.POLISHED`` explicitly still renders one.
+
+    A source that is itself one of the files this build writes or removes (Markdown saved as
+    ``resume.html``, say) is refused before anything is touched, rather than destroyed.
     """
     document = read_source(source)
     directory = out_dir or source.parent
+    _refuse_to_destroy(source, directory, layout)
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -126,11 +131,64 @@ def build(
     return artifacts
 
 
+def _refuse_to_destroy(source: Path, directory: Path, layout: Layout) -> None:
+    """Raise if any file this build may write or remove is the source itself.
+
+    Each layout's ``.docx``, ``.pdf`` and ``.html`` are replaced or removed outright, so a
+    Markdown source saved under one of those names would be overwritten or deleted with no
+    warning. ``Layout.BOTH`` covers the polished names even for a letter, whose earlier polished
+    files are removed.
+    """
+    stems = [
+        stem
+        for stem, own in ((source.stem, Layout.ATS), (f"{source.stem}-polished", Layout.POLISHED))
+        if layout in (own, Layout.BOTH)
+    ]
+    for path in (path for stem in stems for path in output_names(directory, stem)):
+        if _is_same_file(path, source):
+            msg = (
+                f"this source is also an output of the build ({path.name}), so building would "
+                f"destroy it; rename it to {source.stem}.md"
+            )
+            raise RenderError(msg)
+
+
+def _is_same_file(path: Path, source: Path) -> bool:
+    """Report whether ``path`` is the source, however the two names are spelled.
+
+    ``samefile`` rather than comparing the names: on macOS and Windows ``resume.HTML`` and
+    ``resume.html`` are one file, so a source differing from an output only in case is still
+    the file that output would replace.
+    """
+    try:
+        return path.samefile(source)
+    except OSError:  # nothing there yet, so nothing to destroy
+        return False
+
+
 def _discard(paths: tuple[Path, ...]) -> None:
     """Remove earlier artifacts this build is not replacing."""
     for path in paths:
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+
+
+def _write_atomically(target: Path, write: Callable[[Path], None]) -> None:
+    """Have ``write`` produce ``target`` beside it first, then swap it into place.
+
+    Writing in place means a write that fails partway (a full disk, a synced folder going
+    offline) leaves a truncated ``resume.docx`` where the last good one was. The draft goes in a
+    scratch folder in the same directory, so the swap is a rename on one filesystem; a folder
+    rather than a temporary file, so the writer creates the draft with ordinary permissions
+    instead of a temporary file's owner-only ones. On any failure the scratch folder and the
+    partial draft in it are removed and ``target`` is left exactly as it was.
+    """
+    with tempfile.TemporaryDirectory(
+        prefix=".resume-tailor-", dir=target.parent, ignore_cleanup_errors=True
+    ) as scratch:
+        draft = Path(scratch) / target.name
+        write(draft)
+        draft.replace(target)
 
 
 def _one(  # noqa: PLR0913, PLR0917 - one renderer pass; each argument is a distinct input
@@ -146,7 +204,7 @@ def _one(  # noqa: PLR0913, PLR0917 - one renderer pass; each argument is a dist
     """Render one layout, turning any filesystem failure into a :class:`RenderError`."""
     docx_path, pdf_path, html_path = output_names(directory, stem)
     try:
-        render_docx(document, docx_path)
+        _write_atomically(docx_path, lambda path: render_docx(document, path))
     except OSError as exc:
         msg = f"cannot write {docx_path}: {exc.strerror or exc}"
         raise RenderError(msg) from exc
@@ -180,8 +238,3 @@ def output_names(directory: Path, stem: str) -> tuple[Path, Path, Path]:
         directory / f"{stem}.pdf",
         directory / f"{stem}.html",
     )
-
-
-def is_sectioned(document: Document) -> bool:
-    """Report whether this is a resume (it has ``## `` sections) rather than a cover letter."""
-    return any(isinstance(block, Section) for block in document.blocks)

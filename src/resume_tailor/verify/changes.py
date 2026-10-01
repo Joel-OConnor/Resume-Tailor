@@ -6,14 +6,18 @@ to), and again to fold in the answers the candidate gives during a review. Both 
 file, so both are checked against the version they replace, the way a generated resume is checked
 against the profile:
 
-* **Refining adds nothing and loses nothing.** Every employer, role, date, credential, link and
-  figure in the draft is still there afterwards, and nothing is there that the draft did not
-  have. A technology may be dropped, because cleaning a skills list is the point, but never added
-  or promoted; a role may be dropped only when another role at the same employer covers it, which
-  is what merging a duplicate looks like.
+* **Refining adds nothing and loses nothing.** Every employer, role, date, credential, link,
+  contact detail and figure in the draft is still there afterwards, and nothing is there that the
+  draft did not have. A technology may be dropped, because cleaning a skills list is the point,
+  but never added or promoted, in the technology list or in a role's stack; a role may be dropped
+  only when another role at the same employer covers it, which is what merging a duplicate looks
+  like. A highlight may be reworded, merged or moved, but one that is new has to be told in the
+  draft's own words for that employer.
 * **An update adds only what the candidate said.** Every new employer, title, date, credential,
-  technology, link and figure has to appear in the answers themselves, and anything removed has to
-  be named in them.
+  technology, link and contact detail has to appear in the answers themselves, and anything
+  removed has to be named in them. A figure in a field the update wrote has to be one the answers
+  state or one that field already had, so a new accomplishment cannot borrow another one's
+  figure; and a new highlight has to be told mostly in the answers' own words.
 
 Problems come back as sentences written for the model's next attempt, like verifier violations.
 """
@@ -25,13 +29,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from resume_tailor.match import build_lexicon
-from resume_tailor.match.tokens import normalise
+from resume_tailor.match.tokens import normalise, stem
 from resume_tailor.profile import format_period
 from resume_tailor.verify.dates import PRESENT, Point, earlier, parse_point
-from resume_tailor.verify.metrics import figures_in
+from resume_tailor.verify.metrics import figures_in, largest_stated, magnitudes_in, prose_of
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator, Sequence
+    from decimal import Decimal
 
     from resume_tailor.match.lexicon import Lexicon
     from resume_tailor.profile.models import Highlight, Profile, Technology
@@ -55,6 +60,17 @@ _SHOWN = 8
 _BRIEF = 6
 """How many words of an unlabelled highlight a change summary quotes."""
 
+_STOPWORDS = frozenset(
+    {"a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for", "from", "had"}
+    | {"has", "have", "i", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or", "our"}
+    | {"so", "than", "that", "the", "their", "them", "then", "they", "this", "to", "was", "we"}
+    | {"were", "which", "while", "who", "with"}
+)
+"""Words that state no fact of their own, left out when a text is held to another's words."""
+
+_DETAILS = ("location", "work_authorization")
+"""Contact details written as free text, compared by their words rather than verbatim."""
+
 
 # --- the facts a profile states -------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
@@ -63,6 +79,8 @@ class _Role:
     title: str
     start: str
     end: str
+    scope: str = ""
+    stack: tuple[str, ...] = ()
 
     @property
     def key(self) -> tuple[str, str, str, str]:
@@ -72,12 +90,19 @@ class _Role:
     def label(self) -> str:
         return f"{self.title} at {self.company} ({format_period(self.start, self.end)})"
 
+    @property
+    def name(self) -> str:
+        return f"{self.title} at {self.company}"
+
 
 @dataclass(frozen=True, slots=True)
 class _Facts:
     """Everything a change is judged on, keyed so that spelling noise does not count as change."""
 
     identity: dict[str, str]
+    details: dict[str, str]
+    """Location and work authorization, which a candidate words as they like."""
+
     links: dict[str, str]
     employers: dict[str, str]
     roles: dict[tuple[str, str, str, str], _Role]
@@ -86,8 +111,14 @@ class _Facts:
     """The dates each credential records: a degree's completion, a certification's year."""
 
     technologies: dict[str, Technology]
+    entries: tuple[Technology, ...]
+    """Every technology entry as written, a spelling recorded twice included."""
+
     forms: dict[str, str]
     """Every technology name and alias, mapped to the name of the entry that records it."""
+
+    projects: dict[str, tuple[str, tuple[str, ...]]]
+    """Every project, keyed by its name: the name as written, and its stack."""
 
     figures: dict[str, str]
     """Figures stated anywhere a resume can print from, as normalised value to written form."""
@@ -103,29 +134,34 @@ class _Facts:
 def _facts(profile: Profile, lexicon: Lexicon) -> _Facts:
     contact = profile.contact
     roles = [
-        _Role(tenure.company, role.title, role.start, role.end)
+        _Role(tenure.company, role.title, role.start, role.end, role.scope, role.stack)
         for tenure in profile.experience
         for role in tenure.roles
     ]
+    entries = tuple(item for group in profile.technologies for item in group.items)
     technologies: dict[str, Technology] = {}
     forms: dict[str, str] = {}
-    for group in profile.technologies:
-        for item in group.items:
-            name = _form(item.name)
-            technologies.setdefault(name, item)
-            for form in (item.name, *item.aliases):
-                forms.setdefault(_form(form), name)
+    for item in entries:
+        name = _form(item.name)
+        technologies.setdefault(name, item)
+        for form in _spellings(item):
+            forms.setdefault(_form(form), name)
     credentials, dated = _credentials(profile)
     return _Facts(
         identity={"name": contact.name, "email": contact.email, "phone": contact.phone},
+        details={"location": contact.location, "work_authorization": contact.work_authorization},
         links={_link(link.url): link.url for link in contact.links},
         employers={_company(tenure.company): tenure.company for tenure in profile.experience},
         roles={role.key: role for role in roles},
         credentials=credentials,
         dated=dated,
         technologies=technologies,
+        entries=entries,
         forms=forms,
-        figures=_figures(_prose(profile), lexicon),
+        projects={
+            _key(project.name): (project.name, project.stack) for project in profile.projects
+        },
+        figures=_figures(prose_of(profile), lexicon),
         note_figures=_figures(iter(profile.notes), lexicon),
         years=frozenset(date[:4] for date in _dates(profile) if _YEAR.match(date)),
         highlights=sum(len(role.highlights) for t in profile.experience for role in t.roles),
@@ -163,21 +199,6 @@ def _credential_entries(profile: Profile) -> Iterator[tuple[str, str, str]]:
         yield f"project: {_key(project.name)}", project.name, ""
 
 
-def _prose(profile: Profile) -> Iterator[str]:
-    """Yield every value a resume prints as a claim, rather than as a name, title or date."""
-    yield from (profile.contact.headline, profile.summary, *profile.target_roles)
-    for tenure in profile.experience:
-        yield from (tenure.summary, tenure.industry)
-        for role in tenure.roles:
-            yield role.scope
-            for highlight in role.highlights:
-                yield from (highlight.label, highlight.text, *highlight.tags)
-    yield from (entry.notes for entry in profile.education)
-    yield from (item.notes for item in (*profile.certifications, *profile.awards))
-    for project in profile.projects:
-        yield from (project.description, project.outcome)
-
-
 def _dates(profile: Profile) -> Iterator[str]:
     for tenure in profile.experience:
         for role in tenure.roles:
@@ -186,7 +207,7 @@ def _dates(profile: Profile) -> Iterator[str]:
     yield from (item.year for item in (*profile.certifications, *profile.awards))
 
 
-def _figures(texts: Iterator[str], lexicon: Lexicon) -> dict[str, str]:
+def _figures(texts: Iterable[str], lexicon: Lexicon) -> dict[str, str]:
     found: dict[str, str] = {}
     for text in texts:
         for value, raw in figures_in(text, lexicon).items():
@@ -201,6 +222,17 @@ def _words(text: str) -> tuple[str, ...]:
 
 def _key(text: str) -> str:
     return " ".join(_words(text))
+
+
+def _keys(texts: Iterable[str]) -> tuple[str, ...]:
+    return tuple(_key(text) for text in texts)
+
+
+def _content(text: str) -> frozenset[str]:
+    """Return the words of ``text`` that state its facts, stemmed: "rotations" is "rotation"."""
+    return frozenset(
+        stem(word) for word in _words(text) if word not in _STOPWORDS and len(word) > 1
+    )
 
 
 def _company(text: str) -> str:
@@ -228,6 +260,25 @@ def _within(claim: tuple[str, ...], known: tuple[str, ...]) -> bool:
     )
 
 
+def _mostly(words: frozenset[str], known: frozenset[str]) -> bool:
+    """Report whether more than half of ``words`` are ``known``: how a new highlight is held.
+
+    Rewording keeps most of a text's words and merging keeps all of them, while an invented
+    accomplishment brings its own. The bar is a majority rather than every word, because a writer
+    says "authored" where the candidate said "wrote".
+    """
+    return 2 * len(words & known) > len(words)
+
+
+def _half(words: frozenset[str], known: frozenset[str]) -> bool:
+    """Report whether at least half of ``words`` are ``known``: how a new contact detail is held.
+
+    A detail is a few words, and a writer adds the state to a city the candidate named ("Denver"
+    becomes "Denver, CO"), so half is enough; one invented word on its own is still caught.
+    """
+    return 2 * len(words & known) >= len(words)
+
+
 _CLAIM = {"exposure": 0, "working": 1, "": 2, "proficient": 3, "expert": 4}
 """How much each level lets a resume claim, which is not the order of ``LEVELS``.
 
@@ -250,6 +301,11 @@ class _Said:
     flat: str
     digits: str
     figures: frozenset[str]
+    content: frozenset[str]
+    """The answers' words that state facts, stemmed, which a new highlight is held to."""
+
+    largest: Decimal
+    """The largest quantity the answers state, which bounds a size an update writes in words."""
 
     @classmethod
     def of(cls, answers: str, lexicon: Lexicon) -> _Said:
@@ -258,6 +314,8 @@ class _Said:
             flat=" ".join(normalise(answers).casefold().split()),
             digits=_NON_DIGIT.sub("", answers),
             figures=frozenset(figures_in(answers, lexicon)),
+            content=_content(answers),
+            largest=largest_stated([answers]),
         )
 
     def names(self, text: str) -> bool:
@@ -289,11 +347,15 @@ def check_refinement(draft: Profile, refined: Profile) -> tuple[str, ...]:
     old, new = _facts(draft, lexicon), _facts(refined, lexicon)
     return (
         *_contact_kept(old, new),
+        *_headline_kept(draft, refined),
         *_employers(old, new, None),
         *_roles_merged(old, new),
         *_credentials_kept(old, new),
         *_technologies(old, new, None),
+        *_stacks_kept(draft, old, new),
         *_figures_kept(old, new),
+        *_sizes_kept(draft, refined, lexicon),
+        *_highlights_kept(draft, refined),
     )
 
 
@@ -303,6 +365,12 @@ def _contact_kept(old: _Facts, new: _Facts) -> list[str]:
         f"changes contact details"
         for field, value in new.identity.items()
         if value != old.identity[field]
+    ]
+    problems += [
+        f"changed contact.{field} from {old.details[field]!r} to {value!r}; refining never "
+        f"changes contact details"
+        for field, value in new.details.items()
+        if _key(value) != _key(old.details[field])
     ]
     problems += [
         f"added the link {url!r}, which the draft does not have"
@@ -315,6 +383,24 @@ def _contact_kept(old: _Facts, new: _Facts) -> list[str]:
         if key not in new.links
     ]
     return problems
+
+
+def _headline_kept(draft: Profile, refined: Profile) -> list[str]:
+    """Hold a reworded headline to the draft's words: it may agree with the roles, not outrank them.
+
+    Refining may bring the headline in line with the experience, so it is not held verbatim, but
+    the words it adds have to be words the draft already uses: "Senior Backend Engineer" may
+    become "Senior Backend Engineer, Payments", never "Principal Engineer".
+    """
+    added = _content(refined.contact.headline) - _content(draft.contact.headline)
+    if not added or _half(added, _vocabulary(draft)):
+        return []
+    return [
+        (
+            f"changed contact.headline to {refined.contact.headline!r}, which the draft's titles "
+            f"and text do not support; keep the headline to what the draft records"
+        )
+    ]
 
 
 def _roles_merged(old: _Facts, new: _Facts) -> list[str]:
@@ -408,6 +494,22 @@ def _lost(before: frozenset[str], after: frozenset[str]) -> list[str]:
     return sorted(date for date in before if date[:4] not in years)
 
 
+def _stacks_kept(draft: Profile, old: _Facts, new: _Facts) -> list[str]:
+    """Hold every stack to technologies the draft records: in its list, a stack, or its text.
+
+    A refinement may put a technology under the role whose work used it, so one the draft names
+    anywhere is not new; one it never names is, and a stack is where a resume prints it from.
+    """
+    known = set(old.forms) | {_form(item) for item in _stack_items(old)}
+    texts = [_words(text) for text in _texts(draft)]
+    return [
+        f"added {item!r} to the stack of {where}, which the draft does not record anywhere"
+        for where, stack in _stacks(new)
+        for item in stack
+        if _form(item) not in known and not any(_within(_words(item), text) for text in texts)
+    ]
+
+
 def _figures_kept(old: _Facts, new: _Facts) -> list[str]:
     problems = [
         f"introduced the figure {raw!r}, which the draft does not state"
@@ -421,6 +523,34 @@ def _figures_kept(old: _Facts, new: _Facts) -> list[str]:
         if value not in new.figures and value not in new.note_figures and value not in new.years
     ]
     return problems
+
+
+def _sizes_kept(draft: Profile, refined: Profile, lexicon: Lexicon) -> list[str]:
+    """Hold a size in words ("millions of users") to the largest quantity the draft states."""
+    largest = largest_stated(prose_of(draft))
+    return [
+        f"claimed {raw!r}, a size larger than any figure the draft states"
+        for text in prose_of(refined)
+        for raw, least in magnitudes_in(text, lexicon).items()
+        if least > largest
+    ]
+
+
+def _highlights_kept(draft: Profile, refined: Profile) -> list[str]:
+    """Hold every highlight the draft does not have word for word to the draft's own words.
+
+    Rewording, merging and moving a highlight keep most of its words, and a technology the draft
+    lists may become the accomplishment it really was. An accomplishment the draft never told is
+    told in words the draft does not use at that employer, and that is what is reported.
+    """
+    had = {_key(highlight.text) for _, highlight in _highlights(draft)}
+    known = {company: _vocabulary(draft, company) for company in _employer_keys(refined)}
+    return [
+        f"added the highlight {_brief(highlight)}, which nothing the draft records at that "
+        f"employer supports; keep each highlight to what the draft states"
+        for company, highlight in _highlights(refined)
+        if _key(highlight.text) not in had and not _mostly(_content(highlight.text), known[company])
+    ]
 
 
 # --- update from answers --------------------------------------------------------------------------
@@ -437,11 +567,15 @@ def check_update(before: Profile, after: Profile, answers: str) -> tuple[str, ..
     said = _Said.of(answers, lexicon)
     return (
         *_contact_said(old, new, said),
+        *_details_said(before, after, said),
         *_employers(old, new, said),
         *_roles_said(old, new, said),
         *_credentials_said(old, new, said),
         *_technologies(old, new, said),
-        *_figures_said(old, new, said),
+        *_stacks_said(old, new, said),
+        *_fields_said(before, after, said, lexicon),
+        *_scopes_said(old, new, said, lexicon),
+        *_highlights_said(before, after, said, lexicon),
     )
 
 
@@ -465,6 +599,22 @@ def _contact_said(old: _Facts, new: _Facts, said: _Said) -> list[str]:
         for key, url in old.links.items()
         if key not in new.links and not said.states(key)
     ]
+    return problems
+
+
+def _details_said(before: Profile, after: Profile, said: _Said) -> list[str]:
+    """Hold the words an update adds to a free-text contact detail to the answers' words.
+
+    Location, work authorization and the headline are written in the candidate's own phrasing,
+    so they are not compared verbatim. What the update adds to one has to be in the answers: an
+    answer about a salary cannot bring "active Top Secret clearance" with it.
+    """
+    problems: list[str] = []
+    for field in ("headline", *_DETAILS):
+        was, now = getattr(before.contact, field), getattr(after.contact, field)
+        added = _content(now) - _content(was)
+        if added and not _half(added, said.content):
+            problems.append(_unsaid(f"changed contact.{field} to {now!r}"))
     return problems
 
 
@@ -497,6 +647,16 @@ def _succeeds(role: _Role, gone: _Role) -> bool:
     """Report whether ``role`` is ``gone`` corrected: same employer, and same title or dates."""
     return _company(role.company) == _company(gone.company) and (
         _key(role.title) == _key(gone.title) or (role.start, role.end) == (gone.start, gone.end)
+    )
+
+
+def _predecessor(role: _Role, old: _Facts, new: _Facts) -> _Role | None:
+    """Return the role ``role`` was before the edit: itself, or the one it corrected."""
+    if role.key in old.roles:
+        return old.roles[role.key]
+    return next(
+        (gone for key, gone in old.roles.items() if key not in new.roles and _succeeds(role, gone)),
+        None,
     )
 
 
@@ -584,13 +744,157 @@ def _renames(before: str, after: str) -> bool:
     return 2 * len(words & set(_WORDS.findall(after.partition(":")[2]))) > len(words)
 
 
-def _figures_said(old: _Facts, new: _Facts, said: _Said) -> list[str]:
-    known = old.figures.keys() | old.note_figures.keys() | old.years | new.years | said.figures
-    return [
-        _unsaid(f"introduced the figure {raw!r}")
-        for value, raw in new.figures.items()
+def _stacks_said(old: _Facts, new: _Facts, said: _Said) -> list[str]:
+    """Hold every technology an update adds to a role's or a project's stack to the answers.
+
+    A stack says the technology was used there, which a resume then prints under that role, so
+    putting one in a stack is a claim even when the technology list already has it. Respelling
+    an item ("Kafka" for "Apache Kafka") adds nothing.
+    """
+    problems: list[str] = []
+    for role in new.roles.values():
+        previous = _predecessor(role, old, new)
+        had = _identities(previous.stack if previous else (), old, new)
+        problems += [
+            _unsaid(f"added {item!r} to the stack of {role.name}")
+            for item in role.stack
+            if _identity(item, old, new) not in had and not _tech_said(item, old, new, said)
+        ]
+    for key, (name, stack) in new.projects.items():
+        had = _identities(old.projects.get(key, (name, ()))[1], old, new)
+        problems += [
+            _unsaid(f"added {item!r} to the stack of {name}")
+            for item in stack
+            if _identity(item, old, new) not in had and not _tech_said(item, old, new, said)
+        ]
+    return problems
+
+
+def _identity(item: str, *facts: _Facts) -> str:
+    """Key a stack item by the technology entry that records it, so a respelling is no change."""
+    form = _form(item)
+    return next((every.forms[form] for every in facts if form in every.forms), form)
+
+
+def _identities(stack: Iterable[str], *facts: _Facts) -> frozenset[str]:
+    return frozenset(_identity(item, *facts) for item in stack)
+
+
+def _tech_said(item: str, old: _Facts, new: _Facts, said: _Said) -> bool:
+    """Report whether the answers name a stack item, under its own spelling or its entry's."""
+    if said.names(item):
+        return True
+    entries = [
+        facts.technologies[name]
+        for facts in (old, new)
+        if (name := _identity(item, facts)) in facts.technologies
+    ]
+    return any(_said_any(entry, said) for entry in entries)
+
+
+def _fields_said(before: Profile, after: Profile, said: _Said, lexicon: Lexicon) -> list[str]:
+    """Hold every figure in a field the update wrote to the answers, or to that field before it.
+
+    A figure that moved from another field is a figure the answers never gave this one: a new
+    accomplishment carrying another one's 38%, or a role's start year where the answer said 2022.
+    Highlights and scopes are matched to what they were by :func:`_highlights_said` and
+    :func:`_scopes_said`; every other field is found by its place. A field whose place went
+    (a credential the answer renamed) may carry its text, unchanged, to its new place.
+    """
+    was = {place: texts for place, _, texts in _fields(before)}
+    now = {place: (where, texts) for place, where, texts in _fields(after)}
+    moved = {_keys(texts) for place, texts in was.items() if place not in now}
+    problems: list[str] = []
+    for place, (where, texts) in now.items():
+        if _keys(texts) not in moved:
+            problems += _figures_said(where, texts, was.get(place, ()), said, lexicon)
+    return problems
+
+
+def _scopes_said(old: _Facts, new: _Facts, said: _Said, lexicon: Lexicon) -> list[str]:
+    """Hold every figure in a role's scope to the answers, or to that role's scope before.
+
+    A role the answer corrected keeps its scope; so does one whose title and dates both changed,
+    as long as its scope is the one a role that went had.
+    """
+    moved = {_key(role.scope) for key, role in old.roles.items() if key not in new.roles}
+    problems: list[str] = []
+    for role in new.roles.values():
+        if _key(role.scope) in moved:
+            continue
+        previous = _predecessor(role, old, new)
+        was = (previous.scope,) if previous else ()
+        where = f"the scope of {role.name}"
+        problems += _figures_said(where, (role.scope,), was, said, lexicon)
+    return problems
+
+
+def _highlights_said(before: Profile, after: Profile, said: _Said, lexicon: Lexicon) -> list[str]:
+    """Hold every highlight the update wrote: its figures, and its words when it is new.
+
+    A rewritten highlight may keep its own figures and add the answers'. A new one has only the
+    answers to draw on, and has to be told mostly in their words: an answer about on-call pages
+    cannot become an accomplishment about fraud detection.
+    """
+    by_text = {_key(highlight.text): highlight for _, highlight in _highlights(before)}
+    pairs, _ = _pairs(before, after)
+    rewritten = {pair.new: pair.old for pair in pairs}
+    problems: list[str] = []
+    for _, highlight in _highlights(after):
+        previous = by_text.get(_key(highlight.text)) or rewritten.get(highlight)
+        where = f"the highlight {_brief(highlight)}"
+        was = _highlight_texts(previous) if previous else ()
+        problems += _figures_said(where, _highlight_texts(highlight), was, said, lexicon)
+        if previous is None and not _mostly(_content(highlight.text), said.content):
+            problems.append(_unsaid(f"added the highlight {_brief(highlight)}"))
+    return problems
+
+
+def _figures_said(
+    where: str, texts: Sequence[str], previous: Sequence[str], said: _Said, lexicon: Lexicon
+) -> list[str]:
+    """Report each figure in ``texts`` that neither the answers nor ``previous`` state.
+
+    A size in words ("millions of users") may be no larger than a quantity either of them states.
+    """
+    if _keys(texts) == _keys(previous):
+        return []
+    known = said.figures | _figures(previous, lexicon).keys()
+    problems = [
+        _unsaid(f"introduced the figure {raw!r} in {where}")
+        for value, raw in _figures(texts, lexicon).items()
         if value not in known
     ]
+    largest = max(said.largest, largest_stated(previous))
+    problems += [
+        f"claimed {raw!r} in {where}, a size larger than anything the answers state"
+        for text in texts
+        for raw, least in magnitudes_in(text, lexicon).items()
+        if least > largest
+    ]
+    return problems
+
+
+def _fields(profile: Profile) -> Iterator[tuple[tuple[str, str], str, tuple[str, ...]]]:
+    """Yield every prose field but highlights and scopes: its place, its name, and its text."""
+    yield ("headline", ""), "the headline", (profile.contact.headline,)
+    yield ("summary", ""), "the summary", (profile.summary,)
+    yield ("target roles", ""), "the target roles", profile.target_roles
+    for tenure in profile.experience:
+        texts = (tenure.summary, tenure.industry)
+        yield ("employer", _company(tenure.company)), f"the description of {tenure.company}", texts
+    for key, label, notes in _notes(profile):
+        yield ("notes", key), f"the notes on {label!r}", (notes,)
+    for project in profile.projects:
+        texts = (project.description, project.outcome)
+        yield ("project", _key(project.name)), f"the project {project.name!r}", texts
+
+
+def _notes(profile: Profile) -> Iterator[tuple[str, str, str]]:
+    for entry in profile.education:
+        yield _key(f"{entry.credential} {entry.institution}"), entry.credential, entry.notes
+    for item in (*profile.certifications, *profile.awards):
+        yield _key(item.name), item.name, item.notes
 
 
 # --- shared by both -------------------------------------------------------------------------------
@@ -617,7 +921,12 @@ def _employers(old: _Facts, new: _Facts, said: _Said | None) -> list[str]:
 
 
 def _technologies(old: _Facts, new: _Facts, said: _Said | None) -> list[str]:
-    """Hold technologies to the old record: nothing new, nothing promoted, unless it was said."""
+    """Hold technologies to the old record: nothing new, nothing promoted, unless it was said.
+
+    An entry is held to the most any entry sharing one of its spellings claimed, so merging the
+    draft's "PostgreSQL" (no level) and "Postgres" (expert) into one entry may keep "expert"
+    under either name.
+    """
     problems: list[str] = []
     for item in new.technologies.values():
         mentioned = said is not None and _said_any(item, said)
@@ -629,19 +938,18 @@ def _technologies(old: _Facts, new: _Facts, said: _Said | None) -> list[str]:
                 if said is None
                 else _unsaid(what)
             )
-        previous = _counterpart(item, old)
-        if previous is None or mentioned:
+        ceiling = _ceiling(item, old)
+        if ceiling is None or mentioned:
             continue
+        level, years = ceiling
         rule = "refining never raises it" if said is None else "no answer says so"
-        if _rank(item.level) > _rank(previous.level):
+        if _rank(item.level) > _rank(level):
             problems.append(
-                f"raised {item.name} from {previous.level or 'no level'} to "
-                f"{item.level or 'no level'}; {rule}"
+                f"raised {item.name} from {level or 'no level'} to {item.level or 'no level'}; "
+                f"{rule}"
             )
-        if item.years > previous.years:
-            problems.append(
-                f"raised {item.name} from {previous.years:g} to {item.years:g} years; {rule}"
-            )
+        if item.years > years:
+            problems.append(f"raised {item.name} from {years:g} to {item.years:g} years; {rule}")
     if said is not None:
         problems += [
             _unsaid(f"dropped the technology {item.name!r}")
@@ -649,6 +957,18 @@ def _technologies(old: _Facts, new: _Facts, said: _Said | None) -> list[str]:
             if _counterpart(item, new) is None and not _said_any(item, said)
         ]
     return problems
+
+
+def _ceiling(item: Technology, facts: _Facts) -> tuple[str, float] | None:
+    """Return the highest level and years any entry sharing a spelling with ``item`` records."""
+    spellings = {_form(form) for form in _spellings(item)}
+    matches = [
+        entry for entry in facts.entries if spellings & {_form(form) for form in _spellings(entry)}
+    ]
+    if not matches:
+        return None
+    level = max((entry.level for entry in matches), key=_rank)
+    return level, max(entry.years for entry in matches)
 
 
 def _spellings(item: Technology) -> tuple[str, ...]:
@@ -672,14 +992,70 @@ def _dates_listed(dates: frozenset[str]) -> str:
     return " or ".join(sorted(dates)) or "no date"
 
 
+def _stacks(facts: _Facts) -> Iterator[tuple[str, tuple[str, ...]]]:
+    """Yield every stack: each role's, named by the role, and each project's."""
+    for role in facts.roles.values():
+        yield role.label, role.stack
+    yield from facts.projects.values()
+
+
+def _stack_items(facts: _Facts) -> Iterator[str]:
+    for _, stack in _stacks(facts):
+        yield from stack
+
+
+def _texts(profile: Profile) -> Iterator[str]:
+    """Yield every text the profile records about the career, notes aside."""
+    yield from prose_of(profile)
+    for tenure in profile.experience:
+        yield from (tenure.company, tenure.location)
+        for role in tenure.roles:
+            yield from (role.title, *role.stack)
+    for group in profile.technologies:
+        for item in group.items:
+            yield from _spellings(item)
+    for project in profile.projects:
+        yield from (project.name, *project.stack)
+
+
+def _employer_keys(profile: Profile) -> frozenset[str]:
+    return frozenset(_company(tenure.company) for tenure in profile.experience)
+
+
+def _vocabulary(profile: Profile, company: str | None = None) -> frozenset[str]:
+    """Return the words the profile uses, at one employer when ``company`` names one.
+
+    Every technology's spellings count wherever the words are wanted, because refining may turn
+    a technology that was really an accomplishment ("Scheduler rewrite") into the highlight.
+    """
+    texts = [
+        spelling
+        for group in profile.technologies
+        for item in group.items
+        for spelling in _spellings(item)
+    ]
+    if company is None:
+        texts += _texts(profile)
+    for tenure in profile.experience:
+        if company is None or _company(tenure.company) != company:
+            continue
+        texts += (tenure.company, tenure.industry, tenure.summary, tenure.location)
+        for role in tenure.roles:
+            texts += (role.title, role.scope, *role.stack)
+            for highlight in role.highlights:
+                texts += _highlight_texts(highlight)
+    return frozenset(word for text in texts for word in _content(text))
+
+
 # --- what changed, for the person -----------------------------------------------------------------
 def describe_changes(before: Profile, after: Profile) -> tuple[str, ...]:
     """Summarise, for the candidate, what an edit did to their profile: one line per kind."""
     lexicon = build_lexicon(before)
     old, new = _facts(before, lexicon), _facts(after, lexicon)
-    lines: list[str] = []
+    lines = _contact_changes(old, new)
     lines += [f"+ role: {role.label}" for key, role in new.roles.items() if key not in old.roles]
     lines += [f"- role: {role.label}" for key, role in old.roles.items() if key not in new.roles]
+    lines += _role_changes(old, new)
     lines += [f"+ {label}" for key, label in new.credentials.items() if key not in old.credentials]
     lines += [f"- {label}" for key, label in old.credentials.items() if key not in new.credentials]
     lines += [
@@ -698,11 +1074,52 @@ def describe_changes(before: Profile, after: Profile) -> tuple[str, ...]:
         lines.append("summary: rewritten")
     if before.contact.headline != after.contact.headline:
         lines.append(f"headline: {after.contact.headline}")
+    if before.target_roles != after.target_roles:
+        lines.append(f"target roles: {', '.join(after.target_roles) or 'none'}")
     resolved = [note for note in old.notes if note not in new.notes]
     added = [note for note in new.notes if note not in old.notes]
     if resolved or added:
         lines.append(f"notes: {len(old.notes)} → {len(new.notes)}")
     return tuple(lines)
+
+
+def _contact_changes(old: _Facts, new: _Facts) -> list[str]:
+    """Name every contact detail an edit changed, and every link it added or removed."""
+    values = {**old.identity, **old.details}
+    lines = [
+        f"{field.replace('_', ' ')}: {value or 'removed'}"
+        for field, value in {**new.identity, **new.details}.items()
+        if value != values[field]
+    ]
+    lines += [f"+ link: {url}" for key, url in new.links.items() if key not in old.links]
+    lines += [f"- link: {url}" for key, url in old.links.items() if key not in new.links]
+    return lines
+
+
+def _role_changes(old: _Facts, new: _Facts) -> list[str]:
+    """Name what an edit changed inside a role it kept: its stack and its scope."""
+    lines: list[str] = []
+    for role in new.roles.values():
+        previous = _predecessor(role, old, new)
+        if previous is None:
+            continue
+        lines += _stack_change(role.name, previous.stack, role.stack, old, new)
+        if _key(previous.scope) != _key(role.scope):
+            lines.append(f"{role.name}: scope: {role.scope or 'removed'}")
+    for key, (name, stack) in new.projects.items():
+        if key in old.projects:
+            lines += _stack_change(name, old.projects[key][1], stack, old, new)
+    return lines
+
+
+def _stack_change(
+    name: str, was: Sequence[str], now: Sequence[str], old: _Facts, new: _Facts
+) -> list[str]:
+    before, after = _identities(was, old, new), _identities(now, old, new)
+    added = [item for item in now if _identity(item, old, new) not in before]
+    removed = [item for item in was if _identity(item, old, new) not in after]
+    lines = [f"{name}: stack + {_listed(added)}"] if added else []
+    return lines + ([f"{name}: stack - {_listed(removed)}"] if removed else [])
 
 
 def _technology_changes(old: _Facts, new: _Facts) -> list[str]:
@@ -717,28 +1134,48 @@ def _technology_changes(old: _Facts, new: _Facts) -> list[str]:
         lines.append(f"  added: {_listed(added)}")
     for item in new.technologies.values():
         previous = _counterpart(item, old)
-        if previous is not None and previous.level != item.level:
+        if previous is None:
+            continue
+        if previous.level != item.level:
             lines.append(f"  {item.name}: {previous.level or 'no level'} → {item.level or 'none'}")
+        if previous.years != item.years:
+            lines.append(f"  {item.name}: {previous.years:g} → {item.years:g} years")
+        lines += _used_at_change(item.name, previous.used_at, item.used_at)
     return lines
 
 
-def _highlight_changes(before: Profile, after: Profile) -> tuple[list[str], list[str], list[str]]:
-    """Name the highlights an edit removed, added and edited, leaving out any it only moved.
+def _used_at_change(name: str, was: Sequence[str], now: Sequence[str]) -> list[str]:
+    added = [employer for employer in now if employer not in was]
+    removed = [employer for employer in was if employer not in now]
+    lines = [f"  {name}: used at + {_listed(added)}"] if added else []
+    return lines + ([f"  {name}: used at - {_listed(removed)}"] if removed else [])
+
+
+@dataclass(frozen=True, slots=True)
+class _Pair:
+    """A highlight an edit wrote, and the one it replaced, when it replaced one."""
+
+    new: Highlight
+    old: Highlight | None
+
+
+def _pairs(before: Profile, after: Profile) -> tuple[list[_Pair], list[Highlight]]:
+    """Pair each highlight an edit added or rewrote with the one it replaced, leaving out moves.
 
     A highlight has no id, so a new text is paired with a text the edit removed at the same
     employer: by label when there is one to match, then in order among texts that share most of
-    their words. A new text paired with nothing was added, and an old one was removed.
+    their words. Returns the pairs, and the old highlights paired with nothing, which went.
     """
     old, new = _highlights(before), _highlights(after)
     still = {_key(highlight.text) for _, highlight in new}
     had = {_key(highlight.text) for _, highlight in old}
     gone = [pair for pair in old if _key(pair[1].text) not in still]
     fresh = [pair for pair in new if _key(pair[1].text) not in had]
-    paired: set[int] = set()
+    replaced: dict[int, Highlight] = {}
     for by_label in (True, False):
         for index, (company, highlight) in enumerate(fresh):
             label = _key(highlight.label)
-            if index in paired or (by_label and not label):
+            if index in replaced or (by_label and not label):
                 continue
             match = next(
                 (
@@ -755,11 +1192,18 @@ def _highlight_changes(before: Profile, after: Profile) -> tuple[list[str], list
             )
             if match is not None:
                 gone.remove(match)
-                paired.add(index)
+                replaced[index] = match[1]
+    pairs = [_Pair(highlight, replaced.get(index)) for index, (_, highlight) in enumerate(fresh)]
+    return pairs, [highlight for _, highlight in gone]
+
+
+def _highlight_changes(before: Profile, after: Profile) -> tuple[list[str], list[str], list[str]]:
+    """Name the highlights an edit removed, added and edited, leaving out any it only moved."""
+    pairs, gone = _pairs(before, after)
     return (
-        [_brief(highlight) for _, highlight in gone],
-        [_brief(highlight) for index, (_, highlight) in enumerate(fresh) if index not in paired],
-        [_brief(highlight) for index, (_, highlight) in enumerate(fresh) if index in paired],
+        [_brief(highlight) for highlight in gone],
+        [_brief(pair.new) for pair in pairs if pair.old is None],
+        [_brief(pair.new) for pair in pairs if pair.old is not None],
     )
 
 
@@ -779,6 +1223,10 @@ def _highlights(profile: Profile) -> list[tuple[str, Highlight]]:
     ]
 
 
+def _highlight_texts(highlight: Highlight) -> tuple[str, ...]:
+    return (highlight.label, highlight.text, *highlight.tags)
+
+
 def _brief(highlight: Highlight) -> str:
     """Name a highlight in a line: its label, or the first few words of its text."""
     if highlight.label:
@@ -788,7 +1236,7 @@ def _brief(highlight: Highlight) -> str:
     return f'"{" ".join(words[:_BRIEF])}{more}"'
 
 
-def _listed(names: list[str]) -> str:
+def _listed(names: Sequence[str]) -> str:
     shown = ", ".join(names[:_SHOWN])
     more = len(names) - _SHOWN
     return f"{shown} and {more} more" if more > 0 else shown

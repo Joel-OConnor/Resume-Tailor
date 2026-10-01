@@ -1,4 +1,4 @@
-"""The standalone path's model operations: every place a language model writes something.
+"""The model operations: every place a language model writes something.
 
 Profile operations draft the master profile, refine it, and record the candidate's answers in it;
 document operations write the general resume with its LinkedIn profile, tailor a resume and cover
@@ -8,7 +8,7 @@ pass, and raise rather than hand back an answer that failed one.
 
 from __future__ import annotations
 
-from resume_tailor.agent.loop import Usage
+from resume_tailor.agent.loop import UnusableAnswerError, Usage
 from resume_tailor.agent.profiling import ProfileEdit, build_profile, refine_profile, update_profile
 from resume_tailor.agent.prompts import COVER_LETTER, LINKEDIN, RESUME
 from resume_tailor.agent.writing import (
@@ -28,6 +28,7 @@ __all__ = [
     "GeneralResult",
     "ProfileEdit",
     "TailorResult",
+    "UnusableAnswerError",
     "Usage",
     "build_profile",
     "edit_documents",

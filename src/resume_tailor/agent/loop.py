@@ -30,6 +30,7 @@ __all__ = [
     "Ask",
     "Progress",
     "Rejection",
+    "UnusableAnswerError",
     "Usage",
     "generate",
     "missing_sections",
@@ -42,6 +43,16 @@ __all__ = [
 
 type Progress = Callable[[str], None]
 """Report, one line at a time, what a long-running step is doing."""
+
+
+class UnusableAnswerError(ModelError):
+    """The model answered every attempt, and no answer passed its checks.
+
+    Kept apart from the model failing to answer at all (a relay request declined, a timeout, an
+    API error), which raises a plain :class:`~resume_tailor.errors.ModelError`: the two call for
+    different advice. An answer that kept claiming what the profile cannot support raises
+    :class:`~resume_tailor.errors.FabricationError` instead.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +156,7 @@ def _retrying(artefact: str, feedback: str, attempt: int, attempts: int) -> str:
     gist = first if len(first) <= _GIST else first[: _GIST - 1].rstrip() + "…"
     count = f"{len(problems)} problems, the first: " if len(problems) > 1 else ""
     return (
-        f"{artefact} did not pass its checks ({count}{gist}); trying again, {attempt} of {attempts}"
+        f"{artefact} did not pass the checks ({count}{gist}); trying again, {attempt} of {attempts}"
     )
 
 
@@ -158,7 +169,7 @@ def _exhausted(artefact: str, rejection: Rejection, attempts: int) -> ResumeTail
     )
     if rejection.fabricated:
         return FabricationError(msg)
-    return ModelError(msg)
+    return UnusableAnswerError(msg)
 
 
 # --- reading a reply ------------------------------------------------------------------------------
@@ -168,6 +179,8 @@ _MARKER = re.compile(r"^=====[ \t]*(?P<name>[A-Z][A-Z ]*[A-Z])[ \t]*=====[ \t]*$
 _FENCE = re.compile(r"^```[^\n]*\n(?P<body>.*?)\n```$", re.DOTALL)
 _ORNAMENT = "#*_` "
 _NO_QUESTIONS = frozenset({"none", "nothing", "n/a", "no questions"})
+_ITEM = re.compile(r"^(?:[-*•]|[0-9]{1,2}[.)])\s+")
+"""The marker that opens a list item: a bullet, or a number like "1." or "2)"."""
 
 
 def split_sections(text: str) -> dict[str, str]:
@@ -211,8 +224,25 @@ def one_line(text: str) -> str:
 
 
 def questions(text: str) -> tuple[str, ...]:
-    """Read a list section as one item per line, dropping a "none"."""
-    lines = (line.strip().lstrip("-*• ").strip() for line in text.splitlines())
+    """Read a list section as one item per line, dropping a "none".
+
+    A model wraps a long item onto a second line now and then. A line that is indented, or that
+    has no marker of its own under an item that had one, continues that item rather than starting
+    another, so half a question is never asked on its own.
+    """
+    items: list[str] = []
+    marked = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if marker := _ITEM.match(line):
+            items.append(line[marker.end() :].lstrip("-*• ").strip())
+            marked = True
+        elif items and (marked or raw[0].isspace()):
+            items[-1] = f"{items[-1]} {line}".strip()
+        else:
+            items.append(line.lstrip("-*• ").strip())
     return tuple(
-        line for line in lines if line and line.casefold().rstrip(".") not in _NO_QUESTIONS
+        item for item in items if item and item.casefold().rstrip(".") not in _NO_QUESTIONS
     )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pytest
+
 from resume_tailor.profile import loader
 from resume_tailor.review import (
     MAX_QUESTIONS,
@@ -185,6 +187,41 @@ def test_a_skill_listed_twice_is_dropped_from_the_later_group() -> None:
     assert applied[0].text == "mathematics"
 
 
+def test_a_skill_listed_twice_in_one_group_is_dropped_too() -> None:
+    text = CLEAN.replace(
+        "**Languages:** Analytical Notation, Mathematics",
+        "**Languages:** Analytical Notation, Mathematics, analytical notation\n"
+        "**Theory:** Logic, Mathematics",
+    )
+    fixed, applied = apply_fixes(text)
+    assert "**Languages:** Analytical Notation, Mathematics\n" in fixed
+    assert "**Theory:** Logic\n" in fixed
+    assert [(finding.rule, finding.text) for finding in applied] == [
+        ("duplicate-skill", "analytical notation"),
+        ("duplicate-skill", "Mathematics"),
+    ]
+
+
+def test_a_skills_line_with_the_colon_after_the_bold_is_fixed_in_its_own_form() -> None:
+    """``**Label**: items`` is a skills line too; a fix keeps the colon where the writer put it."""
+    text = CLEAN.replace(
+        "**Languages:** Analytical Notation, Mathematics",
+        "**Languages**: Analytical Notation, Mathematics, Mathematics\n**Theory**: Mathematics",
+    )
+    fixed, applied = apply_fixes(text)
+    assert "**Languages**: Analytical Notation, Mathematics\n**Theory**:\n" in fixed
+    assert [finding.rule for finding in applied] == ["duplicate-skill", "duplicate-skill"]
+
+
+def test_too_many_skills_counts_lines_with_the_colon_after_the_bold() -> None:
+    items = ", ".join(f"Skill{index}" for index in range(45))
+    text = CLEAN.replace(
+        "**Languages:** Analytical Notation, Mathematics", f"**Languages**: {items}"
+    )
+    found = [finding for finding in review_resume(text).findings if finding.rule == "many-skills"]
+    assert [finding.text for finding in found] == [items]
+
+
 def test_a_group_left_with_nothing_keeps_its_label() -> None:
     text = CLEAN.replace(
         "**Languages:** Analytical Notation, Mathematics",
@@ -340,9 +377,50 @@ def test_format_review_lists_what_was_fixed_and_what_is_still_advised() -> None:
         applied=(Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),),
     )
     text = format_review(review, title="Review")
-    assert text.startswith("Review: 1 fixed · 1 suggestion\n")
-    assert '  ~ line 12  tense: bullets switch tense\n      "Acme – Engineer"' in text
-    assert "What did this achieve?" not in text, "questions are asked, not listed here"
+    assert text == (
+        "Review: 1 fixed · 1 suggestion\n"
+        "  ✓ dates: an en dash\n"
+        '      "2020 - now"\n'
+        "  ~ line 12  tense: bullets switch tense\n"
+        '      "Acme – Engineer"\n'
+    ), "each fix says what it changed; questions are asked, not listed here"
+
+
+def test_a_fix_that_removed_a_skill_names_the_skill() -> None:
+    """The fix that drops content is the one the candidate most needs to see."""
+    text = CLEAN.replace(
+        "**Languages:** Analytical Notation, Mathematics",
+        "**Languages:** Analytical Notation, Mathematics\n**Theory:** Mathematics, Logic",
+    )
+    fixed, applied = apply_fixes(text)
+    assert format_review(Review(review_resume(fixed).findings, applied)) == (
+        "Review: 1 fixed · 0 suggestions\n"
+        "  ✓ duplicate-skill: listed twice in Skills, so the repeat was removed\n"
+        '      "Mathematics"\n'
+    )
+
+
+def test_fixes_of_one_kind_are_listed_once_with_the_first_few_quoted() -> None:
+    long = "Cut the cost of the nightly batch run by rewriting the scheduler from scratch"
+    applied = (
+        *(
+            Finding("full-stop", Level.FIX, line, f"{long} {line}", "added a full stop", "")
+            for line in range(10, 15)
+        ),
+        Finding("whitespace", Level.FIX, 3, "", "removed doubled or trailing spaces", ""),
+    )
+
+    text = format_review(Review(applied=applied))
+
+    assert text == (
+        "Review: 6 fixed · 0 suggestions\n"
+        "  ✓ full-stop: added a full stop (5 lines)\n"
+        '      "Cut the cost of the nightly batch run by rewriting the sche…"\n'
+        '      "Cut the cost of the nightly batch run by rewriting the sche…"\n'
+        '      "Cut the cost of the nightly batch run by rewriting the sche…"\n'
+        "      … and 2 more\n"
+        "  ✓ whitespace: removed doubled or trailing spaces\n"
+    )
 
 
 def test_a_finding_without_a_line_or_quote_prints_without_them() -> None:
@@ -401,6 +479,19 @@ def test_profile_review_turns_notes_into_questions() -> None:
     assert [(f.rule, f.message) for f in questions] == [("note", "Confirm the phone number.")]
 
 
+def test_notes_come_before_roles_with_no_highlights() -> None:
+    """The notes are ordered most consequential first; a list of early jobs must not bury them."""
+    data = {
+        **MINIMAL,
+        "experience": [
+            *MINIMAL["experience"],
+            _employer("Shop", {"title": "Developer", "start": "2010", "end": "2012"}),
+        ],
+        "notes": ["Was it 38% or 45%?"],
+    }
+    assert [f.rule for f in audit(data).questions] == ["note", "no-highlights"]
+
+
 def test_profile_review_flags_what_would_print_badly() -> None:
     data = {
         **MINIMAL,
@@ -442,6 +533,9 @@ def test_profile_review_flags_what_would_print_badly() -> None:
     ]
     assert "'python' appears 2 times" in review.advice[3].message
     assert "2 technologies have no level (Go, python)" in review.advice[-1].message
+    assert "add a level by hand (expert, proficient, working or exposure) to each one you know" in (
+        review.advice[-1].message
+    ), "only the candidate can settle it, so the advice says how"
     assert [f.rule for f in review.questions] == ["no-highlights"]
     assert "Translator at Analytical Engine Programme" in review.questions[0].message
 
@@ -568,6 +662,29 @@ def test_a_highlight_mentioning_a_year_after_its_role_ended_is_flagged() -> None
     ]
 
 
+def test_a_number_that_only_looks_like_a_year_is_not_read_as_one() -> None:
+    """2048-bit keys under a role that ended in 2022 belong exactly where they are."""
+    data = {
+        **MINIMAL,
+        "experience": [
+            _employer(
+                "Acme",
+                _held("Lead", "2022-06", "present", "Led it."),
+                _held(
+                    "Engineer",
+                    "2019-01",
+                    "2022-06",
+                    "Rotated the pipeline's 2048-bit signing keys with no downtime.",
+                    "Held p99 under 2000ms and saved $2050 a month.",
+                    "Grew traffic 2030% in a year.",
+                    "Set the roadmap through 2031.",
+                ),
+            )
+        ],
+    }
+    assert advised(data) == [], "a unit, an amount, a percentage and a year still to come"
+
+
 def test_a_highlight_recorded_twice_is_flagged_even_when_reworded() -> None:
     data = {
         **MINIMAL,
@@ -691,6 +808,42 @@ def test_an_answer_that_declines_gives_the_profile_nothing() -> None:
         assert not Answer(question, declined).substantive, declined
 
 
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        ("Have you done on-call?", "Nope, never done on-call."),
+        ("Have you used Kafka?", "No, I have not."),
+        ("Have you used Apache Spark?", "I'm not sure."),
+        ("Have you used Apache Spark?", "Probably not."),
+        ("What did this achieve?", "I’m not sure, I don’t remember the numbers."),
+        ("Have you used Kafka?", "I'm afraid not, sorry."),
+        ("Have you used Kafka?", "Not that I know of."),
+        ("Have you used Kafka?", "Nothing comes to mind."),
+    ],
+)
+def test_a_decline_or_a_hedge_worded_as_a_sentence_gives_nothing(
+    question: str, answer: str
+) -> None:
+    assert not Answer(Question(question), answer).substantive
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        ("Have you led a migration?", "No, but I led the migration in 2021"),
+        ("Have you led a migration?", "No, but I led the payments migration."),
+        ("Was it RabbitMQ?", "No, it was Kafka."),
+        ("Did you use Kafka or Kinesis?", "Not Kafka, Kinesis."),
+        ("Did you use Kafka or Kinesis?", "Not Kafka but Kinesis."),
+        ("What did the rewrite achieve?", "Never had an outage after the rewrite."),
+        ("What did the rewrite achieve?", "None of the 12 services went down."),
+        ("Have you used Terraform?", "Notably, yes: two years."),
+    ],
+)
+def test_an_answer_that_opens_with_a_no_but_says_more_is_a_fact(question: str, answer: str) -> None:
+    assert Answer(Question(question), answer).substantive
+
+
 def test_what_an_answer_establishes_includes_the_question_it_accepts() -> None:
     """A yes to "Have you used Kafka?" establishes Kafka; a no establishes nothing."""
     answers = (
@@ -704,6 +857,15 @@ def test_what_an_answer_establishes_includes_the_question_it_accepts() -> None:
         "No.\nNot really, only a tutorial.\nI haven't.\nHow big was the team?\nTwelve.\n"
         "Have you used Terraform?\nNotably, yes: two years."
     )
+
+
+def test_an_unsure_answer_never_licenses_what_it_was_asked() -> None:
+    """An "I'm not sure" to "Have you used Apache Spark?" must not let an update add Spark."""
+    answers = (
+        Answer(Question("Have you used Apache Spark?"), "I’m not sure, maybe at Cedar."),
+        Answer(Question("Which year did it ship?"), "Probably 2019."),
+    )
+    assert said(answers) == "I’m not sure, maybe at Cedar.\nProbably 2019."
 
 
 # --- LinkedIn -------------------------------------------------------------------------------------
@@ -743,6 +905,38 @@ def test_a_missing_linkedin_section_is_named() -> None:
         "the ## Experience section is missing",
         "the ## Skills section is missing",
     )
+
+
+def test_top_skills_written_without_a_label_are_still_counted() -> None:
+    unlabelled = LINKEDIN.replace(
+        "**Top Skills:** Python, Go", "Python, Go, Rust, Haskell, Scala, Elixir, Zig"
+    )
+    assert check_linkedin(unlabelled) == ("7 top skills; LinkedIn pins at most 5",)
+    bulleted = LINKEDIN.replace(
+        "**Top Skills:** Python, Go", "- Python, Go, Rust\n- Zig · OCaml · Elm"
+    )
+    assert check_linkedin(bulleted) == ("6 top skills; LinkedIn pins at most 5",)
+
+
+def test_a_label_with_the_colon_after_the_bold_is_read_like_any_other() -> None:
+    """``**Skills**: a`` is a skills line, not a sentence, and not part of a role's description."""
+    one = LINKEDIN.replace(
+        "**Top Skills:** Python, Go", "**Top Skills**: Python, Go, Rust, Zig, Elm"
+    )
+    assert check_linkedin(one.replace("Elm", "Elm, OCaml")) == (
+        "6 top skills; LinkedIn pins at most 5",
+    )
+    assert check_linkedin(one) == ()
+    long_skills = "**Skills**: " + ", ".join(["Python"] * 700)
+    described = LINKEDIN.replace("**Skills:** Python\n\n## Skills", f"{long_skills}\n\n## Skills")
+    assert check_linkedin(described) == (), "a role's skills line is not its description"
+
+
+def test_a_plain_sentence_in_a_skills_section_is_not_counted_as_skills() -> None:
+    introduced = LINKEDIN.replace(
+        "**Top Skills:** Python, Go", "The five I am known for:\n**Top Skills:** A, B, C, D, E"
+    )
+    assert check_linkedin(introduced) == ()
 
 
 def test_every_linkedin_limit_is_enforced() -> None:

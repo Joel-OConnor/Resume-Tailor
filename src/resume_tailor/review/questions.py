@@ -32,12 +32,47 @@ _NOTHING = frozenset(
 )
 """Answers that decline: kept in the record, but they give the profile nothing to add."""
 
-_DECLINE = re.compile(
-    r"^\s*(?:no|nope|not|never|none|nothing|n/a|i (?:have|had|did|do)(?:n'?t| not)|"
-    r"(?:have|had|did|do)n'?t)\b",
-    re.IGNORECASE,
+_APOSTROPHES = str.maketrans("‘’ʼ`", "''''")
+"""Typographic apostrophes, folded so "I’m not sure" reads like "I'm not sure"."""
+
+_REFUSAL = (
+    r"no|nope|nah|never|none|nothing|not|n/a|idk|dunno|unsure|skip|pass"
+    r"|maybe|perhaps|possibly|probably"
+    r"|i'?m not|i am not"
+    r"|(?:i )?(?:have|had|did|do|does|was|were|is|are|could|would)(?:n'?t| not)"
+    r"|(?:i )?(?:can'?t|cannot|can not|won'?t|will not)"
 )
+"""The ways an answer opens when it turns its question down, or is unsure of the answer."""
+
+_DECLINE = re.compile(rf"^\s*(?:{_REFUSAL})\b")
 """The opening of an answer that turns its question down, however it goes on."""
+
+_CLAUSES = re.compile(
+    r"[,;:.!?()]+|\s[-\u2013\u2014]+\s|\s(?=(?:but|though|although|however|except|instead|only)\b)"
+)
+"""Where one clause of an answer ends: punctuation, a spaced dash, or a turn like "but"."""
+
+_TURN = re.compile(r"^(?:but|though|although|however|except|instead|only)\s+")
+_TOKENS = re.compile(r"[a-z0-9]+(?:['/][a-z0-9]+)*")
+_REFUSING = frozenset(
+    {"no", "nope", "nah", "never", "none", "nothing", "not", "n/a", "idk", "dunno", "unsure"}
+    | {"maybe", "perhaps", "possibly", "probably", "cannot", "dont", "didnt", "havent", "cant"}
+)
+"""Words that decline or hedge wherever they stand, besides every word ending in "n't"."""
+
+_FILLER = frozenset(
+    {"i", "i'm", "im", "i've", "i'd", "me", "my", "myself", "we", "our", "you", "it", "it's"}
+    | {"that", "this", "those", "them", "there", "one", "any", "anything", "something", "thing"}
+    | {"a", "an", "the", "of", "in", "on", "at", "to", "for", "about", "with", "as", "so", "far"}
+    | {"am", "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did"}
+    | {"done", "used", "use", "using", "worked", "work", "working", "can", "could", "would"}
+    | {"say", "tell", "share", "recall", "remember", "know", "think", "idea", "clue", "mind"}
+    | {"sure", "certain", "aware", "afraid", "sorry", "unfortunately", "sadly", "honestly"}
+    | {"really", "all", "much", "yet", "ever", "before", "either", "personally", "comes", "come"}
+    | {"exact", "exactly", "number", "numbers", "figure", "figures", "detail", "details"}
+    | {"specifics", "offhand", "experience", "thanks", "thank", "well", "too", "very"}
+)
+"""Words that carry no fact of their own in an answer that declines: "I'm afraid not, sorry"."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +95,16 @@ class Answer:
 
     @property
     def substantive(self) -> bool:
-        """True when the answer gives a fact, rather than declining."""
-        folded = " ".join(self.text.casefold().split()).rstrip(".!")
-        return bool(folded) and folded not in _NOTHING
+        """True when the answer gives a fact, rather than declining or saying it is unsure.
+
+        An answer declines when all of it does: "Nope, never done on-call." and "I'm not sure, I
+        don't remember the numbers." give the profile nothing to record. One clause that says
+        something more is enough to make it a fact: "No, but I led the migration in 2021".
+        """
+        folded = _fold(self.text).rstrip(".!")
+        if not folded or folded in _NOTHING:
+            return False
+        return not _declines(folded, self.question.text)
 
 
 def gather(*groups: Iterable[Question], limit: int = MAX_QUESTIONS) -> tuple[Question, ...]:
@@ -93,9 +135,54 @@ def said(answers: Iterable[Answer]) -> str:
 
     The candidate's own words always count. The question counts too when the answer accepts it,
     because "Yes, two years at Acme" to "Have you used Kafka?" establishes Kafka without naming it.
-    It never counts when the answer declines, so a "Not really" cannot license what it was asked.
+    It never counts when the answer declines or hedges, so neither a "Not really" nor an "I'm not
+    sure" can license what it was asked.
     """
     return "\n".join(
-        answer.text if _DECLINE.match(answer.text) else f"{answer.question.text}\n{answer.text}"
+        answer.text
+        if _DECLINE.match(_fold(answer.text))
+        else f"{answer.question.text}\n{answer.text}"
         for answer in answers
     )
+
+
+def _fold(text: str) -> str:
+    """Lowercase ``text``, straighten its apostrophes, and collapse its whitespace."""
+    return " ".join(text.translate(_APOSTROPHES).casefold().split())
+
+
+def _declines(folded: str, question: str) -> bool:
+    """Report whether every clause of a folded answer declines or hedges, and one at least does.
+
+    A clause that opens by turning the question down may go on to repeat the question's own words
+    ("never done on-call"); any other word of substance, or any digit, is a fact.
+    """
+    asked = frozenset(_TOKENS.findall(_fold(question)))
+    refused = False
+    for part in _CLAUSES.split(folded):
+        clause = _TURN.sub("", part.strip())
+        words = _TOKENS.findall(clause)
+        if not words:
+            continue
+        if any(char.isdigit() for char in clause):
+            return False
+        if opener := _DECLINE.match(clause):
+            rest = _TOKENS.findall(clause[opener.end() :])
+            if not all(_empty(word) or word in asked for word in rest):
+                return False
+            refused = True
+        elif all(_empty(word) for word in words):
+            refused = refused or any(_refusing(word) for word in words)
+        else:
+            return False
+    return refused
+
+
+def _empty(word: str) -> bool:
+    """Report whether ``word`` carries no fact in a declining answer."""
+    return word in _FILLER or _refusing(word)
+
+
+def _refusing(word: str) -> bool:
+    """Report whether ``word`` declines or hedges on its own: "never", "probably", "haven't"."""
+    return word in _REFUSING or word.endswith("n't")

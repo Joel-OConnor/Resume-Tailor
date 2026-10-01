@@ -17,11 +17,13 @@ Great things to add:
 - **Recommendations / peer feedback**: useful phrasing and proof points.
 
 Don't worry about formatting or duplication: get it in here and run `make profile`. Building the
-profile merges what repeats and drops what isn't a career fact. It names every file it read and
-every one it couldn't (a scanned PDF has no text in it, so add a text or Word version instead).
+profile merges what repeats and drops what isn't a career fact. It names every file it read, and
+every one it couldn't with the reason: a scanned PDF has no text in it, and an old `.doc` or an
+`.rtf` isn't read at all, so add a text or Word (`.docx`) version of those instead.
 
 `answers.md` is written by the tool: every question you've answered, during a profile build or a
 review, is logged there. Leave it in place so the next rebuild keeps your answers.
 
 Keeping your documents somewhere else? `.venv/bin/resume-tailor profile build --documents DIR`
-builds from that folder instead.
+builds from that folder instead, and logs your answers in `DIR/answers.md` so the next build from
+there keeps them.

@@ -61,7 +61,7 @@ def load(path: Path = DEFAULT_PROFILE_PATH) -> Profile:
         msg = f"cannot read {path}: {exc.strerror or exc}"
         raise ProfileError(msg) from exc
     except UnicodeDecodeError as exc:
-        msg = f"{path} is not UTF-8 text — re-save it as UTF-8"
+        msg = f"{path} is not UTF-8 text: re-save it as UTF-8"
         raise ProfileError(msg) from exc
     return loads(text)
 
@@ -167,7 +167,7 @@ def _coerce_str(value: object, path: str) -> str:
     """
     if not isinstance(value, str):
         quotable = (bool, int, float, datetime.date, datetime.datetime)
-        hint = " — quote it" if isinstance(value, quotable) else ""
+        hint = " (quote it)" if isinstance(value, quotable) else ""
         msg = f"expected text, got {_kind(value)}{hint}"
         raise ProfileError(msg, path)
     if value != value.strip():

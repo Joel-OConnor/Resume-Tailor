@@ -33,8 +33,9 @@ from resume_tailor.documents.blocks import (
     Span,
     is_contact_line,
     is_note,
+    title_of,
 )
-from resume_tailor.render.docx_common import add_spans, set_indent, set_spacing
+from resume_tailor.render.docx_common import add_spans, set_indent, set_properties, set_spacing
 from resume_tailor.render.emphasis import entry_spans
 from resume_tailor.render.html_common import FONT_STACK, page, spans_to_html
 
@@ -121,6 +122,7 @@ def render_docx(document: Document, out: Path) -> None:
     for block in document.blocks:
         _add_block(docx, block, previous)
         previous = block
+    set_properties(docx, document)
     docx.save(str(out))
 
 
@@ -192,9 +194,11 @@ CSS = f"""
 @page {{ size: Letter; margin: {PAGE_MARGIN_IN[0]}in {PAGE_MARGIN_IN[1]}in; }}
 * {{ box-sizing: border-box; }}
 /* Every gap is a margin-TOP and every bottom margin is 0, so CSS collapsing and Word's additive
-   spacing produce the same number. line-height is absolute for the same reason. */
+   spacing produce the same number. line-height is absolute for the same reason. A word too long
+   for its line (a long email or URL) breaks at the edge, as Word breaks it, instead of running
+   past the margin. */
 body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
-        color: #111; margin: 0; }}
+        color: #111; margin: 0; overflow-wrap: anywhere; }}
 /* Arial has two weights, regular and bold, which is also all a .docx run can say, so no rule
    here names a weight between them. An entry heading's bold comes from its spans, as in Word. */
 h1, h2, h3, p, ul, li, div {{ margin: 0; }}
@@ -213,12 +217,17 @@ h3 {{ font-size: {BODY_PT}pt; font-weight: 400; margin-top: {GAP_PT["entry"]}pt;
 p {{ font-size: {PROSE_PT}pt; line-height: {PROSE_LINE_PT}pt; margin-top: {GAP_PT["para"]}pt; }}
 p.note {{ font-size: {BODY_PT}pt; line-height: {LINE_PT}pt; padding-left: {NOTE_INDENT_IN}in;
           margin-top: {GAP_PT["note"]}pt; }}
-/* Every bullet draws its glyph at the margin and hangs its text past it, like the .docx
-   "List Bullet" paragraphs. The first of a run stands off from what precedes it. */
+/* Every bullet draws its glyph at the margin and hangs its text past it, with the left indent
+   and negative first-line indent of the .docx "List Bullet" paragraphs. The glyph stays in the
+   text flow: a positioned box is painted after everything else, so Chrome would write each
+   bullet's text last and a parser would read every accomplishment under the final heading.
+   The first of a run stands off from what precedes it. */
 ul {{ padding: 0; list-style: none; }}
-li {{ position: relative; padding-left: {BULLET_HANGING_IN}in; margin-top: {GAP_PT["bullet"]}pt; }}
+li {{ padding-left: {BULLET_HANGING_IN}in; text-indent: -{BULLET_HANGING_IN}in;
+      margin-top: {GAP_PT["bullet"]}pt; }}
 li:first-child {{ margin-top: {GAP_PT["bullet-first"]}pt; }}
-li::before {{ content: "{BULLET_GLYPH}"; position: absolute; left: 0; }}
+li::before {{ content: "{BULLET_GLYPH}"; display: inline-block; width: {BULLET_HANGING_IN}in;
+              text-indent: 0; }}
 body > :first-child {{ margin-top: 0; }}
 """
 
@@ -234,7 +243,7 @@ def render_html(document: Document) -> str:
         body.append(_html_block(block))
     if in_list:
         body.append("</ul>")
-    return page(document.name or "Resume", CSS, "".join(body))
+    return page(title_of(document), CSS, "".join(body))
 
 
 def _html_block(block: Block) -> str:

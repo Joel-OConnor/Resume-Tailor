@@ -25,6 +25,8 @@ __all__ = [
     "Span",
     "is_contact_line",
     "is_note",
+    "is_sectioned",
+    "title_of",
 ]
 
 
@@ -74,7 +76,7 @@ class Meta:
 
 @dataclass(frozen=True, slots=True)
 class SkillLine:
-    """A ``**Category:** item, item`` line inside a skills section."""
+    """A ``**Category:** item, item`` line (or ``**Category**: item``) in a skills section."""
 
     label: str
     items: tuple[Span, ...]
@@ -160,3 +162,17 @@ class Document:
                 current.append(block)
         groups.append(SectionGroup(title, tuple(current)))
         return tuple(groups)
+
+
+def is_sectioned(document: Document) -> bool:
+    """Report whether this is a resume (it has ``## `` sections) rather than a cover letter."""
+    return any(isinstance(block, Section) for block in document.blocks)
+
+
+def title_of(document: Document) -> str:
+    """Return what the file is, for its title: "Ada Lovelace Resume", "Ada Lovelace Cover Letter".
+
+    The .docx properties and the PDF share it, so both files name themselves the same way.
+    """
+    kind = "Resume" if is_sectioned(document) else "Cover Letter"
+    return f"{document.name} {kind}".strip()

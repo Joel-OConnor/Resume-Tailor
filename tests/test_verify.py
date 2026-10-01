@@ -1093,6 +1093,108 @@ def test_a_prose_line_inside_the_skills_section_is_left_alone(profile: Profile) 
     assert verdict.ok, format_violations(verdict)
 
 
+@pytest.mark.parametrize(
+    ("section", "invented"),
+    [
+        ("## Skills\nPython, Go, Rust", ["Rust"]),
+        ("## Skills\nPython · Go | Rust", ["Rust"]),
+        ("## Skills\nLanguages: Python, Rust", ["Rust"]),
+        ("## Skills\nLanguages: Rust", ["Rust"]),
+        ("## Skills\n- Languages: Python, Rust", ["Rust"]),
+        ("## Skills\n- **Languages:** Python, Rust", ["Rust"]),
+        ("## Skills\n**Languages**: Python, Rust", ["Rust"]),
+        ("## Skills\n- Tech Stack: Go, Rust", ["Rust"]),
+        ("## Top Skills\nRust, Haskell, Python", ["Haskell", "Rust"]),
+        ("## Top Skills\nTop Skills: Python, Haskell", ["Haskell"]),
+        ("## Skills\nPython, Infrastructure-as-a-service", ["Infrastructure-as-a-service"]),
+    ],
+)
+def test_a_skills_list_is_a_claim_however_it_is_dressed(
+    profile: Profile, section: str, invented: list[str]
+) -> None:
+    """A bare list, a plain label, a bullet or a bold label outside its colon all claim skills.
+
+    LinkedIn's Top Skills and Skills sections land here too, written the same ways.
+    """
+    verdict = verify_resume(f"# Jordan Rivera\n\n{section}\n", profile)
+    assert sorted(_texts(verdict)) == invented
+    assert set(_kinds(verdict)) == {"technology"}
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "## Skills\nPython, Go, SQL",
+        "## Top Skills\nPython · Go · AWS · Kubernetes · CI/CD",
+        "## Skills\nLanguages: Python, Go",
+        "## Skills\n- Languages: Python, Go",
+        "## Skills\n- **Languages:** Python, Go",
+        "## Skills\n**Languages**: Python, Go",
+        "## Skills\nComfortable across the stack and happy in ambiguity.",
+    ],
+)
+def test_a_true_skills_list_passes_however_it_is_dressed(profile: Profile, section: str) -> None:
+    """A label is a category, never a claim, and a sentence with no list in it is left alone."""
+    verdict = verify_resume(f"# Jordan Rivera\n\n{section}\n", profile)
+    assert verdict.ok, format_violations(verdict)
+
+
+def test_a_skills_line_under_a_role_with_its_colon_outside_the_bold_is_checked(
+    profile: Profile,
+) -> None:
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Experience
+
+        ### Northwind Payments — Senior Backend Engineer
+        Mar 2021 – Present
+        **Skills**: Go, Python, Rust
+        """,
+        profile,
+    )
+    assert _texts(verdict) == ["Rust"]
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        "Infrastructure-as-code (Terraform)",
+        "infrastructure as code, Terraform",
+        "Test Driven Development",
+        "test-driven development",
+        "Test-Driven-Development",
+    ],
+)
+def test_a_hyphen_and_a_space_are_one_spelling(items: str) -> None:
+    """The posting's "infrastructure-as-code" is the profile's "infrastructure as code"."""
+    terraform = {"name": "Terraform", "aliases": ["infrastructure as code"]}
+    technologies = [*_TECHNOLOGIES, {"group": "Infrastructure", "items": [terraform]}]
+    profile = load_mapping(_mapping(technologies=technologies))
+    verdict = verify_resume(f"# Jordan Rivera\n\n## Skills\n**Practices:** {items}\n", profile)
+    assert verdict.ok, format_violations(verdict)
+
+
+def test_a_stack_note_may_hyphenate_what_the_role_s_stack_spells_with_spaces() -> None:
+    data = _mapping()
+    data["experience"][0]["roles"][0]["stack"] = ["Go", "Event driven design"]
+    verdict = _verify(
+        """\
+        # Jordan Rivera
+
+        ## Experience
+
+        ### Northwind Payments — Senior Backend Engineer
+        Mar 2021 – Present
+        - Rebuilt the settlement pipeline.
+        *Tech Stack — Go, Event-driven design*
+        """,
+        load_mapping(data),
+    )
+    assert verdict.ok, format_violations(verdict)
+
+
 def test_a_product_written_without_its_vendor_is_still_the_recorded_one() -> None:
     """Inside "AWS (…)", "Aurora Serverless" is the profile's own "AWS Aurora Serverless"."""
     technologies = [
@@ -1413,7 +1515,10 @@ def test_a_quantity_after_a_product_name_is_still_a_metric(profile: Profile) -> 
     ],
 )
 def test_a_quantity_after_a_metric_acronym_is_still_a_metric(profile: Profile, bullet: str) -> None:
-    """MTTR, NPS and ARR are what a result is measured in, not products with versions."""
+    """MTTR, NPS and ARR are what a result is measured in, not products with versions.
+
+    "In two years" is a second unsupported figure, which is reported after the first.
+    """
     verdict = _verify(
         f"""\
         # Jordan Rivera
@@ -1426,7 +1531,8 @@ def test_a_quantity_after_a_metric_acronym_is_still_a_metric(profile: Profile, b
         """,
         profile,
     )
-    assert _kinds(verdict) == ["metric"]
+    assert set(_kinds(verdict)) == {"metric"}
+    assert _texts(verdict)[0][:1].isdigit(), "the figure after the acronym is flagged"
 
 
 @pytest.mark.parametrize(
@@ -1667,6 +1773,170 @@ def test_a_headcount_that_matches_only_a_role_month_is_caught(profile: Profile) 
     assert _kinds(verdict) == ["metric"]
 
 
+# --- figures written in words -----------------------------------------------------------------
+def _bullet(bullet: str, profile: Profile) -> Verdict:
+    return verify_resume(
+        "# Jordan Rivera\n\n## Experience\n\n### Northwind Payments — Senior Backend Engineer\n"
+        f"Mar 2021 – Present\n- {bullet}\n",
+        profile,
+    )
+
+
+@pytest.mark.parametrize(
+    ("bullet", "flagged"),
+    [
+        ("Mentored twelve engineers.", "twelve engineers"),
+        ("Twelve engineers joined the team.", "Twelve engineers"),
+        ("Engineer with nine years on payments.", "nine years"),
+        ("Led a dozen Go services.", "a dozen"),
+        ("Engineer with a decade on payments.", "a decade"),
+        ("Halved monthly spend.", "Halved monthly"),
+        ("Doubled settlement throughput.", "Doubled settlement"),
+        ("Grew settlement volume tenfold.", "tenfold"),
+        ("Kept five nines of uptime.", "five nines"),
+        ("Saved a million dollars.", "a million dollars"),
+        ("Nine Kubernetes clusters ran settlement.", "Nine Kubernetes"),
+        ("Served 8 million users.", "8 million users"),
+    ],
+)
+def test_a_figure_spelled_out_is_held_to_the_profile_like_its_digits(
+    profile: Profile, bullet: str, flagged: str
+) -> None:
+    """A number in words claims what its digits do, and the profile states neither.
+
+    A scale word belongs to the digits before it: the profile's "8 years" is no "8 million".
+    """
+    verdict = _bullet(bullet, profile)
+    assert [(v.kind, v.text) for v in verdict.violations] == [("metric", flagged)]
+    assert "does not appear anywhere in the profile" in verdict.violations[0].reason
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        "Mentored four engineers.",
+        "Engineer with eight years on payments.",
+        "Led a team of six.",
+        "Processed four million daily transactions.",
+        "Processed 4 million daily transactions.",
+        "One of the first engineers on the settlement team.",
+        "Shipped two-factor authentication on a three-tier stack.",
+        "Ran one-on-one mentoring and zero-downtime deploys.",
+        "Audited by the Big Four alongside Two Sigma.",
+        "The ledger doubled as an audit log.",
+        "Owned the third-party integrations as the single point of contact.",
+    ],
+)
+def test_a_number_in_words_the_profile_states_or_that_counts_nothing_passes(
+    profile: Profile, bullet: str
+) -> None:
+    """One, ordinals, idioms and names state no figure, and "four" is the profile's own 4."""
+    verdict = _bullet(bullet, profile)
+    assert verdict.ok, format_violations(verdict)
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        "Ran billing for six years.",
+        "Ran billing for 6 years.",
+        "Two were promoted within a year.",
+        "Ran a dozen services.",
+        "Ran 12 services.",
+        "Halved costs.",
+        "Cut costs 50%.",
+        "Doubled throughput.",
+        "Grew throughput 2x.",
+    ],
+)
+def test_a_figure_the_profile_states_in_words_may_be_printed_in_words_or_digits(
+    bullet: str,
+) -> None:
+    data = _mapping()
+    data["experience"][1]["roles"][0]["highlights"].append(
+        {"text": "Ran billing for six years; two were promoted, a dozen services halved costs."}
+    )
+    data["experience"][1]["roles"][0]["highlights"].append({"text": "Doubled throughput."})
+    verdict = _bullet(bullet, load_mapping(data))
+    assert verdict.ok, format_violations(verdict)
+
+
+_SIZES = (
+    "Served millions of monthly users across hundreds of millions of requests, tens of millions "
+    "of events and thousands of hours of compute, for dozens to hundreds of thousands of accounts."
+)
+
+
+def _sized(*highlights: str) -> Profile:
+    """Return the fixture with nothing large in it but ``highlights``: no 4M, no $55.1B."""
+    data = _mapping()
+    data["experience"][0]["roles"][0]["highlights"] = [{"text": "Mentored 4 engineers."}]
+    data["experience"][1]["roles"][0]["highlights"] = [{"text": text} for text in highlights]
+    return load_mapping(data)
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        "Served millions of monthly users.",
+        "Handled hundreds of millions of requests.",
+        "Processed tens of millions of events.",
+        "Saved thousands of hours of compute.",
+        "Supported dozens to hundreds of thousands of accounts.",
+        "Served thousands of users.",
+    ],
+)
+def test_a_size_the_profile_states_in_words_may_be_printed(bullet: str) -> None:
+    verdict = _bullet(bullet, _sized(_SIZES))
+    assert verdict.ok, format_violations(verdict)
+
+
+@pytest.mark.parametrize(
+    ("bullet", "flagged"),
+    [
+        ("Served billions of users.", "billions of users"),
+        ("Handled tens of billions of requests.", "tens of billions of requests"),
+    ],
+)
+def test_a_size_larger_than_anything_the_profile_states_is_caught(
+    bullet: str, flagged: str
+) -> None:
+    verdict = _bullet(bullet, _sized(_SIZES))
+    assert [(v.kind, v.text) for v in verdict.violations] == [("metric", flagged)]
+    assert "a size larger than any figure the profile states" in verdict.violations[0].reason
+
+
+def test_a_size_is_supported_by_a_quantity_in_digits_but_not_by_a_year_or_a_ratio() -> None:
+    """$14k makes "thousands" true; a year, a percentage or a multiple makes nothing true."""
+    assert _bullet("Saved thousands of dollars.", _sized("Saved $14k a month.")).ok
+    dated = _sized("Cut spend from 2021, by 5900%, at 40x the rate, seen in Q3000.")
+    assert _texts(_bullet("Saved thousands of dollars.", dated)) == ["thousands of dollars"]
+    assert _texts(_bullet("Served millions of users.", _sized("Served 4M users."))) == []
+    assert _texts(_bullet("Served millions of users.", _sized("Saved $14k."))) == [
+        "millions of users"
+    ]
+
+
+def test_supported_metrics_reads_the_profile_s_figures_in_words() -> None:
+    data = _mapping()
+    data["experience"][1]["roles"][0]["highlights"].append(
+        {"text": "Ran a dozen services, doubled throughput and served 4 million users."}
+    )
+    supported = supported_metrics(load_mapping(data))
+    assert {"12", "2", "100", "4000000"} <= supported
+
+
+def test_figures_in_reads_figures_in_words_and_magnitudes_in_reads_sizes() -> None:
+    from resume_tailor.verify.metrics import figures_in, largest_stated, magnitudes_in
+
+    lexicon = build_lexicon(load_mapping(_mapping()))
+    text = "Mentored twelve engineers, doubled output and served tens of millions of users."
+    assert figures_in(text, lexicon) == {"12": "twelve", "2": "doubled"}
+    assert magnitudes_in(text, lexicon) == {"tens of millions": 10_000_000}
+    assert largest_stated([text, "Saved $14k.", "Grew 5900% in 2021."]) == 10_000_000
+    assert largest_stated([]) == 0
+
+
 # --- the scanner ------------------------------------------------------------------------------
 def test_a_stripped_comment_does_not_shift_the_lines_below_it(profile: Profile) -> None:
     """Comments are blanked rather than deleted; a shifted line number is an unfixable report."""
@@ -1710,6 +1980,14 @@ def test_the_scanner_classifies_every_line_kind_and_section() -> None:
     assert source.entries[0] == source.entries[0].__class__(
         area=Area.EXPERIENCE, title="Acme — Engineer", line=10, meta="2020 – 2021", meta_line=11
     )
+
+
+def test_a_skills_line_may_close_its_bold_before_or_after_the_colon() -> None:
+    lines = scan("## Skills\n**Languages:** Go\n**Cloud**: AWS\n").lines
+    assert [(line.kind, line.label, line.body) for line in lines[1:]] == [
+        (Kind.SKILL, "Languages", "Go"),
+        (Kind.SKILL, "Cloud", "AWS"),
+    ]
 
 
 def test_an_empty_claim_never_counts_as_contained() -> None:
@@ -1788,6 +2066,7 @@ def test_a_bullet_opening_verb_does_not_exempt_the_figure_after_it(
     """The same words as a Summary line are flagged; a list marker or lead-in cannot change that.
 
     A lead-in ends a phrase however it is closed, with a colon, a dash, a pipe or nothing at all.
+    "Three squads" is a second unsupported figure, which is reported after the first.
     """
     verdict = _verify(
         f"""\
@@ -1801,7 +2080,8 @@ def test_a_bullet_opening_verb_does_not_exempt_the_figure_after_it(
         """,
         profile,
     )
-    assert _kinds(verdict) == ["metric"]
+    assert set(_kinds(verdict)) == {"metric"}
+    assert _texts(verdict)[0].split()[0] in {"25", "30"}, "the figure after the verb is flagged"
 
 
 # --- the profile's own acronym convention ------------------------------------------------------
@@ -1845,3 +2125,44 @@ def test_a_parenthetical_list_still_claims_each_product_separately() -> None:
         profile,
     )
     assert _texts(verdict) == ["ECS", "Lambda"], "the services still have to be real"
+
+
+def _kafka_for(years: float) -> Profile:
+    """Return the fixture plus Kafka with ``years`` of use, a number its prose never states."""
+    data = _mapping()
+    data["technologies"][0]["items"].append({"name": "Kafka", "years": years})
+    return load_mapping(data)
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        "Built streaming pipelines with 5 years of Kafka.",
+        "Brought 5+ years of Kafka to the settlement team.",
+        "Ran Kafka at scale for five years.",
+        "A five-year Kafka veteran on the settlement team.",
+        "Operated Kafka for 5 yrs.",
+    ],
+)
+def test_a_technology_s_recorded_years_back_a_duration(bullet: str) -> None:
+    assert _bullet(bullet, _kafka_for(5)).ok
+
+
+@pytest.mark.parametrize(
+    ("bullet", "flagged"),
+    [
+        ("Mentored 5 engineers on the settlement team.", "5 engineers"),
+        ("Mentored five engineers on the settlement team.", "five engineers"),
+        ("Cut deploy time 5 minutes per release.", "5 minutes"),
+    ],
+)
+def test_a_technology_s_recorded_years_back_nothing_but_a_duration(
+    bullet: str, flagged: str
+) -> None:
+    """Five years of Kafka is no evidence of five engineers: the number is all they share."""
+    verdict = _bullet(bullet, _kafka_for(5))
+    assert [(v.kind, v.text) for v in verdict.violations] == [("metric", flagged)]
+
+
+def test_a_duration_the_technologies_do_not_record_is_still_caught() -> None:
+    assert _texts(_bullet("Built pipelines with 7 years of Kafka.", _kafka_for(5))) == ["7 years"]

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import zipfile
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -337,8 +340,47 @@ def test_html_lists_open_and_close_in_pairs(resume: Document) -> None:
 
 def test_html_draws_every_bullet_glyph_at_the_column_edge(resume: Document) -> None:
     html = polished.render_html(resume)
-    assert 'li::before { content: "\u2022"; position: absolute; left: 0; }' in html
-    assert f"li {{ position: relative; padding-left: {polished.BULLET_HANGING_IN}in" in html
+    assert "li { padding-left: 0.25in; text-indent: -0.25in;" in html
+    assert 'li::before { content: "\u2022"; display: inline-block; width: 0.25in;' in html
+
+
+def test_every_box_stays_in_the_text_flow() -> None:
+    """Chrome writes a PDF's text in paint order, and a positioned or floated box paints apart.
+
+    With the bullet glyph positioned, a parser reading the PDF in stored order found every rail
+    skill after all the skill labels and every accomplishment after the last role heading.
+    """
+    assert "position:" not in polished.CSS
+    assert "float:" not in polished.CSS
+
+
+def test_a_word_too_long_for_its_column_breaks_inside_it() -> None:
+    """A long email in the rail ran across the rule into the name; Word wraps it in the rail."""
+    body = re.search(r"^body \{(?P<rule>[^}]*)\}", polished.CSS, re.MULTILINE)
+    assert body is not None
+    assert "overflow-wrap: anywhere;" in body["rule"]
+
+
+def test_the_docx_says_whose_it_is_and_what_it_is(
+    resume: Document, letter: Document, tmp_path: Path
+) -> None:
+    """Not python-docx's template metadata: author "python-docx", dated 2013, no title."""
+    start = datetime.now(UTC).replace(microsecond=0)
+    out = tmp_path / "resume-polished.docx"
+    polished.render_docx(resume, out)
+    properties = read_docx(str(out)).core_properties
+    assert properties.title == "Ada Lovelace Resume"
+    assert properties.author == properties.last_modified_by == "Ada Lovelace"
+    assert properties.comments == ""
+    created = properties.created
+    assert created is not None
+    assert start <= created <= datetime.now(UTC)
+    assert properties.modified == created
+    with zipfile.ZipFile(out) as package:
+        assert b"python-docx" not in package.read("docProps/core.xml")
+
+    polished.render_docx(letter, out)
+    assert read_docx(str(out)).core_properties.title == "Ada Lovelace Cover Letter"
 
 
 def test_html_sets_arial_and_fetches_nothing(resume: Document) -> None:
@@ -382,7 +424,11 @@ def test_html_escapes_content() -> None:
 
 
 def test_html_falls_back_to_a_generic_title() -> None:
-    assert "<title>Resume</title>" in polished.render_html(Blocks())
+    """With no name, the title still says what the file is: a resume has sections, a letter none."""
+    from resume_tailor.documents.blocks import Section
+
+    assert "<title>Resume</title>" in polished.render_html(Blocks((Section("Skills"),)))
+    assert "<title>Cover Letter</title>" in polished.render_html(Blocks())
 
 
 def test_the_rule_is_not_forced_to_full_page_height(resume: Document) -> None:
@@ -456,3 +502,9 @@ def test_the_normal_style_carries_the_body_face(resume: Document, tmp_path: Path
     normal = read_docx(str(out)).styles["Normal"].font
     assert normal.name == "Arial"
     assert normal.size == Pt(10)
+
+
+def test_the_pdf_names_itself_the_way_the_docx_does(resume: Document, letter: Document) -> None:
+    """The printed PDF takes its title from the HTML, so both files of one export match."""
+    assert "<title>Ada Lovelace Resume</title>" in polished.render_html(resume)
+    assert "<title>Ada Lovelace Cover Letter</title>" in polished.render_html(letter)

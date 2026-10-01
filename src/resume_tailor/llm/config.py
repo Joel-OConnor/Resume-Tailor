@@ -12,6 +12,7 @@ lives only in :class:`Settings`, which has a ``__repr__`` that redacts it — an
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, override
@@ -50,6 +51,9 @@ _DEFAULT_MAX_TOKENS = 32000
 _DEFAULT_RELAY_MINUTES = 60
 _KEY = "ANTHROPIC_API_KEY"
 _VISIBLE_KEY_CHARS = 4
+_EXPORT = re.compile(r"^export\s+")
+_COMMENT = re.compile(r"\s#.*")
+_QUOTES = ("'", '"')
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +83,13 @@ class Settings:
 
 
 def read_env_file(path: Path = DEFAULT_ENV_FILE) -> dict[str, str]:
-    """Parse a ``.env`` file into a mapping. A missing file is not an error."""
+    """Parse a ``.env`` file into a mapping. A missing file is not an error.
+
+    Each line is read the way a shell reads it, so a file people also ``source`` means the same
+    thing to both: an ``export`` before the name is dropped, an unquoted value ends where a ``#``
+    after a space starts a comment, and a quoted value is everything inside its quotes, ``#``
+    included. Misread, ``export RESUME_TAILOR_LLM=claude-code`` would leave a run on the API.
+    """
     if not path.is_file():
         return {}
     values: dict[str, str] = {}
@@ -88,8 +98,16 @@ def read_env_file(path: Path = DEFAULT_ENV_FILE) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         name, _, value = line.partition("=")
-        values[name.strip()] = value.strip().strip("'\"")
+        values[_EXPORT.sub("", name.strip())] = _value(value)
     return values
+
+
+def _value(text: str) -> str:
+    """Return the value ``text`` sets: what is inside its quotes, or up to a ``#`` comment."""
+    quoted = text.strip()
+    if quoted[:1] in _QUOTES and (end := quoted.find(quoted[0], 1)) > 0:
+        return quoted[1:end]
+    return _COMMENT.sub("", text).strip().strip("'\"")
 
 
 def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
@@ -108,7 +126,7 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
     if provider == ANTHROPIC and not api_key:
         msg = (
             f"no {_KEY} found. Copy .env.example to .env and add your key, or export "
-            f"{_KEY} in your shell. Get one at https://console.anthropic.com/settings/keys — or "
+            f"{_KEY} in your shell. Get one at https://console.anthropic.com/settings/keys, or "
             f"set RESUME_TAILOR_LLM={CLAUDE_CODE} to have a Claude Code session answer instead."
         )
         raise ConfigError(msg)
@@ -124,7 +142,7 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
         ),
         provider=provider,
         effort=effort,
-        relay_dir=Path(value("RESUME_TAILOR_RELAY_DIR") or DEFAULT_RELAY_DIR),
+        relay_dir=_relay_dir(value),
         relay_minutes=_positive_int(
             value("RESUME_TAILOR_RELAY_TIMEOUT"),
             _DEFAULT_RELAY_MINUTES,
@@ -135,7 +153,16 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE) -> Settings:
 
 def load_relay_dir(env_file: Path = DEFAULT_ENV_FILE) -> Path:
     """Return the relay folder alone, without validating the rest of the settings."""
-    return Path(_reader(env_file)("RESUME_TAILOR_RELAY_DIR") or DEFAULT_RELAY_DIR)
+    return _relay_dir(_reader(env_file))
+
+
+def _relay_dir(value: Callable[[str], str]) -> Path:
+    """Return the relay folder the settings name, with ``~`` standing for the home folder.
+
+    Taken literally, ``~/relay`` is a folder named ``~`` in the working directory: inside the
+    repository, where nothing gitignores the profile every request carries.
+    """
+    return Path(value("RESUME_TAILOR_RELAY_DIR") or DEFAULT_RELAY_DIR).expanduser()
 
 
 def _reader(env_file: Path) -> Callable[[str], str]:

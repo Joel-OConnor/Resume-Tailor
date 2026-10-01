@@ -11,9 +11,17 @@ line under a role, which is how a LinkedIn position lists what it used, and the
 words that any technology matcher will happily mistake for products, and a false alarm on a true
 bullet costs a retry.
 
+In the Skills section a list is a claim however it is dressed: with a bold label, with a plain
+``Label:``, as a bullet, or as a bare ``a, b, c`` line, which is how a writer that ignores the
+format lists LinkedIn's Top Skills. A sentence there, with no label and no list separator, is
+left alone.
+
 A line under a role or project may also name what that role's or project's ``stack`` records,
 since the profile states it was used there. The Skills section may not: it claims the technology
 outright, so it answers to ``technologies`` alone.
+
+Hyphens and spaces are one spelling: "infrastructure-as-code" is the profile's "infrastructure as
+code", and "Test Driven Development" its "Test-driven development".
 """
 
 from __future__ import annotations
@@ -26,13 +34,22 @@ from resume_tailor.verify.models import Violation
 from resume_tailor.verify.source import Area, Kind
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from resume_tailor.match.lexicon import Lexicon
     from resume_tailor.profile.models import Profile
     from resume_tailor.verify.source import Line, Source
 
 __all__ = ["check_skills", "is_known", "stack_note"]
 
-_ITEM_LINES = frozenset({Kind.SKILL, Kind.BULLET})
+_LISTED = frozenset({Kind.BULLET, Kind.PROSE})
+# A label before a list, bold or plain, with its colon inside the bold or out: "Languages: Go",
+# "**Languages:** Go", "**Languages**: Go". A label holds no list separator, so "Go, Rust: async"
+# has no label and is read whole.
+_LABEL = re.compile(
+    r"^(?:\*\*|__)?(?P<label>[^*_,;|·•:()]{1,40}?)(?:\*\*|__)?\s*:(?:\*\*|__)?\s+(?P<items>\S.*)$"
+)
+_SEPARATOR = re.compile(r"[,;·•|]")
 # Read after normalise(), which folds every dash to "-". The note is italic in the format, but a
 # writer that drops the emphasis, bolds the label, or closes the emphasis before the separator is
 # making the same claim. The separator is a colon or a spaced dash, so "Stack-ranked" opening a
@@ -74,11 +91,26 @@ def check_skills(source: Source, profile: Profile, lexicon: Lexicon) -> list[Vio
 
 def _claimed(line: Line) -> str | None:
     """Return the technologies a line lists as claims, or ``None`` when it lists none."""
-    if line.area is Area.SKILLS and line.kind in _ITEM_LINES:
+    if line.kind is Kind.SKILL and line.area in {Area.SKILLS, Area.EXPERIENCE}:
         return line.body
-    if line.area is Area.EXPERIENCE and line.kind is Kind.SKILL:
+    if (note := stack_note(line)) is not None:
+        return note
+    if line.area is Area.SKILLS and line.kind in _LISTED:
+        return _listed(line)
+    return None
+
+
+def _listed(line: Line) -> str | None:
+    """Return what a bullet or a plain line in the Skills section lists, without its label.
+
+    Every bullet there lists something. A plain line does when it has a label or a list
+    separator; without either it is a sentence, and a sentence is not checked.
+    """
+    if match := _LABEL.match(line.body):
+        return match["items"]
+    if line.kind is Kind.BULLET or _SEPARATOR.search(line.body):
         return line.body
-    return stack_note(line)
+    return None
 
 
 def stack_note(line: Line) -> str | None:
@@ -97,7 +129,12 @@ def _stack_forms(profile: Profile) -> frozenset[tuple[str, ...]]:
 
 
 def _key(term: str) -> tuple[str, ...]:
-    return tuple(stem(token.lower) for token in tokenise(term))
+    return tuple(stem(part) for part in _unhyphenated(token.lower for token in tokenise(term)))
+
+
+def _unhyphenated(words: Iterable[str]) -> tuple[str, ...]:
+    """Split hyphenated words, so "test-driven" and "test driven" are the same spelling."""
+    return tuple(part for word in words for part in word.split("-") if part)
 
 
 def _terms(text: str) -> list[str]:
@@ -167,4 +204,8 @@ def _in_lexicon(term: str, lexicon: Lexicon) -> bool:
         return True
     # A product is routinely written without its vendor, above all inside a parenthesis:
     # "AWS (Lambda, Aurora Serverless)". It names the same recorded technology, so it is known.
-    return any((vendor, *keys) in lexicon.by_tokens for vendor in _VENDORS)
+    if any((vendor, *keys) in lexicon.by_tokens for vendor in _VENDORS):
+        return True
+    # A hyphen and a space are one spelling, and the lexicon keeps each as written.
+    parts = _key(term)
+    return any(_key(form.surface) == parts for form in lexicon.forms)

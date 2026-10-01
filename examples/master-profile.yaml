@@ -14,7 +14,7 @@ contact:
   headline: Senior Backend Engineer
   email: jordan.rivera@email.com
   phone: (415) 555-0132
-  location: Austin, TX — open to remote
+  location: Austin, TX (open to remote)
   work_authorization: US citizen
   links:
     - label: LinkedIn
@@ -101,7 +101,7 @@ technologies:
 experience:
   - id: northwind-payments
     company: Northwind Payments
-    industry: Fintech — payments
+    industry: Fintech, payments
     location: Austin, TX
     summary: Payment processor settling card transactions for mid-market merchants.
     roles:

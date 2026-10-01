@@ -46,7 +46,8 @@ _LOWERCASE_NAMES = frozenset(
 
 _INNER_SPACES = re.compile(r"(?<=\S)[ \t]{2,}(?=\S)")
 _LEAD_IN = re.compile(r"^(?P<lead>[-*] \*\*[^*]+?:\*\*)(?P<gap> *)(?P<rest>.*)$")
-_SKILL_LINE = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<items>.*)$")
+_SKILL_LINE = re.compile(r"^\*\*(?P<label>[^*]+?)(?P<close>:\*\*|\*\*:)\s*(?P<items>.*)$")
+"""A skills line, the colon inside the bold ("**Data:** a, b") or just after it ("**Data**: a")."""
 _SKILL_SEPARATORS = re.compile(r"[,;/()]")
 _DOUBLE_STOP = re.compile(r"(?<!\.)\.\.(?!\.)")
 _SPACE_BEFORE_PUNCT = re.compile(r" +([,.;:])(?=\s|$)")
@@ -306,7 +307,7 @@ def _whitespace(raw: list[str]) -> list[Finding]:
             continue
         fixed = _INNER_SPACES.sub(" ", line.rstrip())
         if fixed != line:
-            message = "doubled or trailing spaces"
+            message = "removed doubled or trailing spaces"
             found.append(Finding("whitespace", Level.FIX, number, line.strip(), message, fixed))
     return found
 
@@ -363,7 +364,7 @@ def _punctuation(source: Source) -> list[Finding]:
     if bullets and len(ended) * 2 >= len(bullets):
         for line in bullets:
             if line.text[-1] not in _TERMINAL + _UNFINISHED:
-                message = "a full stop, like the other bullets"
+                message = "added a full stop, like the other bullets"
                 fixed = line.text + "."
                 found.append(
                     Finding("full-stop", Level.FIX, line.number, line.text, message, fixed)
@@ -373,7 +374,7 @@ def _punctuation(source: Source) -> list[Finding]:
             continue
         fixed = _SPACE_BEFORE_PUNCT.sub(r"\1", _DOUBLE_STOP.sub(".", line.text))
         if fixed != line.text:
-            message = "doubled punctuation, or a space before a mark"
+            message = "removed a doubled mark, or a space before one"
             found.append(Finding("punctuation", Level.FIX, line.number, line.text, message, fixed))
     return found
 
@@ -393,28 +394,34 @@ def _dates(source: Source) -> list[Finding]:
 
 
 def _duplicate_skills(source: Source) -> list[Finding]:
-    """Drop a skill listed in an earlier group from the later one."""
+    """Drop a skill already listed, in an earlier group or earlier in its own line."""
     found: list[Finding] = []
     seen: set[str] = set()
-    for line in source.lines:
-        if line.kind is not Kind.SKILL or line.area is not Area.SKILLS:
-            continue
-        match = _SKILL_LINE.match(line.text)
-        if match is None:  # pragma: no cover - Kind.SKILL is only assigned to lines that match
-            continue
-        items = _split_items(match["items"])
-        kept = [item for item in items if item.casefold() not in seen]
-        dropped = [item for item in items if item.casefold() in seen]
-        seen.update(item.casefold() for item in kept)
+    for line, match in _skill_lines(source):
+        kept: list[str] = []
+        dropped: list[str] = []
+        for item in _split_items(match["items"]):
+            # Recorded as it is walked, so a repeat within the same line is caught too.
+            (dropped if item.casefold() in seen else kept).append(item)
+            seen.add(item.casefold())
         if dropped:
-            fixed = f"**{match['label']}:** {', '.join(kept)}".rstrip()
-            message = "already listed in an earlier skills group"
+            fixed = f"**{match['label']}{match['close']} {', '.join(kept)}".rstrip()
+            message = "listed twice in Skills, so the repeat was removed"
             found.append(
                 Finding(
                     "duplicate-skill", Level.FIX, line.number, ", ".join(dropped), message, fixed
                 )
             )
     return found
+
+
+def _skill_lines(source: Source) -> list[tuple[Line, re.Match[str]]]:
+    """Every labelled line of the Skills section, matched, in either form a label is written."""
+    return [
+        (line, match)
+        for line in source.lines
+        if line.area is Area.SKILLS and (match := _SKILL_LINE.match(line.text))
+    ]
 
 
 def _split_items(text: str) -> list[str]:
@@ -481,14 +488,15 @@ def _summary_length(source: Source) -> list[Finding]:
 
 
 def _skills_count(source: Source) -> list[Finding]:
-    lines = [line for line in source.lines if line.kind is Kind.SKILL and line.area is Area.SKILLS]
-    total = sum(len(_split_items(line.body)) for line in lines)
+    lines = _skill_lines(source)
+    total = sum(len(_split_items(match["items"])) for _, match in lines)
     if lines and total > _MANY_SKILLS:
+        first, match = lines[0]
         message = (
             f"{total} skills; a reader scans about {_MANY_SKILLS}, so keep the ones the target "
             "role screens for"
         )
-        return [Finding("many-skills", Level.ADVISE, lines[0].number, lines[0].body, message)]
+        return [Finding("many-skills", Level.ADVISE, first.number, match["items"], message)]
     return []
 
 

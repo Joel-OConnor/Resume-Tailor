@@ -4,9 +4,9 @@ Three writers share one standard: the general resume with its LinkedIn profile, 
 resume with its cover letter, and the editor that reads any of them a second time. A document is
 accepted only when:
 
-* it follows its format contract: the resume and the cover letter parse, and the LinkedIn profile
-  keeps LinkedIn's sections and limits and gives every role in the profile its own entry, because
-  LinkedIn is the whole record;
+* it follows its format contract: the resume and the cover letter parse, the cover letter fits on
+  one page, and the LinkedIn profile keeps LinkedIn's sections and limits and gives every role in
+  the profile its own entry, because LinkedIn is the whole record;
 * it claims nothing the profile cannot support: :func:`resume_tailor.verify.verify_resume` runs on
   every document, the cover letter and the LinkedIn profile included, because an invented figure
   in a letter is as much a lie as one on the resume;
@@ -38,7 +38,7 @@ from resume_tailor.agent.loop import (
     unfence,
 )
 from resume_tailor.agent.prompts import COVER_LETTER, LINKEDIN, QUESTIONS, RESUME
-from resume_tailor.documents import parse
+from resume_tailor.documents import Paragraph, parse
 from resume_tailor.errors import DocumentError
 from resume_tailor.match.tokens import normalise
 from resume_tailor.review import check_linkedin
@@ -49,11 +49,13 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
 
     from resume_tailor.agent.loop import Progress
+    from resume_tailor.documents import Document
     from resume_tailor.llm import LanguageModel
     from resume_tailor.profile.models import Profile
     from resume_tailor.review import Answer
 
 __all__ = [
+    "LETTER_WORDS",
     "EditResult",
     "GeneralResult",
     "TailorResult",
@@ -62,6 +64,15 @@ __all__ = [
     "tailor",
     "write_general",
 ]
+
+LETTER_WORDS = 550
+"""The longest cover letter accepted, in words: a little under what one page holds.
+
+Measured by rendering letters through the project's own export: written the way the format asks
+(a greeting, three to six paragraphs, a sign-off), one page holds about 680 to 730 words, and with
+ten or twelve shorter paragraphs about 610. The format asks for 250 to 350, so a letter over this
+is not a matter of taste: it has stopped being a one-page letter, or is about to.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +199,7 @@ def edit_documents(  # noqa: PLR0913 - one pass; every argument is a distinct in
     *,
     flagged: str = "",
     answers: Sequence[Answer] = (),
+    posting: str = "",
     max_attempts: int = 3,
     progress: Progress | None = None,
 ) -> EditResult:
@@ -197,7 +209,8 @@ def edit_documents(  # noqa: PLR0913 - one pass; every argument is a distinct in
     ``LINKEDIN``) to its Markdown. Without ``answers`` this is the review: the editor acts on
     ``flagged`` (what the mechanical review found) and returns its questions for the candidate.
     With ``answers`` it is the revision after the review: the documents take in what the candidate
-    said, which ``profile`` must already record, and no further questions come back.
+    said, which ``profile`` must already record, and no further questions come back. For a tailored
+    application, ``posting`` is the job the documents were tailored to, so the edit keeps to it.
 
     Raises:
         FabricationError: if the last attempt still altered or invented a claim.
@@ -229,7 +242,9 @@ def edit_documents(  # noqa: PLR0913 - one pass; every argument is a distinct in
 
     ask = Ask(
         system=prompts.EDIT_SYSTEM,
-        prompt=prompts.edit_prompt(documents, profile, flagged=flagged, answers=answers),
+        prompt=prompts.edit_prompt(
+            documents, profile, flagged=flagged, answers=answers, posting=posting
+        ),
         artefact="the edited documents",
         truncated=TRUNCATED_DOCUMENTS,
     )
@@ -261,9 +276,14 @@ def _check_document(kind: str, text: str, profile: Profile) -> Rejection | None:
             )
     else:
         try:
-            parse(text)
+            document = parse(text)
         except DocumentError as exc:
             return Rejection(f"The {label} does not follow the format contract: {exc}")
+        if kind == COVER_LETTER and (words := _letter_words(document)) > LETTER_WORDS:
+            return Rejection(
+                f"The cover letter is {words} words, too long to fit on one page. The format asks "
+                "for 250-350: cut it to that, keeping the strongest evidence for this posting."
+            )
     verdict = verify_resume(text, profile)
     if not verdict.ok:
         return Rejection(
@@ -271,6 +291,15 @@ def _check_document(kind: str, text: str, profile: Profile) -> Rejection | None:
             fabricated=True,
         )
     return None
+
+
+def _letter_words(document: Document) -> int:
+    """Count the words a letter's paragraphs print: greeting, body and sign-off."""
+    return sum(
+        len("".join(span.text for span in block.spans).split())
+        for block in document.blocks
+        if isinstance(block, Paragraph)
+    )
 
 
 def _moved_entries(

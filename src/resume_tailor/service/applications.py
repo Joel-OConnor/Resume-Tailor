@@ -7,7 +7,8 @@
 1. The mechanical fixes are applied to the resume (spacing, a missing full stop, a hyphen in a
    date range, a skill listed twice).
 2. An editor pass reads every document for readability, held to the same checks as the draft, and
-   comes back with the questions only the candidate can answer.
+   comes back with the questions only the candidate can answer. For a tailored application the
+   editor sees the posting too, so the edit keeps to what the documents were tailored for.
 3. Those questions (the writer's, the editor's and the mechanical review's, merged and capped)
    go to the candidate. Answers that give a fact are recorded in the profile, and the documents
    are revised to use them.
@@ -15,7 +16,10 @@
 
 Nothing appears in the application folder until every document is written and every export has
 succeeded: the run builds into a hidden sibling directory and swaps it in at the end, so a model
-failure or a broken render leaves an earlier version of the folder exactly as it was.
+failure or a broken render leaves an earlier version of the folder exactly as it was. Nor is an
+earlier version ever deleted. The folder a run replaces moves, hand edits and all, into
+``output/backups/``; and a different posting that happens to share its company and role with an
+earlier application gets a folder of its own (``<company>-<role>-2``) instead of replacing it.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import shutil
 import tempfile
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,9 +43,10 @@ from resume_tailor.agent import (
     write_general,
 )
 from resume_tailor.errors import RenderError, ResumeTailorError
-from resume_tailor.paths import APPLICATIONS_FOLDER, GENERAL_FOLDER, OUTPUT_DIR
+from resume_tailor.paths import APPLICATIONS_FOLDER, BACKUPS_FOLDER, GENERAL_FOLDER, OUTPUT_DIR
 from resume_tailor.profile import load
 from resume_tailor.render import Layout, build
+from resume_tailor.render.pdf import NO_BROWSER
 from resume_tailor.review import (
     Question,
     Review,
@@ -56,6 +62,7 @@ if TYPE_CHECKING:
 
     from resume_tailor.llm import LanguageModel
     from resume_tailor.profile.models import Profile
+    from resume_tailor.render import Artifact
     from resume_tailor.review import Finding
     from resume_tailor.service.profile import Asker, ProfileUpdate, Progress
 
@@ -89,6 +96,9 @@ _FALLBACK_SLUG = "application"
 _MAX_SLUG = 80
 _NOT_SLUG = re.compile(r"[^a-z0-9]+")
 
+type _Export = Callable[[Path], list[Artifact]]
+"""Render the documents written into a folder, returning every file the render produced."""
+
 
 def _silent(_: str) -> None:
     """Report progress nowhere: the default for a caller that does not want it."""
@@ -116,10 +126,16 @@ class Application:
     """True when the questions were put to the candidate during the run."""
 
     update: ProfileUpdate | None = None
-    """What the candidate's answers changed in their profile, when they gave any."""
+    """What the candidate's answers changed in their profile, when they changed anything."""
+
+    backup: Path | None = None
+    """Where the earlier version of this folder went, under ``output/backups/``, when there was
+    one: a run never deletes it."""
 
     problems: tuple[str, ...] = ()
-    """Steps that failed without stopping the run, e.g. answers that could not be worked in."""
+    """What the candidate needs to know that did not stop the run, one sentence each: a step that
+    failed (answers not worked in, a PDF no browser could print), where the earlier version of the
+    folder went, and why a tailored application did not get the folder its name would give it."""
 
 
 def slugify(company: str, role: str) -> str:
@@ -151,8 +167,9 @@ def general_application(  # noqa: PLR0913 - one run; every argument is a distinc
 ) -> Application:
     """Write, review and export the general resume and the LinkedIn profile.
 
-    The folder is always ``output_dir / GENERAL_SLUG``, replaced whole on every run.
-    Without ``ask`` the review's questions are returned unasked on the result.
+    The folder is always ``output_dir / GENERAL_SLUG``, replaced whole on every run; the version
+    it replaces moves into ``output_dir / "backups"``. Without ``ask`` the review's questions are
+    returned unasked on the result.
 
     Raises:
         ProfileError: the profile is missing or does not validate.
@@ -173,10 +190,14 @@ def general_application(  # noqa: PLR0913 - one run; every argument is a distinc
         RESUME_FILE: reviewed.documents[RESUME],
         LINKEDIN_FILE: reviewed.documents[LINKEDIN],
     }
-    directory = _publish(
-        output_dir, GENERAL_SLUG, documents, export=_export_resume if export else None
+    published = _publish(
+        output_dir,
+        GENERAL_SLUG,
+        documents,
+        backups=output_dir / BACKUPS_FOLDER,
+        export=_export_resume if export else None,
     )
-    return reviewed.application(GENERAL_SLUG, directory)
+    return reviewed.application(published)
 
 
 def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct input
@@ -192,9 +213,12 @@ def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct
 ) -> Application:
     """Write, review and export a resume and cover letter tailored to ``posting``.
 
-    The folder is ``output_dir / "applications" / <company>-<role>``, named from the posting.
-    The writer's own questions (chiefly the posting's must-haves the profile does not support)
-    are asked first. Without ``ask`` every question is returned unasked on the result.
+    The folder is ``output_dir / "applications" / <company>-<role>``, named from the posting. A
+    rerun for the same posting replaces it, and the version it replaces moves into
+    ``output_dir / "backups" / "applications"``. A different posting that gets the same name goes
+    to ``<company>-<role>-2`` (or ``-3``, and so on) instead, so it never replaces another
+    application. The writer's own questions (chiefly the posting's must-haves the profile does not
+    support) are asked first. Without ``ask`` every question is returned unasked on the result.
 
     Raises:
         ProfileError: the profile is missing or does not validate.
@@ -212,18 +236,26 @@ def tailor_application(  # noqa: PLR0913 - one run; every argument is a distinct
         model,
         steps=_Steps(profile_path, answers_path, ask, progress),
         first=tuple(Question(text) for text in draft.questions),
+        posting=posting,
     )
-    slug = slugify(draft.company, draft.role)
+    applications = output_dir / APPLICATIONS_FOLDER
+    named = slugify(draft.company, draft.role)
+    slug = _slug_for(applications, named, posting)
     documents = {
         JOB_DESCRIPTION_FILE: posting,
         RESUME_FILE: reviewed.documents[RESUME],
         COVER_LETTER_FILE: reviewed.documents[COVER_LETTER],
     }
-    directory = _publish(
-        output_dir / APPLICATIONS_FOLDER, slug, documents, export=_export if export else None
+    published = _publish(
+        applications,
+        slug,
+        documents,
+        backups=output_dir / BACKUPS_FOLDER / APPLICATIONS_FOLDER,
+        export=_export if export else None,
     )
+    taken = () if slug == named else (_elsewhere(applications / named, published.directory),)
     return reviewed.application(
-        slug, directory, company=draft.company, role=draft.role, fit=draft.fit
+        published, taken=taken, company=draft.company, role=draft.role, fit=draft.fit
     )
 
 
@@ -239,6 +271,25 @@ class _Steps:
 
 
 @dataclass(frozen=True, slots=True)
+class _Published:
+    """Where a run's documents landed, what they replaced, and which PDFs fell back to HTML."""
+
+    directory: Path
+    backup: Path | None = None
+    unprinted: tuple[Artifact, ...] = ()
+
+    @property
+    def problems(self) -> tuple[str, ...]:
+        """Say where the earlier version went, and which PDF each printable HTML stands in for."""
+        kept = (
+            (f"the previous version of {self.directory} is kept in {self.backup}",)
+            if self.backup is not None
+            else ()
+        )
+        return (*kept, *(_unprinted(artifact) for artifact in self.unprinted))
+
+
+@dataclass(frozen=True, slots=True)
 class _Reviewed:
     documents: dict[str, str]
     review: Review
@@ -247,29 +298,37 @@ class _Reviewed:
     update: ProfileUpdate | None = None
     problems: tuple[str, ...] = ()
 
-    def application(self, slug: str, directory: Path, **job: str) -> Application:
+    def application(
+        self, published: _Published, *, taken: tuple[str, ...] = (), **job: str
+    ) -> Application:
         return Application(
-            slug=slug,
-            directory=directory,
-            files=_files(directory),
+            slug=published.directory.name,
+            directory=published.directory,
+            files=_files(published.directory),
             review=self.review,
             questions=self.questions,
             asked=self.asked,
             update=self.update,
-            problems=self.problems,
+            backup=published.backup,
+            problems=(*self.problems, *published.problems, *taken),
             **job,
         )
 
 
-def _review(
+def _review(  # noqa: PLR0913 - one step; every argument is a distinct input
     documents: Mapping[str, str],
     profile: Profile,
     model: LanguageModel,
     *,
     steps: _Steps,
     first: tuple[Question, ...] = (),
+    posting: str = "",
 ) -> _Reviewed:
-    """Fix, edit, ask, and revise: everything between a draft and its export."""
+    """Fix, edit, ask, and revise: everything between a draft and its export.
+
+    ``posting`` is the job a tailored application is for. Both editing passes see it, so neither
+    undoes the tailoring it cannot otherwise see the reason for.
+    """
     steps.progress("reviewing: fixing the mechanical problems and editing for readability")
     fixed, applied = apply_fixes(documents[RESUME])
     edited = edit_documents(
@@ -277,6 +336,7 @@ def _review(
         profile,
         model,
         flagged=_flagged(review_resume(fixed)),
+        posting=posting,
         progress=steps.progress,
     )
     current = dict(edited.documents)
@@ -297,14 +357,19 @@ def _review(
         answers_path=steps.answers_path,
         progress=steps.progress,
     )
+    # An update that failed carries its own error, which is reported with it, so it adds nothing
+    # here; one that changed nothing comes back as None, and needs no revision either.
     problems: list[str] = []
-    if update is not None and update.error:
-        problems.append(f"your answers could not be recorded in the profile: {update.error}")
-    elif update is not None and update.profile is not None:
+    if update is not None and update.profile is not None:
         steps.progress("working your answers into the documents")
         try:
             revised = edit_documents(
-                current, update.profile, model, answers=update.answers, progress=steps.progress
+                current,
+                update.profile,
+                model,
+                answers=update.answers,
+                posting=posting,
+                progress=steps.progress,
             )
         except ResumeTailorError as exc:
             problems.append(
@@ -338,18 +403,56 @@ def _flagged(review: Review) -> str:
     )
 
 
+# --- naming the folder ----------------------------------------------------------------------------
+def _slug_for(parent: Path, slug: str, posting: str) -> str:
+    """Return the folder name for ``posting``: ``slug``, unless that holds a different posting.
+
+    A rerun for the same posting replaces its own folder. A different posting that produces the
+    same company and role (two teams hiring for one title) gets the first free name after it,
+    ``slug-2``, ``slug-3`` and so on, or the one of those that already holds this posting.
+    """
+    candidate, number = slug, 1
+    while (parent / candidate).exists() and not _holds(parent / candidate, posting):
+        number += 1
+        candidate = f"{slug}-{number}"
+    return candidate
+
+
+def _elsewhere(taken: Path, directory: Path) -> str:
+    """Say why a tailored application is not in the folder its company and role name."""
+    return (
+        f"{taken} holds the application for a different posting with the same company and "
+        f"role, so this one is in {directory} instead"
+    )
+
+
+def _holds(folder: Path, posting: str) -> bool:
+    """Report whether ``folder`` is the application for ``posting``, going by the posting it kept.
+
+    A folder whose posting cannot be read (removed, or not a folder at all) is not known to be
+    this application, so it is never the one replaced.
+    """
+    try:
+        kept = (folder / JOB_DESCRIPTION_FILE).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return kept.strip() == posting.strip()
+
+
 # --- writing the folder ---------------------------------------------------------------------------
 def _publish(
     parent: Path,
     slug: str,
     documents: Mapping[str, str],
     *,
-    export: Callable[[Path], None] | None,
-) -> Path:
+    backups: Path,
+    export: _Export | None,
+) -> _Published:
     """Write ``documents`` into ``parent / slug``: all of them, or none.
 
     The run builds into a hidden sibling directory and swaps it in at the end, so a failure
-    anywhere below — a write, a render — leaves whatever was there before exactly as it was.
+    anywhere below (a write, a render) leaves whatever was there before exactly as it was. The
+    folder the swap replaces moves into ``backups``.
     """
     staging = _staging_dir(parent, slug)
     with contextlib.ExitStack() as unwind:
@@ -359,17 +462,21 @@ def _publish(
         unwind.callback(shutil.rmtree, staging, ignore_errors=True)
         for name, text in documents.items():
             _write(staging / name, text)
-        if export is not None:
-            export(staging)
+        artifacts = export(staging) if export is not None else []
         unwind.pop_all()
 
     directory = parent / slug
-    _swap(staging, directory)
-    return directory
+    backup = _swap(staging, directory, backups)
+    unprinted = tuple(artifact for artifact in artifacts if not artifact.ok)
+    return _Published(directory, backup, unprinted)
 
 
 def _staging_dir(parent: Path, slug: str) -> Path:
-    """Create the hidden sibling directory this run builds into."""
+    """Create the hidden sibling directory this run builds into.
+
+    ``mkdtemp`` makes it readable by its owner alone, and it keeps that mode once swapped into
+    place: the folder holds the user's career, so nobody else on the machine needs to read it.
+    """
     try:
         parent.mkdir(parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=parent))
@@ -387,50 +494,73 @@ def _write(path: Path, text: str) -> None:
         raise RenderError(msg) from exc
 
 
-def _export(directory: Path) -> None:
+def _export(directory: Path) -> list[Artifact]:
     """Render the resume and the cover letter, each single-column."""
-    _export_resume(directory)
-    build(directory / COVER_LETTER_FILE, layout=Layout.ATS)
+    return [*_export_resume(directory), *build(directory / COVER_LETTER_FILE, layout=Layout.ATS)]
 
 
-def _export_resume(directory: Path) -> None:
+def _export_resume(directory: Path) -> list[Artifact]:
     """Render the resume alone, in the single-column layout that serves parsers and people."""
-    build(directory / RESUME_FILE, layout=Layout.ATS)
+    return build(directory / RESUME_FILE, layout=Layout.ATS)
 
 
-def _swap(staging: Path, directory: Path) -> None:
-    """Put the finished ``staging`` directory in place of ``directory``.
+def _unprinted(fallback: Artifact) -> str:
+    """Say which PDF a printable HTML stands in for, why, and how to finish it by hand."""
+    pdf, html = fallback.path.with_suffix(".pdf").name, fallback.path.name
+    if fallback.reason == NO_BROWSER:
+        return (
+            f"{pdf} was not made: no browser that can print one (Chrome, Edge, Brave or "
+            f"Chromium) is installed. Open {html} in a browser and print it to PDF, or install "
+            f"Google Chrome and run this again."
+        )
+    return (
+        f"{pdf} was not made: the browser could not print it. Open {html} in a browser and "
+        f"print it to PDF."
+    )
 
-    A rename cannot land on a non-empty target, so regenerating the same folder first renames the
-    old one aside, onto an empty hidden sibling reserved for it, rather than deleting it in place.
+
+def _swap(staging: Path, directory: Path, backups: Path) -> Path | None:
+    """Put the finished ``staging`` directory in place of ``directory``, and return the backup.
+
+    The folder already there is never deleted. It is renamed into ``backups`` first, under its own
+    name and the time, so hand edits and any file added beside the generated ones survive the run.
     If the rename of ``staging`` then fails, the old folder is renamed back, so it is never left
-    half deleted; if that rename fails too, the error names the hidden folder that holds it. It
-    is removed only once the new one is in place, and a file that cannot be deleted (a Finder
-    lock, say) leaves the hidden copy behind without failing the write.
+    half replaced; if that rename fails too, the error names the backup that holds it.
     """
-    aside: Path | None = None
+    backup = _set_aside(staging, directory, backups) if directory.exists() else None
     try:
-        if directory.exists():
-            aside = Path(tempfile.mkdtemp(prefix=f".{directory.name}-old-", dir=directory.parent))
-            try:
-                directory.replace(aside)  # a directory may be renamed onto an empty one
-            except OSError:
-                with contextlib.suppress(OSError):
-                    aside.rmdir()
-                aside = None  # from here on, ``aside`` is set only while it holds the old folder
-                raise
         staging.replace(directory)
     except OSError as exc:
         msg = f"cannot write {directory}: {exc.strerror or exc}"
-        if aside is not None:
+        if backup is not None:
             try:
-                aside.replace(directory)
+                backup.replace(directory)
             except OSError:
-                msg += f"; the previous version is in {aside}"
+                msg += f"; the previous version is in {backup}"
         shutil.rmtree(staging, ignore_errors=True)
         raise RenderError(msg) from exc
-    if aside is not None:
-        shutil.rmtree(aside, ignore_errors=True)
+    return backup
+
+
+def _set_aside(staging: Path, directory: Path, backups: Path) -> Path:
+    """Move the earlier version of ``directory`` into ``backups``, and return where it went.
+
+    A version that cannot be kept is not replaced: the new one is discarded instead, and the
+    error says why.
+    """
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S-%f")
+    backup = backups / f"{directory.name}.{stamp}"
+    try:
+        backups.mkdir(parents=True, exist_ok=True)
+        directory.replace(backup)
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        msg = (
+            f"cannot keep the previous version of {directory} in {backups}, so it was left as "
+            f"it was and nothing new was written: {exc.strerror or exc}"
+        )
+        raise RenderError(msg) from exc
+    return backup
 
 
 def _files(directory: Path) -> tuple[Path, ...]:

@@ -34,7 +34,10 @@ _NAME = re.compile(r"^#\s+(?P<title>\S.*)$")
 _SECTION = re.compile(r"^##\s+(?P<title>\S.*)$")
 _ENTRY = re.compile(r"^###\s+(?P<title>\S.*)$")
 _BULLET = re.compile(r"^[-*]\s+(?P<text>.*)$")
-_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<items>.*)$")
+# The colon inside the bold (``**Languages:** Go``) is the documented form; outside it
+# (``**Languages**: Go``) is just as common a habit, and read as prose it ran every skills line
+# into one paragraph.
+_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?)(?::\*\*|\*\*:)\s*(?P<items>.*)$")
 _RULE = re.compile(r"^(?:-{3,}|_{3,}|\*{3,})$")
 
 
@@ -72,7 +75,7 @@ def _find_name(lines: list[str]) -> tuple[int, str]:
                 msg = f"content above the '# Name' line would be dropped: {stray[0].strip()!r}"
                 raise DocumentError(msg)
             return index, match["title"].strip()
-    msg = "no '# Name' line found — start the file with '# Full Name'"
+    msg = "no '# Name' line found: start the file with '# Full Name'"
     raise DocumentError(msg)
 
 

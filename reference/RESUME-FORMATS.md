@@ -61,13 +61,15 @@ Keep rail entries short: the column is about 2.4 inches wide, so a long degree t
 
 ## Cover letters
 
-A document with no `## ` sections is a letter, and a letter always renders single-column; asking
-for `--layout both` still produces one file. Passing `--layout polished` explicitly forces a
-two-column letter if you really want one.
+A document with no `## ` sections is a letter, and a letter renders single-column: `--layout both`
+gives a letter only its single-column `.docx` and `.pdf`. Only an explicit `--layout polished`
+makes a two-column letter, if you really want one.
 
 ## PDF fidelity
 
 PDFs are produced by printing the layout's HTML through headless Chrome, so the text stays
-selectable: a parser reads the PDF as well as the Word file. If no Chromium-family browser is
-installed, the exporter writes the `.html` next to the source instead and tells you; open it and
-print to PDF by hand. Arial is a system font, so printing needs no network.
+selectable and is stored in reading order, every bullet under its own role: a parser reads the
+PDF as well as the Word file. Tests print real PDFs and check that order wherever Chrome is
+installed. If no Chromium-family browser (Chrome, Edge, Brave, Chromium) is installed, or it fails,
+the exporter writes the `.html` where the PDF would have gone and tells you; open it and print to
+PDF by hand. Arial is a system font, so printing needs no network.

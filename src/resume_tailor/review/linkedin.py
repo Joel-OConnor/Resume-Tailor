@@ -30,8 +30,10 @@ REQUIRED_SECTIONS = ("Headline", "About", "Experience", "Skills")
 _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _SECTION = re.compile(r"^##\s+(?P<title>\S.*)$")
 _ENTRY = re.compile(r"^###\s+(?P<title>\S.*)$")
-_SKILL_LINE = re.compile(r"^\*\*[^*]+?:\*\*\s*(?P<items>.*)$")
-_BULLET = re.compile(r"^[-*]\s+\S")
+_SKILL_LINE = re.compile(r"^\*\*[^*]+?(?::\*\*|\*\*:)\s*(?P<items>.*)$")
+"""A labelled line, the colon inside the bold ("**Skills:** a, b") or just after it."""
+_BULLET = re.compile(r"^[-*]\s+(?P<items>\S.*)$")
+_SEPARATOR = re.compile(r"[,;·|]")
 
 
 def check_linkedin(markdown: str) -> tuple[str, ...]:
@@ -105,11 +107,21 @@ def _entries(lines: list[str]) -> list[tuple[str, list[str]]]:
 
 
 def _count_skills(lines: list[str]) -> int:
-    """Count the skills listed in a section: comma-separated on a label line, or one per bullet."""
+    """Count the skills listed in a section, however each line is written.
+
+    A line counts every item it lists: after a bold label, after a bullet marker, or as a bare
+    comma-separated list with neither, which LinkedIn takes as skills just the same. A plain line
+    with no separator in it is prose, not a list.
+    """
     count = 0
     for line in lines:
-        if match := _SKILL_LINE.match(line):
-            count += len([item for item in match["items"].split(",") if item.strip()])
-        elif _BULLET.match(line):
-            count += 1
+        if match := _SKILL_LINE.match(line) or _BULLET.match(line):
+            count += _items(match["items"])
+        elif _SEPARATOR.search(line):
+            count += _items(line)
     return count
+
+
+def _items(text: str) -> int:
+    """Count the items in a list separated by commas, semicolons, middle dots or pipes."""
+    return len([item for item in _SEPARATOR.split(text) if item.strip()])

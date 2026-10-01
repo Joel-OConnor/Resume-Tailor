@@ -1,11 +1,15 @@
-"""Build ATS-safe and design-polished resumes from a structured career profile.
+"""Turn a structured record of a real career into resumes, a LinkedIn profile and cover letters.
 
-Two halves, deliberately decoupled:
+A language model writes and the code checks:
 
-* :mod:`resume_tailor.profile` reads ``output/master-profile.yaml`` — the machine-readable
-  superset of a career — and validates it into typed models.
-* :mod:`resume_tailor.documents` and :mod:`resume_tailor.render` turn a *tailored* Markdown
-  resume or cover letter into ``.docx``/``.pdf`` in either the ATS-safe or polished layout.
+* :mod:`resume_tailor.agent` asks the model, through :mod:`resume_tailor.llm`, for every
+  document and every profile edit, and retries until its reply passes its check;
+* :mod:`resume_tailor.verify` and :mod:`resume_tailor.review` hold each reply to the master
+  profile (:mod:`resume_tailor.profile`), so nothing it cannot support is kept;
+* :mod:`resume_tailor.service` runs the three jobs end to end, and :mod:`resume_tailor.render`
+  turns the result into ``.docx`` and ``.pdf``.
+
+``reference/ARCHITECTURE.md`` walks through the whole design.
 """
 
 from __future__ import annotations

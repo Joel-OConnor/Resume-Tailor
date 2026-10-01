@@ -18,6 +18,7 @@ from tests.conftest import REPO_ROOT
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 SCHEMA: dict[str, Any] = build_schema()
 
@@ -179,10 +180,27 @@ def test_it_is_json_serialisable() -> None:
     assert json.loads(json.dumps(SCHEMA)) == SCHEMA
 
 
+SCHEMA_FILE = REPO_ROOT / "schema" / "master-profile.schema.json"
+
+
 def test_the_checked_in_schema_is_up_to_date() -> None:
     """``make profile-schema`` regenerates it; this stops it silently drifting."""
-    path = REPO_ROOT / "schema" / "master-profile.schema.json"
-    assert json.loads(path.read_text(encoding="utf-8")) == SCHEMA
+    assert json.loads(SCHEMA_FILE.read_text(encoding="utf-8")) == SCHEMA
+
+
+def test_the_checked_in_schema_is_byte_for_byte_what_profile_schema_writes(
+    tmp_path: Path,
+) -> None:
+    """``make profile-schema`` must find nothing to change.
+
+    Comparing parsed JSON passed a re-indented, re-ordered or newline-less file that the
+    command would rewrite, and a field reordered in the models went unnoticed.
+    """
+    from resume_tailor import cli
+
+    written = tmp_path / "schema.json"
+    assert cli.main(["profile", "schema", "-o", str(written)]) == 0
+    assert SCHEMA_FILE.read_bytes() == written.read_bytes()
 
 
 def test_every_model_field_appears_in_the_schema() -> None:

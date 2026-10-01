@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +16,8 @@ from tests.conftest import RESUME_MD
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from resume_tailor.documents.blocks import Document
 
 
 @pytest.fixture
@@ -290,3 +294,93 @@ def test_no_pdf_on_both_layouts_clears_both_previous_pdfs(tmp_path: Path) -> Non
     assert _names(source, layout=Layout.BOTH, pdf=False) == ["resume.docx", "resume-polished.docx"]
     assert not (tmp_path / "resume.pdf").exists()
     assert not (tmp_path / "resume-polished.pdf").exists()
+
+
+# --- a source is never one of its own outputs -----------------------------------------------------
+@pytest.mark.parametrize(
+    ("name", "pdf"),
+    [
+        ("resume.html", True),
+        ("resume.html", False),
+        ("resume.pdf", True),
+        ("resume.pdf", False),
+        ("resume.docx", False),
+    ],
+)
+def test_a_source_saved_under_an_output_name_is_refused_untouched(
+    tmp_path: Path, name: str, *, pdf: bool
+) -> None:
+    """Markdown saved as resume.html was deleted, and as resume.docx overwritten, with exit 0."""
+    source = tmp_path / name
+    source.write_text(RESUME_MD, encoding="utf-8")
+    expected = rf"output of the build \({re.escape(name)}\).*rename it to resume\.md"
+    with pytest.raises(RenderError, match=expected):
+        build(source, pdf=pdf)
+    assert source.read_text(encoding="utf-8") == RESUME_MD
+    assert [path.name for path in tmp_path.iterdir()] == [name], "nothing is written or removed"
+
+
+def test_both_layouts_check_the_polished_names_too(tmp_path: Path) -> None:
+    source = tmp_path / "resume.html"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    with pytest.raises(RenderError, match="destroy"):
+        build(source, layout=Layout.BOTH, pdf=False)
+    assert source.read_text(encoding="utf-8") == RESUME_MD
+
+
+def test_a_layout_whose_names_cannot_clash_still_builds(tmp_path: Path) -> None:
+    """The polished pass writes resume-polished.*, so a resume.html source is safe from it."""
+    source = tmp_path / "resume.html"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    assert _names(source, layout=Layout.POLISHED, pdf=False) == ["resume-polished.docx"]
+    assert source.read_text(encoding="utf-8") == RESUME_MD
+
+
+def test_a_source_differing_from_an_output_only_in_case_survives(tmp_path: Path) -> None:
+    """On macOS and Windows resume.HTML and resume.html are one file, and removing one is both."""
+    source = tmp_path / "resume.HTML"
+    source.write_text(RESUME_MD, encoding="utf-8")
+    if (tmp_path / "resume.html").exists():  # a disk that ignores case, as macOS's does
+        with pytest.raises(RenderError, match="destroy"):
+            build(source, pdf=False)
+    else:  # a case-sensitive disk, where the two are separate files
+        build(source, pdf=False)
+    assert source.read_text(encoding="utf-8") == RESUME_MD
+
+
+# --- a failed write never leaves a broken file ----------------------------------------------------
+def _half_written(_: Document, out: Path) -> None:
+    """Start the file and then fail, as a full disk does partway through a write."""
+    out.write_bytes(b"PK\x03\x04 the first part of a .docx and nothing more")
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_a_failed_docx_write_keeps_the_previous_file_whole(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writing in place, a full disk left a truncated resume.docx where the good one had been."""
+    build(source, pdf=False)
+    good = (tmp_path / "resume.docx").read_bytes()
+
+    monkeypatch.setattr(ats, "render_docx", _half_written)
+    with pytest.raises(RenderError, match=r"cannot write .*resume\.docx: No space left on device"):
+        build(source, pdf=False)
+    assert (tmp_path / "resume.docx").read_bytes() == good
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["resume.docx", "resume.md"]
+
+
+def test_a_failed_first_docx_write_leaves_nothing_behind(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ats, "render_docx", _half_written)
+    with pytest.raises(RenderError, match="No space left on device"):
+        build(source, pdf=False)
+    assert [path.name for path in tmp_path.iterdir()] == ["resume.md"]
+
+
+def test_the_docx_is_swapped_in_with_ordinary_permissions(source: Path, tmp_path: Path) -> None:
+    """A temporary file is owner-only; the resume must be readable as any new file in the folder."""
+    build(source, pdf=False)
+    probe = tmp_path / "probe"
+    probe.write_bytes(b"")
+    assert (tmp_path / "resume.docx").stat().st_mode == probe.stat().st_mode

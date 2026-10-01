@@ -176,6 +176,43 @@ def test_merging_duplicates_and_dropping_noise_is_what_refining_is_for() -> None
             lambda d: d["certifications"][0].update(year=""),
             "dropped the date 2019 from 'Fellow of the Analytical Society'",
         ),
+        (
+            lambda d: d["contact"].update(location="London (open to relocation)"),
+            "changed contact.location from '' to 'London (open to relocation)'; refining never",
+        ),
+        (
+            lambda d: d["contact"].update(work_authorization="Holds active security clearance"),
+            "changed contact.work_authorization from ''",
+        ),
+        (
+            lambda d: d["contact"].update(headline="Distinguished Engineer"),
+            "changed contact.headline to 'Distinguished Engineer', which the draft's titles",
+        ),
+        (
+            lambda d: _role(d).update(stack=["Python", "Rust"]),
+            (
+                "added 'Rust' to the stack of Principal Engineer at Analytical Engine Programme, "
+                "Inc. (January 2021 – Present), which the draft does not record anywhere"
+            ),
+        ),
+        (
+            lambda d: d.update(projects=[{"name": "Loom", "description": "x", "stack": ["Rust"]}]),
+            "added 'Rust' to the stack of Loom",
+        ),
+        (
+            lambda d: _role(d)["highlights"].append(
+                {"label": "Fraud", "text": "Designed the fraud-detection platform."}
+            ),
+            "added the highlight Fraud, which nothing the draft records at that employer supports",
+        ),
+        (
+            lambda d: d.update(summary="Engineer whose programs serve millions of users."),
+            "claimed 'millions', a size larger than any figure the draft states",
+        ),
+        (
+            lambda d: _role(d)["highlights"][1].update(text="Led a team of fifteen from 2021."),
+            "introduced the figure 'fifteen', which the draft does not state",
+        ),
     ],
 )
 def test_refining_may_not_add_lose_or_promote(
@@ -410,6 +447,99 @@ def test_a_figure_promoted_out_of_the_notes_is_an_invention() -> None:
 
     problems = check_refinement(profile(), profile(promoted))
     assert problems == ("introduced the figure '14', which the draft does not state",)
+
+
+def test_refining_may_reword_merge_and_move_highlights() -> None:
+    """Each keeps the draft's words for that employer, which is what a new highlight lacks."""
+
+    def recorded_twice(data: dict[str, Any]) -> None:
+        _role(data)["highlights"].append(
+            {"text": "Rewrote the scheduler, cutting nightly batch runtime 38%."}
+        )
+
+    def refined(data: dict[str, Any]) -> None:
+        highlights = _role(data)["highlights"]
+        highlights[0]["text"] = (
+            "Rewrote the scheduler on AWS EC2, cutting nightly batch runtime 38%."
+        )
+        highlights[1]["text"] = "Led a twelve-person team from 2021."
+        _role(data, 0, 1)["highlights"] = [highlights.pop(1)]
+
+    assert check_refinement(profile(recorded_twice), profile(refined)) == ()
+
+
+def test_refining_may_turn_a_technology_that_was_an_accomplishment_into_a_highlight() -> None:
+    def refined(data: dict[str, Any]) -> None:
+        _items(data).pop()  # "Scheduler rewrite"
+        _role(data)["highlights"].append(
+            {"label": "Scheduler", "text": "Led the scheduler rewrite."}
+        )
+
+    assert check_refinement(profile(), profile(refined)) == ()
+
+
+def test_refining_may_respell_contact_details_and_align_the_headline_and_stacks() -> None:
+    """Punctuation is no change, and a title the draft holds is no promotion.
+
+    A stack may name any technology the draft records: in its list, in another stack, or in its
+    text.
+    """
+
+    def draft(data: dict[str, Any]) -> None:
+        data["contact"].update(location="London UK - open to remote", headline="Engineer")
+        _role(data, 0, 1)["stack"] = ["K8s"]
+        data["summary"] = "Engineer who writes programs in Ada for the Difference Engine."
+        notes = {
+            "name": "Engine notes",
+            "description": "Notes on the engine.",
+            "stack": ["Fortran"],
+        }
+        data["projects"] = [notes]
+
+    def refined(data: dict[str, Any]) -> None:
+        draft(data)
+        data["contact"].update(location="London, UK — open to remote")
+        data["contact"].update(headline="Principal Engineer")
+        _role(data)["stack"] = ["Python", "Kubernetes", "Ada", "Fortran"]
+
+    assert check_refinement(profile(draft), profile(refined)) == ()
+
+
+def test_a_size_the_draft_states_may_be_restated_in_words() -> None:
+    def large(data: dict[str, Any]) -> None:
+        _role(data)["highlights"][0]["text"] = "Cut batch runtime 38% for 4M jobs on AWS EC2."
+
+    def restated(data: dict[str, Any]) -> None:
+        large(data)
+        data["summary"] = "Engineer whose programs run millions of jobs."
+
+    assert check_refinement(profile(large), profile(restated)) == ()
+
+
+@pytest.mark.parametrize(
+    ("name", "alias"), [("PostgreSQL", "Postgres"), ("Postgres", "PostgreSQL")]
+)
+def test_merging_two_spellings_of_one_technology_keeps_the_depth_either_recorded(
+    name: str, alias: str
+) -> None:
+    """The draft's "PostgreSQL" (no level) and "Postgres" (expert) are one database."""
+
+    def recorded_twice(data: dict[str, Any]) -> None:
+        _items(data).extend(
+            [{"name": "PostgreSQL"}, {"name": "Postgres", "level": "expert", "years": 8}]
+        )
+
+    def merged(years: float) -> Callable[[dict[str, Any]], None]:
+        def merge(data: dict[str, Any]) -> None:
+            entry = {"name": name, "aliases": [alias], "level": "expert", "years": years}
+            _items(data).append(entry)
+
+        return merge
+
+    assert check_refinement(profile(recorded_twice), profile(merged(8))) == ()
+    assert check_refinement(profile(recorded_twice), profile(merged(9))) == (
+        f"raised {name} from 8 to 9 years; refining never raises it",
+    )
 
 
 # --- an update: only what the answers say ---------------------------------------------------------
@@ -728,6 +858,239 @@ def test_a_new_email_or_link_must_be_written_out_in_the_answer() -> None:
     assert check_update(profile(), linked, "My site is ada.example") == ()
 
 
+# --- an update: every figure from the answers, or from the field it was already in ----------------
+_DOWNTIME = "How much did the loom work cut downtime?\nIt cut loom downtime 45% in 2022."
+
+
+def _highlight(text: str, label: str = "") -> Callable[[dict[str, Any]], None]:
+    def add(data: dict[str, Any]) -> None:
+        _role(data)["highlights"].append({"label": label, "text": text})
+
+    return add
+
+
+@pytest.mark.parametrize(
+    ("text", "borrowed"),
+    [
+        ("Cut loom downtime 38% in 2022.", "38%"),
+        ("Cut loom downtime 45% in 2021.", "2021"),
+        ("Cut loom downtime 45% in 2019.", "2019"),
+        ("Cut loom downtime 45% in 2022 for twelve looms.", "twelve"),
+    ],
+    ids=["another-highlight-s-figure", "a-role-s-start-year", "a-certification-year", "in-words"],
+)
+def test_a_new_highlight_may_not_borrow_a_figure_or_a_year_the_answer_did_not_give(
+    text: str, borrowed: str
+) -> None:
+    """38% and 12 are the profile's, for other accomplishments; the answer said 45% and 2022."""
+    problems = check_update(profile(), profile(_highlight(text, "Downtime")), _DOWNTIME)
+    assert problems == (_unsaid(f"introduced the figure {borrowed!r} in the highlight Downtime"),)
+
+
+def test_a_new_highlight_carrying_the_answer_s_own_figures_passes() -> None:
+    updated = profile(_highlight("Cut loom downtime 45% in 2022.", "Downtime"))
+    assert check_update(profile(), updated, _DOWNTIME) == ()
+
+
+def test_a_rewritten_highlight_keeps_its_own_figures_and_takes_only_the_answer_s() -> None:
+    def figured(text: str) -> Profile:
+        return profile(lambda d: _role(d)["highlights"][0].update(text=text))
+
+    said = "How long did the batch take after the rewrite?\nIt saved 4 hours a night."
+    assert (
+        check_update(
+            profile(), figured("Cut batch runtime 38% (4 hours a night) on AWS EC2."), said
+        )
+        == ()
+    )
+    assert check_update(
+        profile(), figured("Cut batch runtime 38% for 12 teams on AWS EC2."), said
+    ) == (_unsaid("introduced the figure '12' in the highlight Scheduler"),)
+
+
+def test_a_scope_takes_a_figure_only_from_the_answers_or_its_own_text() -> None:
+    def scoped(scope: str) -> Profile:
+        return profile(lambda d: _role(d).update(scope=scope))
+
+    said = "How big is the team you lead?\nNine engineers."
+    assert check_update(profile(), scoped("Leads a team of nine."), said) == ()
+    assert check_update(profile(), scoped("Leads a team of 9."), said) == ()
+    assert check_update(profile(), scoped("Leads a team of 12."), said) == (
+        _unsaid(
+            "introduced the figure '12' in the scope of Principal Engineer at Analytical Engine "
+            "Programme, Inc."
+        ),
+    )
+
+
+def test_a_corrected_role_keeps_its_scope_s_figures() -> None:
+    def scoped(data: dict[str, Any]) -> None:
+        _role(data).update(scope="Leads a team of 12.")
+
+    def retitled(data: dict[str, Any]) -> None:
+        scoped(data)
+        _role(data).update(title="Chief Engineer")
+
+    said = "My title is Chief Engineer, not Principal Engineer."
+    assert check_update(profile(scoped), profile(retitled), said) == ()
+
+
+def test_a_role_corrected_in_title_and_dates_keeps_its_scope_but_another_may_not_copy_it() -> None:
+    def scoped(data: dict[str, Any]) -> None:
+        _role(data).update(scope="Leads a team of 12.")
+
+    def corrected(data: dict[str, Any]) -> None:
+        scoped(data)
+        _role(data).update(title="Chief Engineer", start="2020-06")
+
+    said = "I was Chief Engineer from June 2020, not Principal Engineer."
+    assert check_update(profile(scoped), profile(corrected), said) == ()
+
+    def copied(data: dict[str, Any]) -> None:
+        scoped(data)
+        _role(data, 0, 1).update(scope="Leads a team of 12.")
+
+    assert check_update(profile(scoped), profile(copied), "I was an Engineer before that.") == (
+        _unsaid(
+            "introduced the figure '12' in the scope of Engineer at Analytical Engine "
+            "Programme, Inc."
+        ),
+    )
+
+
+def test_a_renamed_credential_keeps_the_figures_in_its_notes() -> None:
+    def fellow(name: str) -> Profile:
+        entry = {"name": name, "year": "2019", "notes": "Member 4471."}
+        return profile(lambda d: d.update(certifications=[entry]))
+
+    said = "It's Fellow of the Royal Analytical Society, not Fellow of the Analytical Society."
+    renamed = fellow("Fellow of the Royal Analytical Society")
+    assert check_update(fellow("Fellow of the Analytical Society"), renamed, said) == ()
+
+
+def test_the_summary_and_a_project_take_figures_only_from_the_answers_or_themselves() -> None:
+    def project(outcome: str) -> Callable[[dict[str, Any]], None]:
+        def add(data: dict[str, Any]) -> None:
+            data["projects"] = [
+                {"name": "Loom", "description": "A loom controller.", "outcome": outcome}
+            ]
+
+        return add
+
+    said = "How many mills use the loom controller?\nThree mills run it."
+    assert check_update(profile(project("")), profile(project("Runs in 3 mills.")), said) == ()
+    assert check_update(profile(project("")), profile(project("Runs in 12 mills.")), said) == (
+        _unsaid("introduced the figure '12' in the project 'Loom'"),
+    )
+    summarised = profile(lambda d: d.update(summary="Engineer who led 12 engineers."))
+    assert check_update(profile(), summarised, said) == (
+        _unsaid("introduced the figure '12' in the summary"),
+    )
+
+
+def test_a_figure_from_a_note_needs_the_note_s_question_to_be_answered() -> None:
+    """Notes are unconfirmed; their figure counts once the answer accepts the question."""
+
+    def peak(data: dict[str, Any]) -> None:
+        _role(data)["highlights"][1]["text"] = "Led a team of 14 engineers from 2021."
+
+    assert check_update(profile(), profile(peak), "I led the team from 2021.") == (
+        _unsaid("introduced the figure '14' in the highlight \"Led a team of 14 engineers…\""),
+    )
+    accepted = "Was the team 12 or 14 engineers?\nIt was 14 at its peak."
+    assert check_update(profile(), profile(peak), accepted) == ()
+
+
+def test_a_size_in_words_needs_an_answer_that_large() -> None:
+    updated = profile(_highlight("Ran the loom controller for millions of users.", "Scale"))
+    small = "How many people used the loom controller?\nAbout 3,000 users."
+    assert check_update(profile(), updated, small) == (
+        "claimed 'millions' in the highlight Scale, a size larger than anything the answers state",
+    )
+    large = "How many people used the loom controller?\nAbout 3 million users."
+    assert check_update(profile(), updated, large) == ()
+
+
+# --- an update: contact details, stacks and new highlights in the answers' words -----------------
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("location", "London (open to relocation)"),
+        ("work_authorization", "Holds active security clearance"),
+        ("headline", "Distinguished Engineer"),
+    ],
+)
+def test_an_update_may_not_write_a_contact_detail_nobody_gave(field: str, value: str) -> None:
+    changed = profile(lambda d: d["contact"].update({field: value}))
+    assert check_update(profile(), changed, "About $9k a month.") == (
+        _unsaid(f"changed contact.{field} to {value!r}"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "said"),
+    [
+        (
+            "location",
+            "London, UK (open to remote)",
+            "I moved to London and I'm open to remote work.",
+        ),
+        ("location", "Denver, CO", "I live in Denver now."),
+        ("work_authorization", "Green card holder", "I have a green card."),
+        ("headline", "Principal Engineer, Scheduling", "Yes, scheduling is my focus."),
+    ],
+)
+def test_an_update_may_word_a_contact_detail_the_answer_gives(
+    field: str, value: str, said: str
+) -> None:
+    """The answer's words, put the way a profile writes them: "Denver" may gain its state."""
+    changed = profile(lambda d: d["contact"].update({field: value}))
+    assert check_update(profile(), changed, said) == ()
+
+
+def test_an_update_may_add_to_a_stack_only_what_the_answers_name() -> None:
+    """A stack says the technology was used in that role, which a resume then prints there."""
+    stacked = profile(lambda d: _role(d).update(stack=["Python", "Kubernetes"]))
+    role = "Principal Engineer at Analytical Engine Programme, Inc."
+    assert check_update(profile(), stacked, "About $9k a month.") == (
+        _unsaid(f"added 'Python' to the stack of {role}"),
+        _unsaid(f"added 'Kubernetes' to the stack of {role}"),
+    )
+    assert check_update(profile(), stacked, "I used Python and K8s on the scheduler.") == ()
+    accepted = "Did you use Python and Kubernetes on the scheduler?\nYes, both of them."
+    assert check_update(profile(), stacked, accepted) == ()
+
+
+def test_respelling_a_stack_item_adds_nothing() -> None:
+    before = profile(lambda d: _role(d).update(stack=["Kubernetes"]))
+    after = profile(lambda d: _role(d).update(stack=["K8s"]))
+    assert check_update(before, after, "The team was 12 engineers.") == ()
+
+
+def test_an_update_may_add_to_a_project_s_stack_only_what_the_answers_name() -> None:
+    def project(*stack: str) -> Profile:
+        loom = {"name": "Loom", "description": "A loom controller.", "stack": list(stack)}
+        return profile(lambda d: d.update(projects=[loom]))
+
+    assert check_update(project("Python"), project("Python", "Go"), "It ran on looms.") == (
+        _unsaid("added 'Go' to the stack of Loom"),
+    )
+    assert check_update(project("Python"), project("Python", "Go"), "I rewrote it in Go.") == ()
+
+
+def test_a_new_highlight_must_be_told_in_the_answers_words() -> None:
+    """An answer about a salary cannot become an accomplishment about incident command."""
+    invented = profile(_highlight("Served as incident commander for every outage.", "Incident"))
+    assert check_update(profile(), invented, "About $9k a month.") == (
+        _unsaid("added the highlight Incident"),
+    )
+    paraphrased = profile(
+        _highlight("Established the team's on-call rotation and authored its runbooks.", "On-call")
+    )
+    said = "Did you run on-call?\nYes, I set up the team's on-call rotation and wrote the runbooks."
+    assert check_update(profile(), paraphrased, said) == ()
+
+
 # --- what changed, for the person -----------------------------------------------------------------
 def test_the_summary_of_changes_counts_what_moved() -> None:
     def refine(data: dict[str, Any]) -> None:
@@ -847,6 +1210,62 @@ def test_a_changed_credential_date_is_named() -> None:
 
 def test_nothing_changed_says_nothing() -> None:
     assert describe_changes(profile(), profile()) == ()
+
+
+_PRINCIPAL = "Principal Engineer at Analytical Engine Programme, Inc."
+
+
+def test_the_summary_of_changes_names_stacks_scopes_and_contact_details() -> None:
+    """What an answer adds outside the highlights is still something the candidate should see."""
+
+    def before(data: dict[str, Any]) -> None:
+        _role(data).update(stack=["Python", "Terraform"])
+        data["projects"] = [{"name": "Loom", "description": "A loom.", "stack": ["Python"]}]
+
+    def after(data: dict[str, Any]) -> None:
+        _role(data).update(stack=["Python", "K8s"], scope="Leads a team of nine.")
+        shuttle = {"name": "Shuttle", "description": "A shuttle.", "stack": ["Go"]}
+        data["projects"] = [{"name": "Loom", "description": "A loom.", "stack": ["Go"]}, shuttle]
+        data["contact"].update(location="Denver, CO", phone="(555) 010-0199")
+        data["contact"]["links"].append({"label": "Site", "url": "https://ada.example"})
+        data["target_roles"] = ["Staff Engineer"]
+        _items(data)[0].update(years=6, used_at=["engine", "mill"])
+
+    lines = describe_changes(profile(before), profile(after))
+
+    assert f"{_PRINCIPAL}: stack + K8s" in lines
+    assert f"{_PRINCIPAL}: stack - Terraform" in lines
+    assert f"{_PRINCIPAL}: scope: Leads a team of nine." in lines
+    assert "Loom: stack + Go" in lines
+    assert "Loom: stack - Python" in lines
+    assert "+ Shuttle" in lines
+    assert not any(line.startswith("Shuttle:") for line in lines), "a new project is one line"
+    assert "location: Denver, CO" in lines
+    assert "phone: (555) 010-0199" in lines
+    assert "+ link: https://ada.example" in lines
+    assert "target roles: Staff Engineer" in lines
+    assert "  Python: 5 → 6 years" in lines
+    assert "  Python: used at + mill" in lines
+
+
+def test_the_summary_of_changes_names_what_was_taken_away() -> None:
+    def before(data: dict[str, Any]) -> None:
+        _role(data).update(scope="Leads a team of 12.")
+        data["contact"].update(work_authorization="US citizen")
+        data["target_roles"] = ["Staff Engineer"]
+
+    def after(data: dict[str, Any]) -> None:
+        _role(data).update(title="Chief Engineer")
+        data["contact"]["links"] = []
+        _items(data)[0].update(used_at=[])
+
+    lines = describe_changes(profile(before), profile(after))
+
+    assert "Chief Engineer at Analytical Engine Programme, Inc.: scope: removed" in lines
+    assert "work authorization: removed" in lines
+    assert "- link: https://github.com/ada" in lines
+    assert "target roles: none" in lines
+    assert "  Python: used at - engine" in lines
 
 
 def test_marking_a_technology_thin_narrows_what_can_be_printed_so_it_is_no_raise() -> None:

@@ -38,12 +38,14 @@ from resume_tailor.documents.blocks import (
     Span,
     is_contact_line,
     is_note,
+    title_of,
 )
 from resume_tailor.render.docx_common import (
     add_spans,
     set_cell_border,
     set_cell_margins,
     set_indent,
+    set_properties,
     set_spacing,
 )
 from resume_tailor.render.emphasis import entry_spans
@@ -223,6 +225,7 @@ def render_docx(
     sidebar_groups, main_groups = split_columns(document, sidebar_sections)
     _fill_cell(rail, sidebar_groups, indent=SIDEBAR_INDENT, sidebar=True)
     _fill_cell(main, main_groups, indent=MAIN_INDENT, sidebar=False)
+    set_properties(docx, document)
     docx.save(str(out))
 
 
@@ -385,9 +388,11 @@ CSS = f"""
 * {{ box-sizing: border-box; }}
 /* Every gap is a margin-TOP, every bottom margin is 0, and line-height is absolute — the .docx
    sums adjacent spacing where CSS collapses it, and Word's line "multiple" is a ratio of the
-   font's natural line box rather than of its size. Points mean the same thing to both. */
+   font's natural line box rather than of its size. Points mean the same thing to both. A word
+   too long for its column (a long email or URL in the rail) breaks at the column's edge, as Word
+   breaks it, instead of running across the rule into the other column. */
 body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
-        color: #111; margin: 0; }}
+        color: #111; margin: 0; overflow-wrap: anywhere; }}
 /* Arial has two weights, regular and bold, which is also all a .docx run can say, so no rule
    here names a weight between them. An entry heading's bold comes from its spans, as in Word. */
 h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
@@ -414,13 +419,17 @@ h3 {{ font-size: {BODY_PT}pt; font-weight: 400; margin-top: {GAP_PT["entry"]}pt;
 p {{ font-size: {PROSE_PT}pt; line-height: {PROSE_LINE_PT}pt; margin-top: {GAP_PT["para"]}pt; }}
 p.note {{ font-size: {BODY_PT}pt; line-height: {LINE_PT}pt; padding-left: {NOTE_INDENT_IN}in;
           margin-top: {GAP_PT["note"]}pt; }}
-/* Every bullet draws its glyph at the column edge and hangs its text past it, like the .docx
-   "List Bullet" paragraphs with a hanging indent. The first of a run stands off from what
-   precedes it; the rest sit tighter. */
+/* Every bullet draws its glyph at the column edge and hangs its text past it, with the left
+   indent and negative first-line indent of the .docx "List Bullet" paragraphs. The glyph stays
+   in the text flow: a positioned box is painted after everything else, so Chrome would write
+   each bullet's text last and a parser would read every skill and accomplishment detached from
+   its label or role. The first of a run stands off from what precedes it; the rest sit tighter. */
 ul {{ padding: 0; list-style: none; }}
-li {{ position: relative; padding-left: {BULLET_HANGING_IN}in; margin-top: {GAP_PT["bullet"]}pt; }}
+li {{ padding-left: {BULLET_HANGING_IN}in; text-indent: -{BULLET_HANGING_IN}in;
+      margin-top: {GAP_PT["bullet"]}pt; }}
 li:first-child {{ margin-top: {GAP_PT["bullet-first"]}pt; }}
-li::before {{ content: "{BULLET_GLYPH}"; position: absolute; left: 0; }}
+li::before {{ content: "{BULLET_GLYPH}"; display: inline-block; width: {BULLET_HANGING_IN}in;
+              text-indent: 0; }}
 .rail li {{ margin-top: {GAP_PT["skill-item"]}pt; }}
 .rail li:first-child {{ margin-top: {GAP_PT["skill-item-first"]}pt; }}
 /* Both columns start at the page margin, as the first paragraph of each .docx cell does. */
@@ -439,7 +448,7 @@ def render_html(
         f'<section class="main">{_html_groups(main_groups, sidebar=False)}</section>'
         "</div>"
     )
-    return page(document.name or "Resume", CSS, body)
+    return page(title_of(document), CSS, body)
 
 
 def _html_groups(groups: list[SectionGroup], *, sidebar: bool) -> str:

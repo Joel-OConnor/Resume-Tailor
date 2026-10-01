@@ -22,7 +22,9 @@ _SKIP = re.compile(r"^$|^(?:-{3,}|_{3,}|\*{3,})$")
 _SECTION = re.compile(r"^##\s+(?P<title>\S.*)$")
 _ENTRY = re.compile(r"^###\s+(?P<title>\S.*)$")
 _BULLET = re.compile(r"^[-*]\s+(?P<text>.*)$")
-_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<items>.*)$")
+# The colon inside the bold ("**Languages:** Go") is the format's; outside it ("**Languages**: Go")
+# is as common a habit, and the renderer reads both as a skills line, so both are checked as one.
+_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?)(?::\*\*|\*\*:)\s*(?P<items>.*)$")
 _ORDINAL = re.compile(r"^[0-9]{1,2}[.)]\s+")
 
 

@@ -8,7 +8,8 @@ Two folders hold the user's data, both gitignored:
     output/
         master-profile.yaml the career record every document is built from
         master-profile.md   its readable view
-        backups/            earlier profiles, one per rebuild or recorded answer
+        backups/            earlier versions: of the profile, one per rebuild or recorded
+                            answer, and of general/ and each application, one per rerun
         general/            the general resume and the LinkedIn profile
         applications/       one folder per tailored application
 
@@ -46,7 +47,8 @@ OUTPUT_DIR = Path("output")
 PROFILE_PATH = OUTPUT_DIR / "master-profile.yaml"
 PROFILE_VIEW_PATH = OUTPUT_DIR / "master-profile.md"
 BACKUPS_FOLDER = "backups"
-"""Beside the profile, wherever it is: the copies kept each time it is replaced."""
+"""The copies kept each time something is replaced: beside the profile, wherever it is, and inside
+the output folder for ``general/`` and each application folder (under ``backups/applications/``)."""
 GENERAL_FOLDER = "general"
 """Inside the output folder: the general resume and the LinkedIn profile."""
 APPLICATIONS_FOLDER = "applications"

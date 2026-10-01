@@ -454,7 +454,12 @@ _ATS_CSS_VALUES: dict[tuple[str, str], str] = {
     (".meta", "font-style"): "italic",
     ("p.note", "padding-left"): "0.05in",
     ("ul", "list-style"): "none",
+    # The .docx bullet's hanging indent: 0.25in left, -0.25in first line, the glyph in that gap.
     ("li", "padding-left"): "0.25in",
+    ("li", "text-indent"): "-0.25in",
+    ("li::before", "display"): "inline-block",
+    ("li::before", "width"): "0.25in",
+    ("li::before", "text-indent"): "0",
 }
 
 _POLISHED_CSS_POINTS: dict[tuple[str, str], float] = {
@@ -509,7 +514,12 @@ _POLISHED_CSS_VALUES: dict[tuple[str, str], str] = {
     (".meta", "font-style"): "italic",
     ("p.note", "padding-left"): "0.05in",
     ("ul", "list-style"): "none",
+    # The .docx bullet's hanging indent: 0.25in left, -0.25in first line, the glyph in that gap.
     ("li", "padding-left"): "0.25in",
+    ("li", "text-indent"): "-0.25in",
+    ("li::before", "display"): "inline-block",
+    ("li::before", "width"): "0.25in",
+    ("li::before", "text-indent"): "0",
 }
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import zipfile
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from docx import Document as read_docx
@@ -222,7 +225,7 @@ def test_a_cover_letter_renders_as_prose(letter: Document, tmp_path: Path) -> No
 def test_html_mirrors_the_docx_structure(resume: Document) -> None:
     html = ats.render_html(resume)
     assert html.startswith("<!doctype html>")
-    assert "<title>Ada Lovelace</title>" in html
+    assert "<title>Ada Lovelace Resume</title>" in html
     assert "<h1>Ada Lovelace</h1>" in html
     assert "<h2>Summary</h2>" in html
     assert "<h3><strong>Analytical Engine Programme — Principal Engineer</strong></h3>" in html
@@ -244,9 +247,12 @@ def test_html_escapes_markup_in_content() -> None:
 
 
 def test_html_falls_back_to_a_generic_title() -> None:
+    """With no name, the title still says what the file is: a resume has sections, a letter none."""
     from resume_tailor.documents.blocks import Document as Blocks
+    from resume_tailor.documents.blocks import Section
 
-    assert "<title>Resume</title>" in ats.render_html(Blocks())
+    assert "<title>Resume</title>" in ats.render_html(Blocks((Section("Skills"),)))
+    assert "<title>Cover Letter</title>" in ats.render_html(Blocks())
 
 
 def test_a_trailing_italic_note_renders_outside_the_bullet_list(resume: Document) -> None:
@@ -261,8 +267,45 @@ def test_html_carries_the_design_face_and_the_bullet_rule(resume: Document) -> N
     assert '<div class="subtitle">Principal Engineer</div>' in html
     assert '<div class="contact">ada@example.com |' in html
     assert f".contact {{ font-size: {ats.CONTACT_PT}pt; margin-top:" in html, "regular weight"
-    assert 'li::before { content: "\u2022"; position: absolute; left: 0; }' in html
+    assert "li { padding-left: 0.25in; text-indent: -0.25in;" in html
+    assert 'li::before { content: "\u2022"; display: inline-block; width: 0.25in;' in html
     assert "table" not in html.split("<body>")[1], "the single column never becomes a table"
+
+
+def test_every_box_stays_in_the_text_flow() -> None:
+    """Chrome writes a PDF's text in paint order, and a positioned or floated box paints apart.
+
+    With the bullet glyph positioned, every bullet was written after the Certifications heading,
+    so a parser reading the PDF in stored order (pypdf's default, and this project's own reader
+    of an old resume.pdf) found each accomplishment detached from its role.
+    """
+    assert "position:" not in ats.CSS
+    assert "float:" not in ats.CSS
+
+
+def test_a_word_too_long_for_its_line_breaks_at_the_margin() -> None:
+    """Word breaks an overlong URL or email at the margin; the PDF must not run it off the page."""
+    body = re.search(r"^body \{(?P<rule>[^}]*)\}", ats.CSS, re.MULTILINE)
+    assert body is not None
+    assert "overflow-wrap: anywhere;" in body["rule"]
+
+
+def test_the_docx_says_whose_it_is_and_what_it_is(
+    resume: Document, letter: Document, tmp_path: Path
+) -> None:
+    """Not python-docx's template metadata: author "python-docx", dated 2013, no title."""
+    start = datetime.now(UTC).replace(microsecond=0)
+    properties = _render(resume, tmp_path).core_properties
+    assert properties.title == "Ada Lovelace Resume"
+    assert properties.author == properties.last_modified_by == "Ada Lovelace"
+    assert properties.comments == ""
+    created = properties.created
+    assert created is not None
+    assert start <= created <= datetime.now(UTC)
+    assert properties.modified == created
+    with zipfile.ZipFile(tmp_path / "resume.docx") as package:
+        assert b"python-docx" not in package.read("docProps/core.xml")
+    assert _render(letter, tmp_path).core_properties.title == "Ada Lovelace Cover Letter"
 
 
 def test_html_bolds_an_entry_heading_only_where_the_markdown_does() -> None:
@@ -270,3 +313,9 @@ def test_html_bolds_an_entry_heading_only_where_the_markdown_does() -> None:
     assert "<h3><strong>Principal Engineer</strong> – Analytical Engine Programme</h3>" in html
     assert "<h3><strong>Mathematics</strong> – Private tuition</h3>" in html
     assert f"h3 {{ font-size: {ats.BODY_PT}pt; font-weight: 400;" in html, "a regular base"
+
+
+def test_the_pdf_names_itself_the_way_the_docx_does(resume: Document, letter: Document) -> None:
+    """The printed PDF takes its title from the HTML, so both files of one export match."""
+    assert "<title>Ada Lovelace Resume</title>" in ats.render_html(resume)
+    assert "<title>Ada Lovelace Cover Letter</title>" in ats.render_html(letter)

@@ -206,6 +206,9 @@ WHAT YOU MAY NOT CHANGE
   candidate's answers can add an entry or change a heading, as the note with them explains. Keep
   every section heading and the header lines.
 - Each document's format: the format contracts below are what the renderer and the checks accept.
+- The tailoring, when a job posting comes with the documents: keep the posting's own words for
+  the skills it names, keep what it asks for near the top, and cut only what this job does not
+  care about. The posting is never a source of fact.
 
 Where a line would only get better with a fact you do not have (an outcome, a number, a scope),
 leave that line as it is and put the question in QUESTIONS, worded for the candidate. Return the
@@ -323,7 +326,8 @@ career. Record what the answers state, where it belongs, and change nothing else
   "about 20%" into "20%", never add a detail the answer does not give.
 - An answer that confirms a note settles it: remove the note and record the fact. An answer that
   contradicts the profile corrects it. An answer that says no, or that they do not know, changes
-  nothing.
+  nothing, and so does a figure or date they are unsure of ("maybe 30%", "probably 2019"): an
+  unsure figure is not a fact.
 - Everything the answers do not touch stays exactly as it is: every other employer, role,
   highlight, technology and note, word for word.
 
@@ -570,6 +574,13 @@ def tailor_prompt(posting: str, profile: Profile) -> str:
     )
 
 
+_POSTING_NOTE = """\
+The job these documents are tailored to. The tailoring is deliberate: keep the posting's own words
+for every skill the candidate has, keep what it asks for in the top third of the resume, and judge
+what to cut by what this job cares about. It is never a source of fact: a requirement the profile
+does not support stays out of the documents.
+"""
+
 _REVIEW_NOTE = """\
 What a mechanical read of the resume flagged. Act on every suggestion you can, and carry each
 question into QUESTIONS unless the profile answers it.
@@ -592,14 +603,17 @@ def edit_prompt(
     *,
     flagged: str = "",
     answers: Iterable[Answer] = (),
+    posting: str = "",
 ) -> str:
     """Build the prompt for one editing pass over ``documents``.
 
     With ``answers`` it is the revision after a review: the documents take in what the candidate
-    just said, and no further questions are asked. Without them it is the review itself.
+    just said, and no further questions are asked. Without them it is the review itself. A
+    ``posting`` comes with a tailored application, so the editor keeps what it was tailored to.
     """
     revising = transcript(answers)
-    blocks = [
+    blocks = [_tagged("job-posting", _POSTING_NOTE, posting)] if posting.strip() else []
+    blocks += [
         _tagged(kind.lower().replace(" ", "-"), f"The {kind.lower()} to edit:", text)
         for kind, text in documents.items()
     ]
@@ -645,12 +659,29 @@ Follow the schema exactly, and these rules that the schema cannot state:
   every year, and anything else YAML would read as a number or a boolean.
 - Give each highlight a `label` (the bold lead-in a resume prints) and `tags` (the keywords that
   accomplishment is evidence for). Both are how tailoring finds the right bullet later.
-- Record every spelling a job posting might use in `aliases`: "K8s" for Kubernetes, "Postgres" for
-  PostgreSQL, "AWS" for Amazon Web Services.
+{spellings}
 - `technologies` holds tools, languages, platforms and methods. An accomplishment is a highlight.
 - `summary` is a generic professional summary; each resume gets its own rewrite later.
 - Text values must not start or end with whitespace, and `schema_version` is 1.
 """
+
+
+_RECORD_SPELLINGS = """\
+- Record every spelling a job posting might use in `aliases`: "K8s" for Kubernetes, "Postgres" for
+  PostgreSQL, "AWS" for Amazon Web Services."""
+
+_KEEP_SPELLINGS = """\
+- Keep every spelling of a technology the draft records, as its name or as an alias, and add
+  none: a spelling the draft does not have reads as a new technology, and the check rejects it."""
+
+_ANSWERED_SPELLINGS = """\
+- Keep every spelling of a technology as it is. Add an alias only to a technology the answers
+  name."""
+
+
+def _rules(spellings: str) -> str:
+    """Return the YAML rules with the one about a technology's spellings this operation follows."""
+    return _YAML_RULES.format(spellings=spellings)
 
 
 def _documents(documents: Mapping[str, str]) -> str:
@@ -665,7 +696,11 @@ def profile_prompt(documents: Mapping[str, str]) -> str:
     return "\n".join(
         (
             _tagged("schema", "The YAML must validate against this JSON Schema:", schema),
-            _tagged("rules", "And against these rules the schema cannot state:", _YAML_RULES),
+            _tagged(
+                "rules",
+                "And against these rules the schema cannot state:",
+                _rules(_RECORD_SPELLINGS),
+            ),
             _tagged("documents", _DOCUMENT_NOTE, _documents(documents)),
             _tagged(
                 "output-contract",
@@ -694,7 +729,9 @@ def refine_profile_prompt(draft: str, documents: Mapping[str, str], audit: str) 
             _tagged("draft-profile", "The draft master profile to refine:", draft),
             _tagged("audit", _AUDIT_NOTE, audit or "The audit found nothing."),
             _tagged("documents", _SOURCES_NOTE, _documents(documents)),
-            _tagged("rules", "The refined YAML must still follow these rules:", _YAML_RULES),
+            _tagged(
+                "rules", "The refined YAML must still follow these rules:", _rules(_KEEP_SPELLINGS)
+            ),
             _tagged(
                 "output-contract",
                 "What to return, and nothing else:",
@@ -710,7 +747,11 @@ def update_profile_prompt(profile: str, answers: Iterable[Answer]) -> str:
         (
             _tagged("answers", "The questions and the candidate's answers:", transcript(answers)),
             _tagged("master-profile", "The profile to update, as it is now:", profile),
-            _tagged("rules", "The updated YAML must still follow these rules:", _YAML_RULES),
+            _tagged(
+                "rules",
+                "The updated YAML must still follow these rules:",
+                _rules(_ANSWERED_SPELLINGS),
+            ),
             _tagged(
                 "output-contract",
                 "What to return, and nothing else:",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -51,6 +52,22 @@ def test_the_minimal_profile_renders_the_core_sections() -> None:
     assert "### Analytical Engine Programme" in markdown
     assert "#### Principal Engineer" in markdown
     assert "*January 1843 – Present*" in markdown
+
+
+def test_the_header_names_the_file_the_view_was_rendered_from() -> None:
+    """A view of a backup or the example must not send the reader to edit the live profile."""
+    profile = loader.load_mapping(MINIMAL)
+    markdown = render_markdown(profile, source=Path("examples/master-profile.yaml"))
+    assert markdown.splitlines()[2] == (
+        "> Generated from `examples/master-profile.yaml`. Edit the YAML, not this file."
+    )
+    assert "output/master-profile.yaml" not in markdown
+
+
+def test_without_a_source_the_header_names_the_default_profile() -> None:
+    assert _render().splitlines()[2] == (
+        "> Generated from `output/master-profile.yaml`. Edit the YAML, not this file."
+    )
 
 
 def test_it_ends_with_exactly_one_newline() -> None:

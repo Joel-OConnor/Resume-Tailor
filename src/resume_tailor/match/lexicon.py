@@ -241,16 +241,65 @@ def _provenance(name: str, alias: str) -> Provenance:
     ``Postgres``/``PostgreSQL`` and ``K8s``/``Kubernetes`` are variants. ``ITSM``/``BMC Remedy``
     and ``CRM``/``Salesforce`` are categories — matching one does not mean the posting wants the
     other, and often means it wants a competitor.
+
+    A variant either sits inside the other spelling (Postgres, Kafka) or abbreviates it, in
+    either direction: by initials (TDD, JS for JavaScript, the CI and CD of CI/CD) or as a
+    numeronym (K8s). Calling those categories told the model that a posting's "K8s" might mean
+    a different vendor than Kubernetes, and kept a highlight written with "K8s" from counting as
+    Kubernetes evidence.
     """
     reduced_name = _reduce(name)
     reduced_alias = _reduce(alias)
     if reduced_alias in reduced_name or reduced_name in reduced_alias:
+        return Provenance.VARIANT
+    if _abbreviates(alias, name) or _abbreviates(name, alias):
         return Provenance.VARIANT
     return Provenance.CATEGORY
 
 
 def _reduce(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
+
+
+_WORD_PART = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+_NUMERONYM = re.compile(r"^(?P<first>[a-z])(?P<count>[0-9]+)(?P<last>[a-z])$")
+_MINOR_WORDS = frozenset({"a", "an", "and", "as", "for", "in", "of", "on", "the", "to", "with"})
+_MIN_INITIALS = 2
+
+
+def _abbreviates(short: str, long: str) -> bool:
+    """Report whether ``short`` abbreviates ``long`` by its initials or as a numeronym.
+
+    Initials are read from the words and the camel-case parts of ``long``, with and without its
+    minor words: "Test-driven development" gives TDD, "JavaScript" JS, "Infrastructure as Code"
+    IaC. They may match one part of a joined short form, which is how "Continuous Integration"
+    abbreviates to the CI of "CI/CD". A numeronym keeps the first and last letters of a word and
+    counts the letters between them, as K8s does for Kubernetes. Nothing looser counts: a
+    category's acronym (ITSM, CRM, IaC) is never the initials of the product it is an alias of,
+    and a variant can confirm a match a category could only qualify.
+    """
+    targets = {_reduce(short), *(_reduce(part) for part in short.split("/"))}
+    words = _WORD_PART.findall(long)
+    initials = {
+        "".join(word[0] for word in words),
+        "".join(word[0] for word in words if word.casefold() not in _MINOR_WORDS),
+    }
+    if any(len(found) >= _MIN_INITIALS and found.casefold() in targets for found in initials):
+        return True
+    spelled = {_reduce(long), *(word.casefold() for word in words)}
+    return any(_numeronym(target, word) for target in targets for word in spelled)
+
+
+def _numeronym(short: str, word: str) -> bool:
+    """Report whether ``short`` is a numeronym of ``word``: "k8s" of "kubernetes"."""
+    match = _NUMERONYM.match(short)
+    return (
+        match is not None
+        and word.isalpha()
+        and word[0] == match["first"]
+        and word[-1] == match["last"]
+        and len(word) == int(match["count"]) + 2
+    )
 
 
 def _evidence(

@@ -90,7 +90,10 @@ def _make_client(api_key: str) -> Any:  # noqa: ANN401 - the SDK type is not imp
     try:
         import anthropic  # noqa: PLC0415 - deferred so the base install needs no SDK
     except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
-        msg = "the standalone path needs the 'agent' extra: pip install 'resume-tailor[agent]'"
+        msg = (
+            "the Anthropic API needs the 'agent' extra: run make setup, "
+            "or pip install 'resume-tailor[agent]'"
+        )
         raise ModelError(msg) from exc
     return anthropic.Anthropic(api_key=api_key)
 
@@ -114,17 +117,17 @@ def _describe(exc: Exception) -> str:
     """Turn an SDK exception into something a user can act on, without leaking the key."""
     status = getattr(exc, "status_code", None)
     if status == 401:  # noqa: PLR2004 - the HTTP meaning is the documentation
-        return "the API key was rejected — check ANTHROPIC_API_KEY in your .env"
+        return "the API key was rejected: check ANTHROPIC_API_KEY in your .env"
     if status == 429:  # noqa: PLR2004
-        return "rate limited by the API — wait a moment and try again"
+        return "rate limited by the API: wait a moment and try again"
     if _NO_CREDIT in str(exc):
         return (
-            "the Anthropic account is out of credits — add credits at "
+            "the Anthropic account is out of credits: add credits at "
             "https://console.anthropic.com/settings/billing, or set RESUME_TAILOR_LLM=claude-code "
             "in .env to have a Claude Code session answer instead"
         )
     if status in _RETRYABLE_STATUS:
-        return f"the API is temporarily unavailable (HTTP {status}) — try again"
+        return f"the API is temporarily unavailable (HTTP {status}): try again"
     # The type alone named the failure but never what to do about it — "ValueError" was the whole
     # report for a config the SDK rejects by name. Carry the message, with any key redacted from
     # it: a URL or an argument the SDK echoes back is exactly the actionable part.

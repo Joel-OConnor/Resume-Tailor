@@ -88,6 +88,54 @@ def test_a_category_alias_is_distinguished_from_a_respelling(profile: Profile) -
     assert by_surface["containers"].provenance is Provenance.CATEGORY
 
 
+def _provenance_of(name: str, alias: str) -> Provenance:
+    """Return the provenance the lexicon gives ``alias`` as a spelling of ``name``."""
+    technologies = [
+        {"group": "G", "items": [{"name": name, "aliases": [alias], "used_at": ["acme"]}]}
+    ]
+    forms = build_lexicon(_profile(technologies=technologies)).forms
+    return next(form for form in forms if form.surface == alias).provenance
+
+
+@pytest.mark.parametrize(
+    ("name", "alias"),
+    [
+        ("Kubernetes", "K8s"),
+        ("Test-driven development", "TDD"),
+        ("JavaScript", "JS"),
+        ("CI/CD", "Continuous Integration"),
+        ("CI/CD", "Continuous Delivery"),
+        ("Infrastructure as Code", "IaC"),
+        ("Internationalization", "i18n"),
+        # Either side may be the short one.
+        ("K8s", "Kubernetes"),
+        ("TDD", "Test-driven development"),
+        ("JS", "JavaScript"),
+    ],
+)
+def test_an_abbreviation_of_the_name_is_a_variant(name: str, alias: str) -> None:
+    """Initials and numeronyms respell the name; calling them categories made K8s a vendor."""
+    assert _provenance_of(name, alias) is Provenance.VARIANT
+
+
+@pytest.mark.parametrize(
+    ("name", "alias"),
+    [
+        ("BMC Remedy", "ITSM"),
+        ("Salesforce", "CRM"),
+        ("Terraform", "IaC"),
+        ("Terraform", "infrastructure as code"),
+        ("Docker", "containers"),
+        # K9s is a different tool: a numeronym has to count the letters it stands for.
+        ("Kubernetes", "K9s"),
+        # The platform a product runs on is broader than the product, whatever its initials.
+        ("AWS Lambda", "Amazon Web Services"),
+    ],
+)
+def test_an_alias_that_abbreviates_nothing_is_still_a_category(name: str, alias: str) -> None:
+    assert _provenance_of(name, alias) is Provenance.CATEGORY
+
+
 @pytest.mark.parametrize(
     ("surface", "tier"),
     [
@@ -193,6 +241,10 @@ def _evidenced(item: dict[str, Any], text: str, label: str = "Work") -> bool:
         # A lone letter counts when a tool frame sits on its natural side.
         ({"name": "C"}, "Wrote the firmware in C."),
         ({"name": "C"}, "Built a C library for parsing."),
+        # An abbreviation the profile records is a spelling, not a category.
+        ({"name": "Kubernetes", "aliases": ["K8s"]}, "Moved 40 services onto K8s."),
+        ({"name": "Test-driven development", "aliases": ["TDD"]}, "Brought TDD to the team."),
+        ({"name": "CI/CD", "aliases": ["Continuous Integration"]}, "Ran Continuous Integration."),
     ],
 )
 def test_a_highlight_naming_a_spelling_of_the_technology_is_evidence(
@@ -355,6 +407,88 @@ def test_a_category_alias_only_ever_reaches_partial() -> None:
     assert match.confidence is Confidence.PARTIAL
     assert "different vendor" in match.caveat
     assert not match.satisfies_must_have
+
+
+def test_a_postings_abbreviation_of_a_technology_is_not_called_another_vendor() -> None:
+    """K8s is Kubernetes: the posting asks for exactly what the profile records."""
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Ops",
+                "items": [
+                    {
+                        "name": "Kubernetes",
+                        "aliases": ["K8s"],
+                        "level": "proficient",
+                        "used_at": ["acme"],
+                    }
+                ],
+            }
+        ],
+        experience=_acme({"label": "Clusters", "text": "Ran Kubernetes clusters for 40 services."}),
+    )
+    report = match_posting("## Requirements\n- Experience with K8s.\n", profile)
+    match = next(m for m in report.coverage.matches if m.technology == "Kubernetes")
+    assert "vendor" not in match.caveat
+    assert match in report.confirmed
+
+
+def _listed_profile() -> Profile:
+    """Return a profile that evidences every technology the list postings below name."""
+    names = ["Amazon Web Services (AWS)", "Kubernetes", "Terraform", "Go", "Kafka", "PostgreSQL"]
+    items = [{"name": name, "level": "proficient", "used_at": ["acme"]} for name in names]
+    return _profile(
+        technologies=[{"group": "Stack", "items": items}],
+        experience=_acme(
+            {
+                "label": "Platform",
+                "text": "Ran Go services on AWS and Kubernetes, provisioned with Terraform.",
+            },
+            {"label": "Events", "text": "Moved the ledger from PostgreSQL to Kafka."},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Hands-on with AWS, Kubernetes, and Terraform.",
+        "Experience with Go, Kubernetes and AWS.",
+        "Kafka, Go and PostgreSQL in production.",
+        "Strong Go (Kafka a plus).",
+    ],
+)
+def test_punctuation_ends_a_product_name(line: str) -> None:
+    """The next item of a list is not the rest of a longer product's name.
+
+    Read that way, every item of "AWS, Kubernetes, and Terraform" but the last was qualified as
+    naming "a more specific product", and the tailoring prompt is bound by that caveat.
+    """
+    report = match_posting(f"## Requirements\n- {line}\n", _listed_profile())
+    assert len(report.coverage.matches) >= 2
+    assert not [m.technology for m in report.coverage.matches if m.caveat]
+    assert report.confirmed == report.coverage.matches
+
+
+@pytest.mark.parametrize(
+    "line", ["Experience with AWS Lambda.", "Hands-on with AWS Lambda, Kubernetes, and Terraform."]
+)
+def test_a_name_followed_by_a_space_and_a_product_still_names_a_more_specific_one(
+    line: str,
+) -> None:
+    report = match_posting(f"## Requirements\n- {line}\n", _listed_profile())
+    aws = next(m for m in report.coverage.matches if m.technology == "Amazon Web Services (AWS)")
+    assert aws.confidence is Confidence.PARTIAL
+    assert aws.caveat == "the posting names a more specific product than the profile records"
+
+
+def test_products_bracketed_after_a_name_are_gaps_rather_than_a_caveat_on_it() -> None:
+    """Nothing is overstated: AWS is what the profile records, and the rest is reported missing."""
+    report = match_posting(
+        "## Requirements\n- AWS (Lambda, ECS) in production.\n", _listed_profile()
+    )
+    assert "Amazon Web Services (AWS)" in {m.technology for m in report.confirmed}
+    assert {"Lambda", "ECS"} <= {gap.term for gap in report.gaps}
 
 
 def test_a_technology_without_evidence_only_reaches_partial(profile: Profile) -> None:

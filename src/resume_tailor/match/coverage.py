@@ -148,7 +148,14 @@ def _scan(clause: Clause, lexicon: Lexicon) -> list[_Hit]:
 
 
 def _extends(token: Token) -> bool:
-    """Report whether the next token makes this a prefix of a more specific product."""
+    """Report whether the next token makes this a prefix of a more specific product.
+
+    Only a space joins a name to the word after it, as in "AWS Lambda" or "Docker Swarm". A
+    comma, a bracket or any other punctuation ends the name, so the next item of a list ("AWS,
+    Kubernetes, and Terraform") never makes the one before it read as half of a longer product.
+    """
+    if token.break_before:
+        return False
     return token.has_inner_capital or (token.surface[:1].isupper() and not token.sentence_initial)
 
 

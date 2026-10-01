@@ -7,11 +7,14 @@ checks and retries as an API reply, so a relayed resume is held to exactly the s
 
 The protocol, all inside the relay folder:
 
-* the script writes ``<id>.request.md``, holding the system prompt and the prompt;
-* the answerer writes the whole reply to ``<id>.response.md`` (``<id>.error.md`` to give up on
-  the request, with a line saying why);
-* the script reads the reply once the file has stopped growing, and moves both into ``answered/``.
-  A request it stops waiting for (no reply in time, or the script interrupted) moves there too.
+* the script writes ``<id>.request.md``, holding the system prompt and the prompt. The id is the
+  UTC second it was posted, a random id for the script's run, and a count, so two scripts sharing
+  the folder never post under the same name and the names still sort oldest first;
+* the answerer writes the whole reply to ``<id>.response.md.tmp`` and moves it onto
+  ``<id>.response.md`` (``<id>.error.md`` to give up on the request, with a line saying why);
+* the script reads the reply once the file has kept the same size for two polls in a row, and
+  moves both into ``answered/``. A request it stops waiting for (no reply in time, or the script
+  interrupted) moves there too.
 
 A script can also be killed before it tidies up (a terminal closed, a background job stopped), and
 then its request stays in the folder. So the script holds a lock on each request while it waits,
@@ -22,6 +25,7 @@ over a request nobody holds. The next answerer is handed only a request a script
 from __future__ import annotations
 
 import fcntl
+import secrets
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -52,6 +56,18 @@ _REQUEST = ".request.md"
 _RESPONSE = ".response.md"
 _ERROR = ".error.md"
 _SECONDS_PER_MINUTE = 60
+_RUN_ID_BYTES = 4
+_STEADY_POLLS = 2
+"""How many polls in a row a reply must keep its size before it is read.
+
+A reply moved into place is whole the moment it appears, so this costs it two polls. A reply
+written in pieces gets that long to pause between them without being read half-finished.
+"""
+
+
+def _new_run() -> str:
+    """Return a random id for one script's run, which no other run sharing the folder will have."""
+    return secrets.token_hex(_RUN_ID_BYTES)
 
 
 def response_for(request: Path) -> Path:
@@ -141,13 +157,15 @@ class RelayModel:
     clock: Callable[[], float] = field(default=time.monotonic, repr=False)
     sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
     _sent: int = field(default=0, repr=False)
+    _run: str = field(default_factory=_new_run, repr=False)
+    """Sets this run's requests apart from those of any other script posting in the same second."""
 
     def complete(self, system: str, prompt: str) -> Reply:
         """Write the request, wait for its reply, and return the reply as a :class:`Reply`.
 
         Raises:
             ModelError: the request could not be written, the answerer declined it, the reply
-                was empty, or none arrived in time.
+                was empty or not UTF-8 text, or none arrived in time.
         """
         request, waiting = self._write(system, prompt)
         try:
@@ -168,11 +186,15 @@ class RelayModel:
         """Put the request in the folder, locked as awaited, and return it with its lock."""
         self._sent += 1
         stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
-        request = self.directory / f"{stamp}-{self._sent:03d}{_REQUEST}"
+        # The time leads, so the oldest request sorts first. Two scripts can post in the same
+        # second, and with the same name one would replace the other's request and take its reply.
+        request = self.directory / f"{stamp}-{self._run}-{self._sent:03d}{_REQUEST}"
+        response = response_for(request)
         body = (
             f"# Relay request {request.name.removesuffix(_REQUEST)}\n\n"
-            f"Write the complete reply, and nothing else, to `{response_for(request)}`. To "
-            f"decline, write the reason to `{error_for(request)}`.\n\n"
+            f"Write the complete reply, and nothing else, to `{response}.tmp`, then move that "
+            f"file onto `{response}`, so the script never reads a reply that is still being "
+            f"written. To decline, write the reason to `{error_for(request)}`.\n\n"
             f"## System\n\n{system.strip()}\n\n## Prompt\n\n{prompt.strip()}\n"
         )
         waiting = None
@@ -191,20 +213,32 @@ class RelayModel:
         return request, waiting
 
     def _await(self, request: Path) -> str:
-        """Wait for the reply to exist and stop growing, then read it."""
+        """Wait for the reply to be written and keep its size, then read it.
+
+        One quiet poll is not enough: a writer that pauses between pieces looks finished in the
+        pause, and a shell redirect creates the file before it has anything to put in it. So an
+        empty file counts as not written yet, and the size must hold for :data:`_STEADY_POLLS`
+        polls in a row. A decline is read the same way, except that an empty one, held as long,
+        still declines: the reason is optional.
+        """
         response, declined = response_for(request), error_for(request)
         deadline = self.clock() + self.minutes * _SECONDS_PER_MINUTE
-        last_size = -1
+        last_size = steady = 0
+        last_decline, decline_steady = -1, 0
         while self.clock() < deadline:
             if declined.exists():
-                reason = declined.read_text(encoding="utf-8").strip() or "no reason given"
-                msg = f"Claude Code declined {request.name}: {reason}"
-                raise ModelError(msg)
-            if response.exists():
-                size = response.stat().st_size
-                if size == last_size:
-                    return response.read_text(encoding="utf-8")
-                last_size = size
+                decline_size = _size(declined)
+                decline_steady = decline_steady + 1 if decline_size == last_decline else 0
+                last_decline = decline_size
+                if decline_steady >= _STEADY_POLLS:
+                    reason = _read_answer(declined).strip() or "no reason given"
+                    msg = f"Claude Code declined {request.name}: {reason}"
+                    raise ModelError(msg)
+            size = _size(response)
+            steady = steady + 1 if size and size == last_size else 0
+            if steady >= _STEADY_POLLS:
+                return _read_answer(response)
+            last_size = size
             self.sleep(self.poll)
         msg = (
             f"no reply to {request} within {self.minutes} minutes. Is a Claude Code session "
@@ -213,9 +247,41 @@ class RelayModel:
         raise ModelError(msg)
 
     def _archive(self, request: Path) -> None:
-        """Move a finished request and whatever answered it into ``answered/``."""
+        """Move a finished request and whatever answered it into ``answered/``.
+
+        This is housekeeping, so it never fails the run: with the folder deleted or read-only it
+        does nothing, and the reply, the decline or the timeout is reported as it happened.
+        """
         store = self.directory / ANSWERED
-        store.mkdir(exist_ok=True)
-        for path in (request, response_for(request), error_for(request)):
-            if path.exists():
-                path.replace(store / path.name)
+        with suppress(OSError):
+            store.mkdir(exist_ok=True)
+            for path in (request, response_for(request), error_for(request)):
+                if path.exists():
+                    path.replace(store / path.name)
+
+
+def _size(path: Path) -> int:
+    """Return how many bytes ``path`` holds, or 0 while it does not exist."""
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def _read_answer(path: Path) -> str:
+    """Read a reply or a decline as UTF-8, dropping a byte-order mark.
+
+    Left in, the mark would hide the first section's heading from the checks.
+
+    Raises:
+        ModelError: the file is not UTF-8 text. Waiting longer would not change that, and a raw
+            decoding error would reach the user as a traceback.
+    """
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        msg = (
+            f"{path.name} is not UTF-8 text (byte {exc.object[exc.start]:#04x} at offset "
+            f"{exc.start}): relay replies and declines must be written as UTF-8"
+        )
+        raise ModelError(msg) from exc

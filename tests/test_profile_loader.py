@@ -411,7 +411,7 @@ def test_a_yaml_integer_is_rejected_with_a_hint() -> None:
     _expect(
         _with(education=[{"credential": "BSc", "institution": "X", "completed": 2016}]),
         "education[0].completed",
-        "expected text, got int — quote it",
+        "expected text, got int (quote it)",
     )
 
 
@@ -442,7 +442,7 @@ def test_a_yaml_boolean_gets_the_quoting_hint() -> None:
     _expect(
         {**MINIMAL, "contact": {**MINIMAL["contact"], "location": False}},
         "contact.location",
-        "expected text, got bool — quote it",
+        "expected text, got bool (quote it)",
     )
 
 
@@ -554,4 +554,4 @@ def test_an_unquoted_iso_date_gets_the_quoting_hint() -> None:
             }
         ]
     )
-    _expect(data, "experience[0].roles[0].start", "expected text, got date — quote it")
+    _expect(data, "experience[0].roles[0].start", "expected text, got date (quote it)")

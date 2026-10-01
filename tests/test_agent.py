@@ -21,6 +21,7 @@ from resume_tailor.agent import (
     EditResult,
     GeneralResult,
     TailorResult,
+    UnusableAnswerError,
     Usage,
     build_profile,
     edit_documents,
@@ -31,7 +32,7 @@ from resume_tailor.agent import (
     write_general,
 )
 from resume_tailor.agent.loop import one_line, questions, unfence
-from resume_tailor.agent.writing import check_documents
+from resume_tailor.agent.writing import LETTER_WORDS, check_documents
 from resume_tailor.errors import FabricationError, ModelError, ProfileError
 from resume_tailor.llm import LanguageModel, Reply
 from resume_tailor.match import match_posting
@@ -396,6 +397,39 @@ def test_an_invented_metric_is_retried_with_the_verifier_s_own_violations(
     assert POSTING.strip() in model.prompts[1], "and the original request, unchanged"
 
 
+def _letter(words: int) -> str:
+    """Return a true letter whose paragraphs, greeting and sign-off hold exactly ``words`` words."""
+    body = " ".join(["Engines"] * (words - 5))  # "Dear Hiring Manager," "Sincerely," "Ada"
+    return LETTER.replace("Dear Hiring Manager,\n\n", f"Dear Hiring Manager,\n\n{body}.\n\n")
+
+
+def test_a_cover_letter_too_long_for_one_page_is_sent_back(profile: Profile) -> None:
+    """CLAUDE.md promises a one-page letter; past this length the export runs onto page two."""
+    model = FakeModel([tailored(letter=_letter(LETTER_WORDS + 1)), tailored()])
+
+    result = tailor(POSTING, profile, model)
+
+    assert result.usage.attempts == 2
+    assert (
+        f"The cover letter is {LETTER_WORDS + 1} words, too long to fit on one page. The format "
+        "asks for 250-350: cut it to that"
+    ) in model.prompts[1]
+    assert check_documents({COVER_LETTER: _letter(LETTER_WORDS)}, profile) is None, (
+        "a letter at the limit still fits"
+    )
+    long = check_documents({COVER_LETTER: _letter(LETTER_WORDS + 1)}, profile)
+    assert long is not None
+    assert not long.fabricated, "a long letter is a format problem, not an invented claim"
+
+
+def test_only_the_cover_letter_is_held_to_one_page_of_words(profile: Profile) -> None:
+    long_resume = RESUME_MD.replace(
+        "Engineer who writes programs for engines that do not exist yet.",
+        " ".join(["Engines"] * (LETTER_WORDS + 1)) + ".",
+    )
+    assert check_documents({RESUME: long_resume}, profile) is None
+
+
 def test_a_cover_letter_with_an_invented_figure_is_caught_too(profile: Profile) -> None:
     """A letter is checked by the same verifier: an invented number there is still invented."""
     letter = LETTER.replace("Dear Hiring Manager,", "Dear Hiring Manager, I cut costs 70%.")
@@ -424,7 +458,26 @@ def test_an_answer_that_never_parses_is_a_model_error_not_a_fabrication(profile:
         tailor(POSTING, profile, model, max_attempts=2)
 
     assert not isinstance(caught.value, FabricationError)
+    assert isinstance(caught.value, UnusableAnswerError), "it answered; the answers failed"
     assert "2 attempts" in str(caught.value)
+
+
+class _Unreachable:
+    """A model that never answers, the way a declined relay request or an API error behaves."""
+
+    def complete(self, system: str, prompt: str) -> Reply:
+        """Fail the way the model clients do."""
+        msg = f"Claude Code declined the request ({len(system) + len(prompt)} characters)"
+        raise ModelError(msg)
+
+
+def test_a_model_that_never_answers_is_not_an_answer_that_failed_its_checks(
+    profile: Profile,
+) -> None:
+    with pytest.raises(ModelError) as caught:
+        tailor(POSTING, profile, _Unreachable())
+
+    assert not isinstance(caught.value, UnusableAnswerError)
 
 
 def test_usage_sums_the_tokens_of_every_attempt(profile: Profile) -> None:
@@ -491,7 +544,7 @@ def test_every_retry_is_reported_with_the_reason(profile: Profile) -> None:
 
     assert len(said) == 2
     assert said[0].startswith(
-        "the tailored resume and cover letter did not pass its checks (2 problems, the first: "
+        "the tailored resume and cover letter did not pass the checks (2 problems, the first: "
         "line 15: '12 teams' does not appear anywhere in the profile"
     )
     assert said[0].endswith("…); trying again, 2 of 3")
@@ -507,7 +560,7 @@ def test_a_long_reason_is_cut_to_one_readable_line(profile: Profile) -> None:
 
     assert said == [
         (
-            "the general resume and LinkedIn profile did not pass its checks (The answer is "
+            "the general resume and LinkedIn profile did not pass the checks (The answer is "
             "missing these sections, or left them empty: LINKEDIN. Return all 2 sections…); "
             "trying again, 2 of 3"
         )
@@ -548,6 +601,30 @@ def test_the_editor_returns_every_document_and_its_questions(profile: Profile) -
     assert result.usage == Usage(_INPUT_TOKENS, _OUTPUT_TOKENS, 1)
     assert model.systems == [prompts.EDIT_SYSTEM]
     assert "- line 5: tense: bullets switch tense" in model.prompts[0]
+
+
+def test_the_editor_of_a_tailored_application_sees_the_posting(profile: Profile) -> None:
+    """The editor may reorder and cut "for this job", so it is shown the job."""
+    model = FakeModel([edited(), delimited(RESUME=EDITED, COVER_LETTER=LETTER)])
+
+    _edit(model, profile, posting=POSTING)
+    _edit(model, profile, posting=POSTING, answers=REVISED_ANSWERS)
+
+    for prompt in model.prompts:
+        assert f"<job-posting>\n{POSTING.strip()}\n</job-posting>" in prompt
+        assert "keep the posting's own words" in _unwrapped(prompt)
+    assert "The tailoring, when a job posting comes with the documents" in _unwrapped(
+        prompts.EDIT_SYSTEM
+    )
+
+
+def test_an_edit_with_no_posting_shows_none(profile: Profile) -> None:
+    model = FakeModel([edited(), edited()])
+
+    _edit(model, profile)
+    _edit(model, profile, posting="  \n")
+
+    assert not any("<job-posting>" in prompt for prompt in model.prompts)
 
 
 def test_the_editor_is_told_when_nothing_was_flagged(profile: Profile) -> None:
@@ -915,6 +992,16 @@ def test_refining_shows_the_model_the_draft_its_sources_and_its_audit() -> None:
     assert "says what experience[0].roles[0].highlights[0] already says" in prompt
 
 
+def test_refining_is_not_asked_to_fix_what_it_may_not_change() -> None:
+    """Recording a missing level counts as raising it, which the refinement check rejects."""
+    assert loads(PROFILE_YAML).technologies[0].items[1].level == "", "the draft has one unrated"
+    model = FakeModel([refined()])
+
+    refine_profile(PROFILE_YAML, DOCUMENTS, model)
+
+    assert "have no level" not in model.prompts[0]
+
+
 def test_a_refinement_that_adds_a_fact_is_sent_back_then_refused() -> None:
     """The draft is the ceiling: a refiner that 'finds' a new figure has invented one."""
     inflated = REFINED_YAML.replace("38%", "45%")
@@ -996,6 +1083,33 @@ def test_reply_helpers() -> None:
     assert questions("- one\n* two\n• three\n\n- none") == ("one", "two", "three")
 
 
+def test_a_question_wrapped_onto_a_second_line_is_still_one_question() -> None:
+    wrapped = "- The posting asks for Kafka. Have you used it? Where,\n  and what did you build?"
+    assert questions(wrapped) == (
+        "The posting asks for Kafka. Have you used it? Where, and what did you build?",
+    )
+    unindented = "- How large was the batch,\nand how often did it run?\n- Which year?"
+    assert questions(unindented) == (
+        "How large was the batch, and how often did it run?",
+        "Which year?",
+    )
+
+
+def test_numbered_questions_lose_their_numbers() -> None:
+    assert questions("1. Have you used Kafka?\n2) How big was the team?") == (
+        "Have you used Kafka?",
+        "How big was the team?",
+    )
+
+
+def test_unmarked_lines_are_one_question_each_unless_indented() -> None:
+    assert questions("Have you used Kafka?\nHow big was the team?") == (
+        "Have you used Kafka?",
+        "How big was the team?",
+    )
+    assert questions("Have you used Kafka, and\n  where?") == ("Have you used Kafka, and where?",)
+
+
 def test_usage_adds_up() -> None:
     assert Usage(1, 2, 1) + Usage(3, 4, 2) == Usage(4, 6, 3)
 
@@ -1067,6 +1181,7 @@ def test_the_system_prompts_state_the_rules_the_checks_enforce() -> None:
     for system in (profiling, refining):
         assert "in the second person" in system
     assert "never put a settled answer there" in updating
+    assert "an unsure figure is not a fact" in updating
 
 
 def test_the_profile_prompt_carries_the_schema_and_every_document() -> None:
@@ -1075,6 +1190,20 @@ def test_the_profile_prompt_carries_the_schema_and_every_document() -> None:
     assert '"schema_version"' in prompt
     assert '<document name="old-resume.txt">' in prompt
     assert '<document name="linkedin.txt">' in prompt
+
+
+def test_only_the_draft_is_told_to_record_every_spelling() -> None:
+    """Refining and updating are checked against the profile they replace: a new alias is new."""
+    drafting = _unwrapped(prompts.profile_prompt({"a.txt": "Ada"}))
+    refining = _unwrapped(prompts.refine_profile_prompt("a: 1", {}, ""))
+    updating = _unwrapped(prompts.update_profile_prompt("a: 1", ANSWERS))
+
+    assert "Record every spelling a job posting might use in `aliases`" in drafting
+    for prompt in (refining, updating):
+        assert "Record every spelling" not in prompt
+    assert "Keep every spelling of a technology the draft records" in refining
+    assert "and add none" in refining
+    assert "Add an alias only to a technology the answers name." in updating
 
 
 def test_the_refine_prompt_says_when_the_audit_found_nothing() -> None:

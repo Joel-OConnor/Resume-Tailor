@@ -3,7 +3,7 @@
 #   make setup                     one-time: create .venv and install everything
 #   make profile                   my-documents/career-history/  -> output/master-profile.yaml
 #   make resume                    the general resume + the LinkedIn profile -> output/general/
-#   make tailor JOB=<posting.md>   a resume + cover letter for that one job  -> output/applications/<company-role>/
+#   make tailor JOB=<posting.md>   a resume + cover letter for that one job  -> output/applications/<company>-<role>/
 #
 # JOB can be a path, or just the name of a file in my-documents/job-postings/.
 #

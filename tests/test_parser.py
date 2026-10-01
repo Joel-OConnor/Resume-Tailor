@@ -118,6 +118,21 @@ def test_skill_line_with_no_items() -> None:
     assert document.blocks[-1] == SkillLine("Languages", ())
 
 
+def test_a_skill_line_may_put_its_colon_outside_the_bold() -> None:
+    """Read as prose, ``**Label**: items`` lines ran the whole Skills section into one paragraph."""
+    document = parse("# Ada\n\n## Skills\n**Languages**: Python, Go\n**Data**:Redis\n**Cloud**:")
+    assert document.blocks[2:] == (
+        SkillLine("Languages", (Span("Python, Go"),)),
+        SkillLine("Data", (Span("Redis"),)),
+        SkillLine("Cloud", ()),
+    )
+
+
+def test_a_colon_after_a_bold_phrase_later_in_the_line_leaves_it_prose() -> None:
+    document = parse("# Ada\n\n## Summary\n**Shipped** the public API: twice")
+    assert isinstance(document.blocks[-1], Paragraph)
+
+
 def test_any_line_opening_with_a_bold_label_is_a_skill_line() -> None:
     document = parse("# Ada\n\n## Summary\n**Note:** this has **two** bold runs")
     assert isinstance(document.blocks[-1], SkillLine)

@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import fcntl
+import io
 import json
-from typing import TYPE_CHECKING
+import os
+import subprocess
+import sys
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from resume_tailor import __version__, cli
-from resume_tailor.render import exporter
+from resume_tailor.profile import DEFAULT_PROFILE_PATH
+from resume_tailor.render import Layout, exporter
 from resume_tailor.render.pdf import NO_BROWSER, PdfResult
-from tests.conftest import REPO_ROOT, RESUME_MD, pdf_bytes
+from tests.conftest import LETTER_MD, REPO_ROOT, RESUME_MD, pdf_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -55,9 +61,20 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert __version__ in capsys.readouterr().out
 
 
-def test_an_unknown_layout_is_rejected() -> None:
-    with pytest.raises(SystemExit):
+def test_an_unknown_layout_is_rejected_with_the_choices(capsys: pytest.CaptureFixture[str]) -> None:
+    """Not as an 'invalid Layout value', which names a class the user has never heard of."""
+    with pytest.raises(SystemExit) as caught:
         cli.main(["build", "x.md", "--layout", "fancy"])
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "argument --layout: choose from ats, polished, both, not 'fancy'" in err
+    assert "Layout" not in err
+
+
+def test_the_layout_is_read_in_any_letter_case() -> None:
+    parse = cli.build_parser().parse_args
+    assert parse(["build", "x.md", "--layout", "ATS"]).layout is Layout.ATS
+    assert parse(["build", "x.md", "--layout", "Polished"]).layout is Layout.POLISHED
 
 
 # --- build ----------------------------------------------------------------------------------------
@@ -139,13 +156,104 @@ def test_a_pdf_fallback_is_flagged_in_the_output(
     assert NO_BROWSER in capsys.readouterr().out
 
 
+def test_a_source_that_cannot_be_read_is_named_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    latin = tmp_path / "latin.md"
+    latin.write_bytes(b"# Jos\xe9\n")
+    assert cli.main(["build", str(latin)]) == 1
+    err = capsys.readouterr().err
+    assert "not UTF-8" in err
+    assert err.count(str(latin)) == 1
+
+
+def test_piped_output_keeps_each_error_under_its_own_heading(tmp_path: Path) -> None:
+    """Claude Code, CI and pipes buffer stdout but not stderr; the order must survive anyway."""
+    good = tmp_path / "good.md"
+    good.write_text(RESUME_MD, encoding="utf-8")
+    bad = tmp_path / "bad.md"
+    bad.write_bytes(b"# Jos\xe9\n")
+    command = [sys.executable, "-m", "resume_tailor", "build", str(good), str(bad), "--no-pdf"]
+    command += ["--out-dir", str(tmp_path / "out")]
+    merged = subprocess.run(  # noqa: S603 - this interpreter, this package, these temp files
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+    )
+    lines = merged.stdout.splitlines()
+    heading = next(i for i, line in enumerate(lines) if line == f"{bad}:")
+    error = next(i for i, line in enumerate(lines) if "not UTF-8" in line)
+    written = next(i for i, line in enumerate(lines) if "good.docx" in line)
+    assert written < heading < error, merged.stdout
+
+
+def test_a_replaced_stdout_is_left_as_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Line buffering is set only on a real text stream; anything else is left alone."""
+    replaced = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", replaced)
+    cli._keep_output_in_order()
+    assert sys.stdout is replaced
+
+
+@pytest.mark.parametrize("suffix", [".docx", ".pdf", ".HTML"])
+def test_an_output_passed_as_the_source_gets_the_right_advice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], suffix: str
+) -> None:
+    """Not "re-save it as UTF-8": build renders the Markdown, and this says which file that is."""
+    (tmp_path / "resume.md").write_text(RESUME_MD, encoding="utf-8")
+    wrong = tmp_path / f"resume{suffix}"
+    wrong.write_bytes(b"PK\x03\x04 a Word file, say")
+
+    assert cli.main(["build", str(wrong), "--no-pdf"]) == 1
+
+    assert capsys.readouterr().err == (
+        f"error: {wrong} is a {suffix.casefold()} file, and build renders the Markdown source: "
+        f"pass {tmp_path / 'resume.md'}\n"
+    )
+    assert wrong.read_bytes() == b"PK\x03\x04 a Word file, say"
+
+
+def test_markdown_saved_under_an_output_name_is_told_to_rename_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Building it would overwrite or delete the source, since build writes that very name."""
+    misnamed = tmp_path / "resume.html"
+    misnamed.write_text(RESUME_MD, encoding="utf-8")
+    assert cli.main(["build", str(misnamed), "--no-pdf"]) == 1
+    assert "rename this file to .md if it holds Markdown" in capsys.readouterr().err
+    assert misnamed.read_text(encoding="utf-8") == RESUME_MD
+
+
+def test_a_glob_that_catches_the_outputs_still_builds_the_markdown(
+    source: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`build resume.*` names the .docx too; that is no clash, only a file to pass over."""
+    assert cli.main(["build", str(source), "--no-pdf"]) == 0
+    docx = source.parent / "resume.docx"
+    capsys.readouterr()
+
+    assert cli.main(["build", str(source), str(docx), "--no-pdf"]) == 1
+
+    captured = capsys.readouterr()
+    assert "would be written twice" not in captured.err
+    assert f"{docx} is a .docx file" in captured.err
+    assert f"✓ {docx}" in captured.out
+
+
+def test_an_out_dir_that_is_a_file_is_reported_as_one(
+    source: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    afile = tmp_path / "exports"
+    afile.write_text("", encoding="utf-8")
+    assert cli.main(["build", str(source), "--out-dir", str(afile)]) == 1
+    assert capsys.readouterr().err == f"error: {afile} is a file, not a folder\n"
+
+
 # --- profile --------------------------------------------------------------------------------------
 def test_profile_validate_summarises_and_audits_the_profile(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert cli.main(["profile", "validate", EXAMPLE_PROFILE]) == 0
     out = capsys.readouterr().out
-    assert "is valid — 2 employers, 2 roles," in out
+    assert "is valid: 2 employers, 2 roles," in out
     assert "  ? Confirm the exact settlement latency" in out
 
 
@@ -191,6 +299,14 @@ def test_profile_render_writes_markdown(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8").startswith("# Master Profile — Jordan Rivera")
 
 
+def test_the_view_names_the_profile_it_was_rendered_from(tmp_path: Path) -> None:
+    """Rendered from a backup or the example, it must not send the reader to the live profile."""
+    out = tmp_path / "view.md"
+    assert cli.main(["profile", "render", EXAMPLE_PROFILE, "-o", str(out)]) == 0
+    example = (REPO_ROOT / "examples" / "master-profile.yaml").as_posix()
+    assert f"> Generated from `{example}`." in out.read_text(encoding="utf-8")
+
+
 def test_profile_schema_writes_json(tmp_path: Path) -> None:
     out = tmp_path / "nested" / "schema.json"
     assert cli.main(["profile", "schema", "-o", str(out)]) == 0
@@ -199,13 +315,47 @@ def test_profile_schema_writes_json(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8").endswith("\n")
 
 
+def test_profile_render_will_not_write_over_the_profile_it_renders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One slip of -o would replace the single source of truth with its own Markdown view.
+
+    Caught however the two are spelled, and whatever the profile is named.
+    """
+    monkeypatch.chdir(tmp_path)
+    profile = tmp_path / "profile.txt"
+    profile.write_bytes((REPO_ROOT / "examples" / "master-profile.yaml").read_bytes())
+    before = profile.read_bytes()
+
+    assert cli.main(["profile", "render", "profile.txt", "-o", str(profile)]) == 1
+
+    err = _flat(capsys.readouterr().err)
+    assert f"error: {profile} is the profile being rendered;" in err
+    assert "Choose another -o, such as output/master-profile.md" in err
+    assert profile.read_bytes() == before
+
+
+@pytest.mark.parametrize("command", [["render", EXAMPLE_PROFILE], ["schema"]])
+def test_neither_view_will_write_over_a_yaml_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: list[str]
+) -> None:
+    """Neither writes YAML, so a YAML file at -o is there by mistake: most likely the profile."""
+    profile = tmp_path / "master-profile.yaml"
+    profile.write_text("summary: hand written\n", encoding="utf-8")
+
+    assert cli.main(["profile", *command, "-o", str(profile)]) == 1
+
+    assert f"{profile} is a YAML file, most likely a profile" in _flat(capsys.readouterr().err)
+    assert profile.read_text(encoding="utf-8") == "summary: hand written\n"
+
+
 def test_every_command_defaults_to_the_documented_folders() -> None:
     """The README promises these folders; a default drifting from them strands the user's files."""
     parse = cli.build_parser().parse_args
     build = parse(["profile", "build"])
     assert build.documents.as_posix() == "my-documents/career-history"
     assert build.out.as_posix() == "output/master-profile.yaml"
-    assert build.answers.as_posix() == "my-documents/career-history/answers.md"
+    assert cli._answers_log(build).as_posix() == "my-documents/career-history/answers.md"
     assert parse(["profile", "validate"]).path.as_posix() == "output/master-profile.yaml"
     assert parse(["profile", "render"]).out.as_posix() == "output/master-profile.md"
     assert parse(["profile", "schema"]).out.as_posix() == "schema/master-profile.schema.json"
@@ -303,6 +453,17 @@ def test_no_sidebar_warning_for_the_ats_layout(
     assert "matched no section" not in capsys.readouterr().err
 
 
+def test_no_sidebar_warning_for_a_letter_built_single_column(
+    source: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With both layouts a letter still gets only the single column, so the rail never applied."""
+    letter = tmp_path / "cover-letter.md"
+    letter.write_text(LETTER_MD, encoding="utf-8")
+    argv = ["build", str(source), str(letter), "--layout", "both", "--sidebar", "Skills"]
+    assert cli.main([*argv, "--no-pdf"]) == 0
+    assert "matched no section" not in capsys.readouterr().err
+
+
 def test_the_same_file_named_two_ways_is_not_a_clash(tmp_path: Path) -> None:
     source = tmp_path / "resume.md"
     source.write_text(RESUME_MD, encoding="utf-8")
@@ -371,16 +532,16 @@ def test_the_sidebar_warning_fires_for_the_polished_layout_too(
 def test_the_clash_check_survives_an_unreadable_argument(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """It runs over every argument, including one that turns out to be a directory.
+    """It runs over every source before any is built, including one that cannot be read.
 
     With both layouts asked for, the guard has to read each source to know whether a polished
-    file will be written, so the directory is where that read fails.
+    file will be written, so a file that is not UTF-8 is where that read fails.
     """
-    (tmp_path / "resume.md").mkdir()
+    (tmp_path / "resume.md").write_bytes(b"# Jos\xe9\n")
     (tmp_path / "other.md").write_text(RESUME_MD, encoding="utf-8")
     argv = ["build", str(tmp_path / "resume.md"), str(tmp_path / "other.md")]
     assert cli.main([*argv, "--layout", "both", "--no-pdf"]) == 1
-    assert "not a file:" in capsys.readouterr().err
+    assert "not UTF-8" in capsys.readouterr().err
     assert (tmp_path / "other.docx").is_file()
 
 
@@ -463,6 +624,13 @@ def _application(tmp_path: Path, **fields: object) -> Application:
     return Application("general", directory, (resume,), **fields)  # type: ignore[arg-type]
 
 
+def _a_profile(path: Path = DEFAULT_PROFILE_PATH) -> Path:
+    """Put a profile where a run looks for one; the runs that read it are recorders here."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("summary: s\n", encoding="utf-8")
+    return path
+
+
 _REVIEWED = Review(
     (Finding("long-bullet", Level.ADVISE, 12, "Built the thing", "44 words; split it"),),
     applied=(Finding("dates", Level.FIX, 9, "2020 - now", "an en dash", "2020 – now"),),
@@ -477,7 +645,7 @@ def test_resume_runs_the_general_application_and_reports_it(
 ) -> None:
     run = _Recorder(_application(tmp_path, review=_REVIEWED))
     monkeypatch.setattr(cli, "general_application", run)
-    profile, answers = tmp_path / "p.yaml", tmp_path / "a.md"
+    profile, answers = _a_profile(tmp_path / "p.yaml"), tmp_path / "a.md"
 
     argv = ["resume", "--output", str(tmp_path / "output"), "--no-export"]
     argv += ["--profile", str(profile), "--answers", str(answers)]
@@ -491,8 +659,9 @@ def test_resume_runs_the_general_application_and_reports_it(
     assert run.kwargs["ask"] is None
     out = capsys.readouterr().out
     assert "→ " in out and "✓ resume.md" in out
-    assert "Review: 1 fixed · 1 suggestion" in out
-    assert "~ line 12  long-bullet: 44 words; split it" in out
+    # Indented like every other line the run prints, not flush against the margin.
+    assert "\n  Review: 1 fixed · 1 suggestion\n" in out
+    assert "\n    ~ line 12  long-bullet: 44 words; split it\n" in out
 
 
 @pytest.mark.usefixtures("keyed")
@@ -503,6 +672,7 @@ def test_unasked_questions_are_listed_with_how_to_answer_them(
     monkeypatch.setattr(
         cli, "general_application", _Recorder(_application(tmp_path, questions=questions))
     )
+    _a_profile()
 
     assert cli.main(["resume", "--no-interactive"]) == 0
 
@@ -525,6 +695,7 @@ def test_asked_questions_are_not_listed_again(
         tmp_path, questions=(Question("How many users?"),), asked=True, update=update
     )
     monkeypatch.setattr(cli, "general_application", _Recorder(result))
+    _a_profile()
 
     assert cli.main(["resume", "--interactive"]) == 0
 
@@ -538,17 +709,23 @@ def test_asked_questions_are_not_listed_again(
 def test_problems_that_did_not_stop_the_run_are_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    update = ProfileUpdate((Answer(Question("Q?"), "A."),), error="rate limited")
-    result = _application(
-        tmp_path, asked=True, update=update, problems=("the documents do not use them yet",)
-    )
+    # What the service hands back when recording answers fails: the error says where they went.
+    logged = "Your answers are logged in my-documents/career-history/answers.md."
+    update = ProfileUpdate((Answer(Question("Q?"), "A."),), error=f"rate limited. {logged}")
+    kept = "the previous version of output/general is kept in output/backups/general"
+    result = _application(tmp_path, asked=True, update=update, problems=(kept,))
     monkeypatch.setattr(cli, "general_application", _Recorder(result))
+    _a_profile()
 
     assert cli.main(["resume"]) == 0
 
     err = _flat(capsys.readouterr().err)
-    assert "could not be recorded in output/master-profile.yaml automatically: rate limited" in err
-    assert "! the documents do not use them yet" in err
+    assert (
+        "! your answers could not be recorded in output/master-profile.yaml automatically: "
+        f"rate limited. {logged}"
+    ) in err
+    assert "answers log" not in err, "where the answers are is said once, by the error itself"
+    assert f"! {kept}" in err
 
 
 def test_tailor_runs_on_the_one_posting_named_and_shows_the_fit(
@@ -561,7 +738,7 @@ def test_tailor_runs_on_the_one_posting_named_and_shows_the_fit(
     posting.write_text("# Acme — Engineer\n\n## Requirements\n- Work.\n", encoding="utf-8")
     run = _Recorder(_application(tmp_path, company="Acme", role="Engineer", fit="Strong on Go."))
     monkeypatch.setattr(cli, "tailor_application", run)
-    profile, answers = tmp_path / "p.yaml", tmp_path / "a.md"
+    profile, answers = _a_profile(tmp_path / "p.yaml"), tmp_path / "a.md"
 
     argv = ["tailor", str(posting), "--profile", str(profile), "--answers", str(answers)]
     assert cli.main([*argv, "--no-interactive"]) == 0
@@ -585,6 +762,7 @@ def test_tailor_finds_a_posting_named_without_its_folder(
     saved.write_text("# Acme, Engineer\n\n- Work.\n", encoding="utf-8")
     run = _Recorder(_application(tmp_path))
     monkeypatch.setattr(cli, "tailor_application", run)
+    _a_profile()
 
     assert cli.main(["tailor", "acme.md", "--no-interactive"]) == 0
     assert run.args == ("# Acme, Engineer\n\n- Work.\n",)
@@ -601,6 +779,7 @@ def test_a_posting_path_that_exists_wins_over_one_in_the_postings_folder(
     saved.write_text("# There\n\n- The saved one.\n", encoding="utf-8")
     run = _Recorder(_application(tmp_path))
     monkeypatch.setattr(cli, "tailor_application", run)
+    _a_profile()
 
     assert cli.main(["tailor", "acme.md", "--no-interactive"]) == 0
     assert run.args == ("# Here\n\n- The one named.\n",)
@@ -611,7 +790,20 @@ def test_a_posting_in_neither_place_is_reported_by_the_name_given(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert cli.main(["tailor", "ghost.md"]) == 1
-    assert "not found: ghost.md" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "not found: ghost.md" in err
+    assert "looked for it here and in my-documents/job-postings/" in err
+
+
+def test_a_missing_posting_given_by_its_full_path_names_only_that_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A full path is never looked for in the postings folder, so the error does not say so."""
+    ghost = tmp_path / "ghost.md"
+    assert cli.main(["tailor", str(ghost)]) == 1
+    err = capsys.readouterr().err
+    assert f"not found: {ghost}" in err
+    assert "looked for it" not in err
 
 
 def test_tailor_needs_a_posting(capsys: pytest.CaptureFixture[str]) -> None:
@@ -651,6 +843,20 @@ def test_tailor_reports_an_empty_or_unreadable_posting(
     assert "cannot read" in capsys.readouterr().err
 
 
+def test_tailor_reports_a_posting_the_system_will_not_let_it_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    posting = tmp_path / "jd.md"
+    posting.write_text("# Acme, Engineer\n\n- Work.\n", encoding="utf-8")
+
+    def denied(path: Path) -> str:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(cli, "read_posting", denied)
+    assert cli.main(["tailor", str(posting)]) == 1
+    assert capsys.readouterr().err == f"error: cannot read {posting}: Permission denied\n"
+
+
 def test_a_missing_api_key_is_reported_with_the_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -659,6 +865,7 @@ def test_a_missing_api_key_is_reported_with_the_fix(
 
     posting = tmp_path / "jd.md"
     posting.write_text("# Acme — Engineer\n\n- Work.\n", encoding="utf-8")
+    _a_profile()
 
     def no_key() -> None:
         msg = "no ANTHROPIC_API_KEY found. Copy .env.example to .env"
@@ -670,14 +877,168 @@ def test_a_missing_api_key_is_reported_with_the_fix(
     assert cli.main(["resume"]) == 1
 
 
+def test_resume_without_a_profile_says_how_to_make_one(
+    keyed: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["resume", "--no-interactive"]) == 1
+    assert capsys.readouterr().err == (
+        "error: there is no profile at output/master-profile.yaml yet. Build it from your "
+        "documents with `make profile`, or copy examples/master-profile.yaml there to try the "
+        "tool on an example.\n"
+    )
+    assert keyed.kwargs == {}, "no model was built"
+
+
+def test_tailor_without_the_profile_it_names_says_how_to_build_that_one(
+    tmp_path: Path, keyed: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    posting = tmp_path / "jd.md"
+    posting.write_text("# Acme, Engineer\n\n- Work.\n", encoding="utf-8")
+    mine = tmp_path / "mine.yaml"
+    assert cli.main(["tailor", str(posting), "--profile", str(mine)]) == 1
+    assert f"Build it from your documents with `resume-tailor profile build -o {mine}`" in (
+        capsys.readouterr().err
+    )
+    assert keyed.kwargs == {}
+
+
+def test_an_output_that_is_a_file_is_refused_before_the_model_is_called(
+    tmp_path: Path, keyed: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The run itself only reaches the folder at the very end, after every call is paid for."""
+    afile = tmp_path / "not-a-dir"
+    afile.write_text("", encoding="utf-8")
+    profile = str(_a_profile(tmp_path / "p.yaml"))
+
+    assert cli.main(["resume", "--profile", profile, "--output", str(afile)]) == 1
+    assert capsys.readouterr().err == f"error: {afile} is a file, not a folder\n"
+
+    posting = tmp_path / "jd.md"
+    posting.write_text("# Acme, Engineer\n\n- Work.\n", encoding="utf-8")
+    assert cli.main(["tailor", str(posting), "--profile", profile, "--output", str(afile)]) == 1
+    assert capsys.readouterr().err == (
+        f"error: cannot write to {afile / 'applications'}: {afile} is a file, not a folder\n"
+    )
+    assert keyed.kwargs == {}, "no model was built"
+
+
+def test_an_output_nobody_can_write_to_is_refused_before_the_model_is_called(
+    tmp_path: Path,
+    keyed: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    real = os.access
+
+    def access(path: Any, mode: int, **kwargs: Any) -> bool:
+        return str(path) != str(locked) and real(path, mode, **kwargs)
+
+    monkeypatch.setattr(os, "access", access)
+    out = locked / "output"
+    argv = ["resume", "--profile", str(_a_profile(tmp_path / "p.yaml")), "--output", str(out)]
+
+    assert cli.main(argv) == 1
+
+    assert capsys.readouterr().err == f"error: cannot write to {out}: {locked} is not writable\n"
+    assert keyed.kwargs == {}
+
+
+@pytest.mark.usefixtures("keyed")
+def test_ctrl_c_during_a_run_is_one_line_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A relay wait can last an hour, so Ctrl-C is how a run is stopped on purpose."""
+
+    def interrupted(**_: object) -> Application:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "general_application", interrupted)
+    _a_profile()
+    assert cli.main(["resume", "--no-interactive"]) == 130
+    assert capsys.readouterr().err == "\ninterrupted\n"
+
+
+def test_ctrl_c_during_a_relay_wait_is_one_line_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def interrupted(*_: object, **__: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "wait_for_request", interrupted)
+    assert cli.main(["relay", "wait", "--dir", str(tmp_path)]) == 130
+    assert capsys.readouterr().err == "\ninterrupted\n"
+
+
+# --- help -----------------------------------------------------------------------------------------
+def _help(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, *command: str
+) -> str:
+    """Return the help ``command`` prints, as one line."""
+    monkeypatch.setenv("COLUMNS", "500")  # argparse wraps at the terminal width, splitting paths
+    with pytest.raises(SystemExit):
+        cli.main([*command, "--help"])
+    return _flat(capsys.readouterr().out)
+
+
+def test_no_command_claims_to_need_an_api_key(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With RESUME_TAILOR_LLM=claude-code none of them does: each calls the model .env sets."""
+    commands = [[], ["profile"], ["resume"], ["tailor"], ["profile", "build"], ["relay", "wait"]]
+    pages = [_help(capsys, monkeypatch, *command) for command in commands]
+    assert not [page for page in pages if "API key" in page]
+    assert "the LinkedIn profile (calls the model set in .env)" in pages[0]
+    assert "one job posting (calls the model set in .env)" in pages[0]
+    assert "career-history/ (calls the model set in .env)" in pages[1]
+
+
+def test_every_path_option_says_what_it_defaults_to(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resume = _help(capsys, monkeypatch, "resume")
+    assert (
+        "--profile PROFILE the master profile to write from (default: output/master-profile.yaml)"
+        in resume
+    )
+    assert (
+        "--answers ANSWERS where answers are logged for the next rebuild "
+        "(default: my-documents/career-history/answers.md)"
+    ) in resume
+    assert "the documents go in its general/ folder (default: output)" in resume
+    assert "the documents go in applications/<company>-<role>/ inside it" in _help(
+        capsys, monkeypatch, "tailor"
+    )
+    build = _help(capsys, monkeypatch, "profile", "build")
+    assert (
+        "-o OUT, --out OUT where to write the profile (default: output/master-profile.yaml)"
+        in build
+    )
+    assert "(default: answers.md in the --documents folder)" in build
+
+
+def test_the_no_pdf_help_says_an_earlier_pdf_is_removed(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deliberate (a stale PDF would pass for the new .docx's twin), so it must not surprise."""
+    page = _help(capsys, monkeypatch, "build")
+    assert (
+        "--no-pdf write only the .docx files; an earlier .pdf or .html of the same name is removed"
+        in page
+    )
+
+
 # --- asking at the terminal -----------------------------------------------------------------------
-def _typed(monkeypatch: pytest.MonkeyPatch, *lines: str) -> None:
-    """Feed ``lines`` to input(), then end of input."""
+def _typed(
+    monkeypatch: pytest.MonkeyPatch, *lines: str, then: type[BaseException] = EOFError
+) -> None:
+    """Feed ``lines`` to input(), then end of input (or ``then``: Ctrl-C, say)."""
     pending = list(lines)
 
     def fake_input(_: str = "") -> str:
         if not pending:
-            raise EOFError
+            raise then
         return pending.pop(0)
 
     monkeypatch.setattr("builtins.input", fake_input)
@@ -707,6 +1068,28 @@ def test_done_or_end_of_input_stops_the_questions(monkeypatch: pytest.MonkeyPatc
     assert [a.text for a in cli._ask_in_terminal(questions)] == ["yes"]
     _typed(monkeypatch, "yes")
     assert [a.text for a in cli._ask_in_terminal(questions[:2])] == ["yes"]
+
+
+def test_ctrl_c_at_a_question_stops_asking_but_keeps_what_was_typed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Like "done": the answers already given are recorded, and the run goes on to use them."""
+    questions = tuple(Question(f"Question {n}?") for n in range(4))
+
+    _typed(monkeypatch, "22% is right.", "", "About $14k a month.", then=KeyboardInterrupt)
+    answers = cli._ask_in_terminal(questions)
+
+    assert [a.text for a in answers] == ["22% is right.", "", "About $14k a month."]
+    out = capsys.readouterr().out
+    assert "Stopped asking. Keeping your 2 answers. Ctrl-C again stops the run." in out
+
+    _typed(monkeypatch, "Yes.", then=KeyboardInterrupt)
+    assert [a.text for a in cli._ask_in_terminal(questions)] == ["Yes."]
+    assert "Keeping your 1 answer." in capsys.readouterr().out
+
+    _typed(monkeypatch, then=KeyboardInterrupt)
+    assert cli._ask_in_terminal(questions) == ()
+    assert "Stopped asking. Ctrl-C again stops the run." in capsys.readouterr().out
 
 
 def test_questions_are_asked_by_default_only_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -761,14 +1144,18 @@ def test_profile_build_reads_the_documents_and_reports_what_it_did(
     assert run.kwargs["out"] == out
     assert run.kwargs["force"] is False
     assert run.kwargs["ask"] is None
-    printed = _flat(capsys.readouterr().out)
+    stdout = capsys.readouterr().out
+    printed = _flat(stdout)
     assert "reading 1 document(s)" in printed
     assert "· old.md" in printed
     assert "(previous profile kept as backups/master-profile.20260925.yaml)" in printed
     assert "Merged two highlights about the migration." in printed
     assert "highlights: 12 → 11" in printed
-    assert "~ overlapping-roles: overlaps" in printed
+    assert "\n  Still worth a look: 1 suggestion\n    ~ overlapping-roles: overlaps\n" in stdout
     assert "? Was it 12 or 14?" in printed
+    # A note never prints, but the value it questions does: the old wording promised otherwise.
+    assert "Notes never appear in a resume, but what the profile records now does" in printed
+    assert "stay out of every resume" not in printed
     assert "deleting its note" in printed
     assert "make resume" in printed
 
@@ -778,10 +1165,14 @@ def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
     tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out = tmp_path / "master-profile.yaml"
+    declined = (
+        "refining could not run, so the checked draft was written as it is: Claude Code "
+        "declined 20260930-120000-001.request.md: busy"
+    )
     built = ProfileBuild(
         path=out,
         backup=None,
-        refine_error="lost the figure '38%'",
+        refine_error=declined,
         update=ProfileUpdate((Answer(Question("Q?"), "A."),), changes=("notes: 1 → 0",)),
     )
     monkeypatch.setattr(cli, "build_master_profile", _Recorder(built))
@@ -789,8 +1180,8 @@ def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
     assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out)]) == 0
 
     captured = capsys.readouterr()
-    assert "refining did not pass its checks" in captured.err
-    assert "lost the figure '38%'" in _flat(captured.err)
+    # Printed as the build words it: a call that never ran is no failed check.
+    assert _flat(captured.err) == f"! {declined}"
     assert "✓ recorded 1 answer" in captured.out
     assert "Open questions" not in captured.out
 
@@ -798,6 +1189,7 @@ def test_profile_build_reports_a_refinement_that_fell_back_and_an_update(
 def test_profile_build_reports_an_empty_raw_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    (tmp_path / "empty").mkdir()
     assert cli.main(["profile", "build", "--documents", str(tmp_path / "empty")]) == 1
     assert "no readable documents" in capsys.readouterr().err
 
@@ -822,7 +1214,10 @@ def test_profile_build_refuses_to_replace_a_profile(
 
     assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out)]) == 1
     assert out.read_text(encoding="utf-8") == "summary: hand written\n"
-    assert "--force" in capsys.readouterr().err
+    # `make profile --force` is make's own option, and make rejects it.
+    assert "Re-run with --force (with make: make profile FORCE=--force)" in _flat(
+        capsys.readouterr().err
+    )
 
 
 @pytest.mark.usefixtures("keyed")
@@ -836,6 +1231,111 @@ def test_profile_build_with_force_goes_ahead(
 
     assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(out), "--force"]) == 0
     assert run.kwargs["force"] is True
+
+
+@pytest.mark.parametrize("force", [[], ["--force"]])
+def test_profile_build_refuses_a_folder_as_its_output_before_the_model_is_called(
+    tmp_path: Path,
+    raw: Path,
+    keyed: _Recorder,
+    capsys: pytest.CaptureFixture[str],
+    force: list[str],
+) -> None:
+    """Not as a profile it would replace: no hand corrections are at stake, and --force won't do."""
+    folder = tmp_path / "output"
+    folder.mkdir()
+    assert cli.main(["profile", "build", "--documents", str(raw), "-o", str(folder), *force]) == 1
+    assert capsys.readouterr().err == (
+        f"error: {folder} is a folder; -o takes the path of the profile file itself, such as "
+        "output/master-profile.yaml\n"
+    )
+    assert keyed.kwargs == {}, "no model was built"
+
+
+def test_profile_build_refuses_an_output_it_could_not_write(
+    tmp_path: Path, raw: Path, keyed: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    afile = tmp_path / "not-a-dir"
+    afile.write_text("", encoding="utf-8")
+    argv = ["profile", "build", "--documents", str(raw), "-o", str(afile / "profile.yaml")]
+    assert cli.main(argv) == 1
+    assert capsys.readouterr().err == f"error: {afile} is a file, not a folder\n"
+    assert keyed.kwargs == {}
+
+
+@pytest.mark.usefixtures("keyed")
+def test_answers_are_logged_beside_the_documents_the_profile_is_built_from(
+    tmp_path: Path, raw: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next rebuild from that folder reads them; logged anywhere else they would be lost."""
+    run = _Recorder(ProfileBuild(path=tmp_path / "p.yaml", backup=None))
+    monkeypatch.setattr(cli, "build_master_profile", run)
+    argv = ["profile", "build", "--documents", str(raw), "-o", str(tmp_path / "p.yaml")]
+
+    assert cli.main(argv) == 0
+    assert run.kwargs["answers_path"] == raw / "answers.md"
+
+    chosen = tmp_path / "elsewhere.md"
+    assert cli.main([*argv, "--answers", str(chosen)]) == 0
+    assert run.kwargs["answers_path"] == chosen, "an explicit --answers still wins"
+
+
+def test_documents_that_are_not_a_folder_are_named_as_such(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not "no readable documents", which sends the user looking inside a folder that is not one."""
+    typo = tmp_path / "carreer-history"
+    assert cli.main(["profile", "build", "--documents", str(typo)]) == 1
+    assert capsys.readouterr().err == (
+        f"error: there is no folder {typo}. Put your career documents there, or point "
+        "--documents at the folder they are in.\n"
+    )
+
+    afile = tmp_path / "resume-2025.md"
+    afile.write_text(RESUME_MD, encoding="utf-8")
+    assert cli.main(["profile", "build", "--documents", str(afile)]) == 1
+    assert capsys.readouterr().err == (
+        f"error: {afile} is a file; --documents takes the folder your career documents are in\n"
+    )
+
+
+def test_profile_build_names_the_folders_it_does_not_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the files directly in the folder are read; old resumes in a subfolder never are."""
+    documents = tmp_path / "career-history"
+    (documents / "old-resumes").mkdir(parents=True)
+    (documents / "old-resumes" / "resume.md").write_text(RESUME_MD, encoding="utf-8")
+    (documents / ".git").mkdir()
+
+    assert cli.main(["profile", "build", "--documents", str(documents)]) == 1
+
+    err = _flat(capsys.readouterr().err)
+    assert f"no readable documents in {documents}" in err
+    assert f"! old-resumes/ is a folder, and only the files directly in {documents} are read" in err
+    assert ".git" not in err
+
+
+def test_profile_build_says_why_each_unread_file_gave_no_text(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not every file blamed on a scan: a text file already is the text version."""
+    documents = tmp_path / "career-history"
+    documents.mkdir()
+    (documents / "scan.pdf").write_bytes(pdf_bytes(""))
+    (documents / "empty.txt").write_text("", encoding="utf-8")
+    (documents / "broken.docx").write_bytes(b"not a zip archive")
+    (documents / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0")
+
+    assert cli.main(["profile", "build", "--documents", str(documents)]) == 1
+
+    err = _flat(capsys.readouterr().err)
+    unread = "no text could be read from it."
+    assert f"! scan.pdf: {unread} A scanned PDF has no text in it" in err
+    assert f"! empty.txt: {unread} It is empty, or its text is in an encoding" in err
+    assert f"! broken.docx: {unread} The Word file is empty or damaged" in err
+    assert f"! legacy.doc: {unread} Only .pdf, .docx, .md and .txt files are read" in err
+    assert "if it is a scan" not in err
 
 
 def test_progress_is_one_line_per_step(capsys: pytest.CaptureFixture[str]) -> None:
@@ -859,7 +1359,7 @@ def test_a_profile_with_nothing_to_flag_validates_quietly(
     )
     assert cli.main(["profile", "validate", str(profile)]) == 0
     assert (
-        capsys.readouterr().out == f"✓ {profile} is valid — 1 employers, 1 roles, 0 technologies\n"
+        capsys.readouterr().out == f"✓ {profile} is valid: 1 employers, 1 roles, 0 technologies\n"
     )
 
 
@@ -885,3 +1385,28 @@ def test_only_the_first_open_notes_are_printed_with_a_count_of_the_rest(
     assert "? Question 7?" in printed
     assert "? Question 8?" not in printed
     assert "3 more are in its notes; `resume-tailor profile validate` lists them." in printed
+
+
+# --- relay ----------------------------------------------------------------------------------------
+def test_relay_wait_counts_the_requests_left_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without this, "no request waiting" beside request files in plain sight reads as a bug."""
+    for name in ("20260101-000000-001", "20260101-000001-001"):
+        (tmp_path / f"{name}.request.md").write_text("# Relay request\n", encoding="utf-8")
+    (tmp_path / "answered").mkdir()
+    (tmp_path / "answered" / "20251231-000000-001.request.md").write_text("old", encoding="utf-8")
+    awaited = tmp_path / "20260101-000002-001.request.md"
+    awaited.write_text("# Relay request\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "wait_for_request", lambda *_, **__: None)
+
+    with awaited.open("rb") as held:
+        # The mark of a script still waiting: this one arrived just as the wait gave up.
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert cli.main(["relay", "wait", "--dir", str(tmp_path), "--timeout", "1"]) == 1
+
+    assert capsys.readouterr().err == (
+        f"no request waiting in {tmp_path} after 1 minutes\n"
+        "  stale: 2 request file(s) left there by scripts that stopped before tidying up, safe "
+        "to delete once no script is running\n"
+    )

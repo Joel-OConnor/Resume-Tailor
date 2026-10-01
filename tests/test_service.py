@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +18,7 @@ from resume_tailor.agent import (
     GeneralResult,
     ProfileEdit,
     TailorResult,
+    UnusableAnswerError,
     Usage,
 )
 from resume_tailor.errors import (
@@ -30,7 +30,7 @@ from resume_tailor.errors import (
 )
 from resume_tailor.llm import Reply
 from resume_tailor.profile import loads
-from resume_tailor.render import exporter
+from resume_tailor.render import exporter, pdf
 from resume_tailor.render.pdf import PdfResult
 from resume_tailor.review import Answer, Question, review_resume
 from resume_tailor.service import applications as apps
@@ -55,6 +55,12 @@ POSTING = """\
 Staff Backend Engineer at Acme
 
 We need someone strong in Python and Kubernetes to own our payments platform.
+"""
+
+OTHER_POSTING = """\
+Staff Backend Engineer at Acme
+
+Our ledger team needs someone to own double-entry accounting at scale.
 """
 
 LINKEDIN_MD = "# Jordan Rivera\n\n## Headline\nSenior Backend Engineer"
@@ -105,9 +111,11 @@ class Agent:
         self.edit: Callable[[str], str] = lambda text: text
         self.revise: Callable[[str], str] = lambda text: text.replace("Babbage", "Charles Babbage")
         self.edits: list[dict[str, Any]] = []
+        self.postings: list[str] = []
         self.updates: list[tuple[Answer, ...]] = []
         self.updated = UPDATED_YAML
         self.update_error: Exception | None = None
+        self.edit_error: Exception | None = None
         self.revise_error: Exception | None = None
         self.draft = BARE_YAML
         self.refined = BARE_YAML.replace(
@@ -133,9 +141,10 @@ class Agent:
         self, posting: str, profile: Profile, model: object, *, progress: object = None
     ) -> TailorResult:
         assert callable(progress)
-        assert posting == POSTING
+        assert posting.strip()
         assert profile.contact.name
         assert model is not None
+        self.postings.append(posting)
         return self.tailored
 
     def _edit_documents(  # noqa: PLR0913 - mirrors the real signature
@@ -146,6 +155,7 @@ class Agent:
         *,
         flagged: str = "",
         answers: Sequence[Answer] = (),
+        posting: str = "",
         progress: object = None,
     ) -> EditResult:
         assert callable(progress)
@@ -155,9 +165,12 @@ class Agent:
                 "documents": dict(documents),
                 "flagged": flagged,
                 "answers": tuple(answers),
+                "posting": posting,
                 "profile": profile,
             }
         )
+        if self.edit_error is not None and not answers:
+            raise self.edit_error
         if not answers:
             return EditResult(
                 {kind: self.edit(text) for kind, text in documents.items()}, self.editor_questions
@@ -245,9 +258,11 @@ def general(output_dir: Path, profile_path: Path, **options: Any) -> service.App
     )
 
 
-def tailored(output_dir: Path, profile_path: Path, **options: Any) -> service.Application:
+def tailored(
+    output_dir: Path, profile_path: Path, *, posting: str = POSTING, **options: Any
+) -> service.Application:
     return service.tailor_application(
-        POSTING,
+        posting,
         profile_path=profile_path,
         output_dir=output_dir,
         model=FakeModel(),
@@ -425,6 +440,48 @@ def test_answers_that_decline_are_logged_but_change_nothing(
     assert "**A:** no" in answers_log.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "decline",
+    ["Nope, never done on-call.", "No, I have not.", "I'm not sure.", "Probably not."],
+)
+def test_a_decline_or_a_hedge_in_a_sentence_costs_no_update_and_no_revision(
+    agent: Agent, output: Path, profile_path: Path, answers_log: Path, decline: str
+) -> None:
+    agent.editor_questions = ("Have you done on-call?",)
+
+    application = general(
+        output, profile_path, export=False, ask=answering(decline), answers_path=answers_log
+    )
+
+    assert application.update is None
+    assert agent.updates == [], "no model call to record nothing"
+    assert len(agent.edits) == 1, "and no revision"
+    assert not (profile_path.parent / "backups").exists()
+    assert decline in answers_log.read_text(encoding="utf-8"), "the answer is still logged"
+
+
+def test_an_update_that_changes_nothing_is_not_recorded(
+    agent: Agent, output: Path, profile_path: Path, answers_log: Path
+) -> None:
+    """The model rightly left the profile alone, so there is nothing to back up or work in."""
+    agent.updated = BARE_YAML + "\n# nothing to add: the profile already says it\n"
+
+    application = general(
+        output,
+        profile_path,
+        export=False,
+        ask=answering("It ran on every engine we had."),
+        answers_path=answers_log,
+    )
+
+    assert len(agent.updates) == 1, "the answer was worth asking the model about"
+    assert application.update is None, "but it changed nothing, so nothing is reported recorded"
+    assert profile_path.read_text(encoding="utf-8") == BARE_YAML
+    assert not (profile_path.parent / "backups").exists()
+    assert len(agent.edits) == 1, "and there is nothing to revise the documents with"
+    assert "It ran on every engine we had." in answers_log.read_text(encoding="utf-8")
+
+
 @pytest.mark.usefixtures("agent")
 def test_skipping_every_question_logs_nothing(
     output: Path, profile_path: Path, answers_log: Path
@@ -443,10 +500,10 @@ def test_answers_that_cannot_be_recorded_leave_the_profile_and_the_documents_alo
     )
 
     assert application.update is not None
-    assert application.update.error == "recorded a figure nobody said"
-    assert application.problems == (
-        "your answers could not be recorded in the profile: recorded a figure nobody said",
-    )
+    assert application.update.error == (
+        f"recorded a figure nobody said. Your answers are logged in {answers_log}."
+    ), "the error says where the answers went"
+    assert application.problems == (), "the update carries its error; it is reported once"
     assert profile_path.read_text(encoding="utf-8") == BARE_YAML
     assert len(agent.edits) == 1
     assert "Three." in answers_log.read_text(encoding="utf-8"), "the answer itself is safe"
@@ -486,6 +543,32 @@ def test_regenerating_the_general_folder_replaces_it_whole(
     assert [path.name for path in second.files] == ["linkedin.md", "resume.md"]
 
 
+@pytest.mark.usefixtures("agent")
+def test_a_rerun_keeps_the_folder_it_replaces_with_its_hand_edits(
+    output: Path, profile_path: Path
+) -> None:
+    """The README says to edit the .md by hand; a rerun must not throw that work away."""
+    first = general(output, profile_path, export=False)
+    assert first.backup is None
+    assert first.problems == (), "a first run replaces nothing, so it says nothing about it"
+    edited = (first.directory / "resume.md").read_text(encoding="utf-8") + "\nMy hand edit.\n"
+    (first.directory / "resume.md").write_text(edited, encoding="utf-8")
+    (first.directory / "resume-polished.docx").write_bytes(b"made with build --layout polished")
+
+    second = general(output, profile_path, export=False)
+
+    assert second.backup is not None
+    assert second.backup.parent == output / "backups"
+    assert second.backup.name.startswith("general.")
+    assert contents(second.backup)["resume.md"] == edited
+    assert (second.backup / "resume-polished.docx").read_bytes().startswith(b"made with build")
+    assert "My hand edit." not in contents(second.directory)["resume.md"]
+    assert second.problems == (
+        f"the previous version of {second.directory} is kept in {second.backup}",
+    )
+    assert sorted(child.name for child in output.iterdir()) == ["backups", "general"]
+
+
 def test_an_invalid_profile_fails_before_the_model_is_asked(
     monkeypatch: pytest.MonkeyPatch, output: Path, tmp_path: Path
 ) -> None:
@@ -518,6 +601,37 @@ def test_tailoring_writes_the_posting_the_resume_and_the_cover_letter(
     ]
     assert (application.directory / "job-description.md").read_text(encoding="utf-8") == POSTING
     assert agent.edits[0]["documents"][COVER_LETTER] == LETTER_MD
+    assert agent.postings == [POSTING]
+
+
+def test_both_editing_passes_of_a_tailored_run_see_the_posting(
+    agent: Agent, output: Path, profile_path: Path, answers_log: Path
+) -> None:
+    """The editor has the last word on wording, so it must know what the wording was for."""
+    tailored(
+        output,
+        profile_path,
+        export=False,
+        ask=answering("Yes, 2 years."),
+        answers_path=answers_log,
+    )
+
+    assert [edit["posting"] for edit in agent.edits] == [POSTING, POSTING]
+    assert agent.edits[1]["answers"], "the second pass is the revision after the answers"
+
+
+def test_the_general_run_has_no_posting_to_show_the_editor(
+    agent: Agent, output: Path, profile_path: Path, answers_log: Path
+) -> None:
+    general(
+        output,
+        profile_path,
+        export=False,
+        ask=answering("Yes, 2 years."),
+        answers_path=answers_log,
+    )
+
+    assert [edit["posting"] for edit in agent.edits] == ["", ""]
 
 
 @pytest.mark.usefixtures("agent")
@@ -539,6 +653,52 @@ def test_exporting_renders_the_resume_and_the_letter_single_column(
     names = {path.name for path in application.files}
     assert {"resume.docx", "resume.pdf", "cover-letter.docx", "cover-letter.pdf"} <= names
     assert not any("polished" in name for name in names), "the two-column design is opt-in"
+    assert application.problems == ()
+
+
+@pytest.fixture
+def no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for a machine with no Chromium-family browser, where every PDF falls back."""
+    monkeypatch.setattr(exporter, "html_to_pdf", pdf.html_to_pdf)
+    monkeypatch.setattr(pdf, "find_chrome", lambda: None)
+
+
+@pytest.mark.usefixtures("agent", "no_browser")
+def test_a_pdf_no_browser_could_print_is_named_with_how_to_finish_it(
+    output: Path, profile_path: Path
+) -> None:
+    """The .html is in the folder, but nothing said the .pdf was not; now the run says so."""
+    application = tailored(output, profile_path)
+
+    names = {path.name for path in application.files}
+    assert {"resume.html", "cover-letter.html"} <= names
+    assert not names & {"resume.pdf", "cover-letter.pdf"}
+    assert application.problems == tuple(
+        f"{name}.pdf was not made: no browser that can print one (Chrome, Edge, Brave or "
+        f"Chromium) is installed. Open {name}.html in a browser and print it to PDF, or install "
+        "Google Chrome and run this again."
+        for name in ("resume", "cover-letter")
+    )
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_pdf_the_browser_failed_to_print_is_named_too(
+    monkeypatch: pytest.MonkeyPatch, output: Path, profile_path: Path
+) -> None:
+    def broken(html: str, out: Path) -> PdfResult:
+        out.with_suffix(".html").write_text(html, encoding="utf-8")
+        return PdfResult(ok=False, reason=pdf.BROWSER_FAILED)
+
+    monkeypatch.setattr(exporter, "html_to_pdf", broken)
+
+    application = general(output, profile_path)
+
+    assert application.problems == (
+        (
+            "resume.pdf was not made: the browser could not print it. Open resume.html in a "
+            "browser and print it to PDF."
+        ),
+    )
 
 
 def test_every_document_ends_in_a_newline(agent: Agent, output: Path, profile_path: Path) -> None:
@@ -567,6 +727,29 @@ def test_a_generation_failure_leaves_no_folder_at_all(
     with pytest.raises(FabricationError):
         tailored(output, profile_path)
     assert not output.exists()
+
+
+def test_an_editor_failure_leaves_no_folder_and_the_earlier_one_untouched(
+    agent: Agent, output: Path, profile_path: Path
+) -> None:
+    """The editor's pass is the second model call, still before anything is written."""
+    earlier = tailored(output, profile_path, export=False)
+    before = contents(earlier.directory)
+    agent.edit_error = ModelError("Claude Code declined the editor's request")
+
+    with pytest.raises(ModelError, match="declined"):
+        tailored(output, profile_path)
+
+    assert [child.name for child in (output / "applications").iterdir()] == [earlier.slug], (
+        "no hidden staging folder is left beside it"
+    )
+    assert contents(earlier.directory) == before
+    assert not (output / "backups").exists(), "and nothing was moved aside for a run that failed"
+
+    fresh = output.parent / "fresh"
+    with pytest.raises(ModelError):
+        tailored(fresh, profile_path)
+    assert not fresh.exists()
 
 
 def test_an_export_failure_leaves_the_previous_version_untouched(
@@ -615,17 +798,35 @@ def test_an_unwritable_output_directory_is_reported_cleanly(
 
 
 @pytest.mark.usefixtures("agent")
-def test_a_folder_that_cannot_be_replaced_is_reported_cleanly(
-    output: Path, profile_path: Path
-) -> None:
+def test_a_file_where_the_folder_should_go_is_left_alone(output: Path, profile_path: Path) -> None:
+    """It is not known to hold this posting, so the application goes beside it instead."""
     folder = output / "applications"
     folder.mkdir(parents=True)
-    # A plain file where the folder should go: nothing can be removed or renamed onto it.
     (folder / "acme-corp-staff-backend-engineer").write_text("a file", encoding="utf-8")
 
-    with pytest.raises(RenderError, match="cannot write"):
-        tailored(output, profile_path)
-    assert [child.name for child in folder.iterdir()] == ["acme-corp-staff-backend-engineer"]
+    application = tailored(output, profile_path, export=False)
+
+    assert application.slug == "acme-corp-staff-backend-engineer-2"
+    assert (folder / "acme-corp-staff-backend-engineer").read_text(encoding="utf-8") == "a file"
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_previous_version_that_cannot_be_kept_is_not_replaced(
+    output: Path, profile_path: Path
+) -> None:
+    """Replacing a folder means keeping the old one first; when that fails, nothing changes."""
+    old = general(output, profile_path, export=False)
+    before = contents(old.directory)
+    (output / "backups").write_text("a file where the backups folder should be", encoding="utf-8")
+
+    with pytest.raises(RenderError, match="cannot keep the previous version of") as raised:
+        general(output, profile_path, export=False)
+
+    assert "nothing new was written" in str(raised.value)
+    assert contents(old.directory) == before
+    assert sorted(child.name for child in output.iterdir()) == ["backups", "general"], (
+        "and no unfinished folder is left behind"
+    )
 
 
 def contents(folder: Path) -> dict[str, str]:
@@ -668,6 +869,26 @@ def test_a_swap_that_fails_puts_the_previous_version_back(
         "the folder is back, and nothing hidden is left beside it"
     )
     assert contents(old.directory) == before
+    assert list((output / "backups" / "applications").iterdir()) == [], "it is back, not copied"
+
+
+@pytest.mark.usefixtures("agent")
+def test_a_first_swap_that_fails_leaves_nothing_behind(
+    monkeypatch: pytest.MonkeyPatch, output: Path, profile_path: Path
+) -> None:
+    real_replace = Path.replace
+
+    def replace(self: Path, target: Path) -> Path:
+        if self.name.startswith(".acme-corp-staff-backend-engineer-"):  # the folder it built
+            raise OSError(errno.EIO, "Input/output error")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises(RenderError, match=r"cannot write .*: Input/output error$"):
+        tailored(output, profile_path, export=False)
+
+    assert list((output / "applications").iterdir()) == []
+    assert not (output / "backups").exists()
 
 
 def test_a_previous_version_that_cannot_be_put_back_is_named_in_the_error(
@@ -694,57 +915,18 @@ def test_a_previous_version_that_cannot_be_put_back_is_named_in_the_error(
     with pytest.raises(RenderError, match="the previous version is in ") as raised:
         tailored(output, profile_path, export=False)
 
-    (hidden,) = old.directory.parent.iterdir()
-    assert hidden.name.startswith(f".{old.slug}-old-"), "the unfinished new folder is cleared"
-    assert str(raised.value).endswith(str(hidden))
-    assert contents(hidden) == before
+    assert list(old.directory.parent.iterdir()) == [], "the unfinished new folder is cleared"
+    (kept,) = (output / "backups" / "applications").iterdir()
+    assert kept.name.startswith(f"{old.slug}.")
+    assert str(raised.value).endswith(str(kept))
+    assert contents(kept) == before
 
 
-@pytest.mark.usefixtures("agent")
-def test_a_previous_version_that_cannot_be_deleted_is_still_replaced_whole(
-    monkeypatch: pytest.MonkeyPatch, output: Path, profile_path: Path
-) -> None:
-    """A Finder-locked file stops a delete partway through, but not a rename of its folder.
-
-    Deleting in place leaves the old folder half gone and throws the new documents away; setting
-    it aside first lets the new version land, and a failed cleanup of the old one is not a
-    failed write.
-    """
-    old = tailored(output, profile_path, export=False)
-    (old.directory / "locked.txt").write_text("chflags uchg", encoding="utf-8")
-    real_rmtree = shutil.rmtree
-
-    def rmtree(path: str | Path, *, ignore_errors: bool = False, **kwargs: Any) -> None:
-        root = Path(path)
-        if not (root / "locked.txt").exists():
-            real_rmtree(root, ignore_errors=ignore_errors, **kwargs)
-            return
-        for child in root.iterdir():
-            if child.name != "locked.txt":
-                child.unlink()
-        if not ignore_errors:
-            raise OSError(errno.EPERM, "Operation not permitted", str(root / "locked.txt"))
-
-    monkeypatch.setattr(shutil, "rmtree", rmtree)
-
-    new = tailored(output, profile_path, export=False)
-
-    assert [path.name for path in new.files] == [
-        "cover-letter.md",
-        "job-description.md",
-        "resume.md",
-    ]
-    (leftover,) = (
-        child for child in output.joinpath("applications").iterdir() if child != new.directory
-    )
-    assert leftover.name.startswith(f".{new.slug}-old-")
-    assert [child.name for child in leftover.iterdir()] == ["locked.txt"]
-
-
-def test_a_rerun_replaces_the_folder_and_leaves_nothing_beside_it(
+def test_a_rerun_replaces_the_folder_and_keeps_the_old_one_in_backups(
     agent: Agent, output: Path, profile_path: Path
 ) -> None:
     old = tailored(output, profile_path, export=False)
+    before = contents(old.directory)
     (old.directory / "stale.txt").write_text("from an earlier run", encoding="utf-8")
     agent.tailored = TailorResult(
         "Acme Corp",
@@ -756,9 +938,42 @@ def test_a_rerun_replaces_the_folder_and_leaves_nothing_beside_it(
 
     new = tailored(output, profile_path, export=False)
 
+    assert new.slug == old.slug, "the same posting replaces its own folder"
     assert [child.name for child in (output / "applications").iterdir()] == [new.slug]
     assert "stale.txt" not in contents(new.directory)
     assert "Charles Babbage" in contents(new.directory)["resume.md"]
+    assert new.backup is not None
+    assert new.backup.parent == output / "backups" / "applications"
+    assert new.backup.name.startswith(f"{old.slug}.")
+    assert contents(new.backup) == {**before, "stale.txt": "from an earlier run"}
+    assert new.problems == (f"the previous version of {new.directory} is kept in {new.backup}",)
+
+
+def test_a_different_posting_with_the_same_company_and_role_gets_its_own_folder(
+    output: Path, profile_path: Path, agent: Agent
+) -> None:
+    """Two Acme teams hiring a Staff Backend Engineer are two applications, not one."""
+    payments = tailored(output, profile_path, export=False)
+    before = contents(payments.directory)
+
+    ledger = tailored(output, profile_path, posting=OTHER_POSTING, export=False)
+
+    assert ledger.slug == f"{payments.slug}-2"
+    assert contents(payments.directory) == before, "the first application is untouched"
+    assert contents(ledger.directory)["job-description.md"] == OTHER_POSTING
+    assert ledger.backup is None
+    assert ledger.problems == (
+        (
+            f"{payments.directory} holds the application for a different posting with the same "
+            f"company and role, so this one is in {ledger.directory} instead"
+        ),
+    )
+
+    again = tailored(output, profile_path, posting=OTHER_POSTING, export=False)
+    assert again.slug == ledger.slug, "a rerun of the second posting finds its own folder"
+    assert again.backup is not None
+    assert contents(payments.directory) == before
+    assert agent.postings == [POSTING, OTHER_POSTING, OTHER_POSTING]
 
 
 def test_a_draft_with_no_company_or_role_still_lands_somewhere(
@@ -788,9 +1003,12 @@ def test_nothing_to_read_is_refused(tmp_path: Path) -> None:
 def test_an_existing_profile_is_never_replaced_without_force(
     raw: service.RawDocuments, profile_path: Path
 ) -> None:
-    with pytest.raises(ProfileError, match="--force"):
+    with pytest.raises(ProfileError, match="--force") as refused:
         build(raw, profile_path)
     assert profile_path.read_text(encoding="utf-8") == BARE_YAML
+    assert "(with make: make profile FORCE=--force)" in str(refused.value), (
+        "make rejects a bare --force, so a make user is told the form make takes"
+    )
 
 
 @pytest.mark.usefixtures("agent")
@@ -839,9 +1057,38 @@ def test_a_refinement_that_fails_its_checks_keeps_the_draft(
 
     built = build(raw, out)
 
-    assert built.refine_error == "lost the figure '38%'"
+    assert built.refine_error == (
+        "refining did not pass its checks, so the checked draft was written as it is: lost the "
+        "figure '38%'"
+    )
     assert "Senior backend engineer with 8 years" in out.read_text(encoding="utf-8")
     assert built.changes == built.difference == ()
+
+
+def test_a_refinement_whose_answers_never_parse_failed_its_checks_too(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
+) -> None:
+    agent.refine_error = UnusableAnswerError("the YAML is not a valid master profile")
+
+    built = build(raw, tmp_path / "master-profile.yaml")
+
+    assert built.refine_error.startswith("refining did not pass its checks, so the checked draft")
+
+
+def test_a_refinement_that_could_not_run_says_so_rather_than_blaming_a_check(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
+) -> None:
+    """A declined relay request or an API error never reached the checks at all."""
+    agent.refine_error = ModelError("Claude Code declined 20260930-101500-002.request.md: busy")
+    out = tmp_path / "master-profile.yaml"
+
+    built = build(raw, out)
+
+    assert built.refine_error == (
+        "refining could not run, so the checked draft was written as it is: Claude Code "
+        "declined 20260930-101500-002.request.md: busy"
+    )
+    assert "Senior backend engineer with 8 years" in out.read_text(encoding="utf-8")
 
 
 def test_the_open_questions_are_asked_and_answered_into_the_profile(
@@ -885,7 +1132,7 @@ def test_an_update_that_fails_during_a_build_is_reported_not_raised(
     built = build(raw, out, ask=answering("Yes."), answers_path=answers_log)
 
     assert built.update is not None
-    assert built.update.error == "rate limited"
+    assert built.update.error == f"rate limited. Your answers are logged in {answers_log}."
     assert "Backend engineer, 8 years" in out.read_text(encoding="utf-8")
 
 
@@ -1055,6 +1302,54 @@ def test_undecodable_text_is_skipped(tmp_path: Path) -> None:
     assert service.read_raw_documents(raw).documents == {}
 
 
+def test_text_saved_by_windows_tools_is_read(tmp_path: Path) -> None:
+    """One smart quote made a whole notes file unreadable; it is ordinary text."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "notes.txt").write_bytes("Jordan’s notes – Northwind 2023\n".encode("cp1252"))
+    (raw / "unicode.txt").write_bytes("Led the café rewrite\n".encode("utf-16"))
+    (raw / "bom.md").write_bytes(b"\xef\xbb\xbf# Brag doc\n")
+
+    found = service.read_raw_documents(raw)
+
+    assert found.documents == {
+        "bom.md": "# Brag doc\n",
+        "notes.txt": "Jordan’s notes – Northwind 2023\n",
+        "unicode.txt": "Led the café rewrite\n",
+    }
+    assert found.skipped == ()
+
+
+def test_text_that_is_not_text_at_all_is_skipped(tmp_path: Path) -> None:
+    """UTF-16 without its byte-order mark decodes to NULs in any 8-bit encoding: not text."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "headless.txt").write_bytes("Led the rewrite\n".encode("utf-16-le"))
+    (raw / "undefined.txt").write_bytes(b"cp1252 leaves \x81 undefined")
+
+    found = service.read_raw_documents(raw)
+
+    assert found.documents == {}
+    assert found.skipped == ("headless.txt", "undefined.txt")
+
+
+def test_a_text_file_that_cannot_be_opened_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "locked.txt").write_text("Real content.\n", encoding="utf-8")
+    real = Path.read_bytes
+
+    def refuse(self: Path) -> bytes:
+        if self.name == "locked.txt":
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    assert service.read_raw_documents(raw).skipped == ("locked.txt",)
+
+
 @pytest.mark.usefixtures("agent")
 def test_a_long_list_of_open_notes_is_capped_at_the_most_consequential(
     agent: Agent, raw: service.RawDocuments, tmp_path: Path
@@ -1073,3 +1368,30 @@ def test_a_long_list_of_open_notes_is_capped_at_the_most_consequential(
     assert [q.text for q in asked[0]] == [f"Question {index}?" for index in range(8)]
     assert built.questions == asked[0]
     assert len(built.review.questions) == 12, "the rest stay in notes"
+
+
+def test_open_notes_are_asked_before_roles_with_no_highlights(
+    agent: Agent, raw: service.RawDocuments, tmp_path: Path
+) -> None:
+    """Early jobs in a LinkedIn export often have no highlights; they must not crowd out notes."""
+    shops = "\n".join(
+        f"  - id: shop-{year}\n    company: Shop {year}\n    roles:\n"
+        f"      - title: Developer\n        start: '{year}'\n        end: '{year}'"
+        for year in range(2008, 2018)
+    )
+    agent.refined = agent.refined.replace("\neducation:", f"\n{shops}\neducation:", 1)
+    assert "Shop 2017" in agent.refined, "the fixture only means anything with the shops in it"
+    asked: list[tuple[Question, ...]] = []
+
+    def ask(questions: tuple[Question, ...]) -> tuple[Answer, ...]:
+        asked.append(questions)
+        return ()
+
+    build(raw, tmp_path / "p.yaml", ask=ask)
+
+    (questions,) = asked
+    assert questions[0].text == (
+        "Confirm the exact settlement latency numbers before quoting them in an interview."
+    )
+    assert len(questions) == 8
+    assert all("No highlights are recorded" in question.text for question in questions[1:])

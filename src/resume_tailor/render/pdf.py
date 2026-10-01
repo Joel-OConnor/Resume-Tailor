@@ -29,8 +29,8 @@ CHROME_CANDIDATES: tuple[str, ...] = (
 _ON_PATH = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
 _TIMEOUT_SECONDS = 90
 
-NO_BROWSER = "no browser found — open the .html and print to PDF"
-BROWSER_FAILED = "the browser could not produce a PDF — open the .html and print it by hand"
+NO_BROWSER = "no browser found: open the .html and print it to PDF"
+BROWSER_FAILED = "the browser could not produce a PDF: open the .html and print it by hand"
 
 
 @dataclass(frozen=True, slots=True)

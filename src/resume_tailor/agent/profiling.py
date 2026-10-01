@@ -39,6 +39,11 @@ if TYPE_CHECKING:
 
 __all__ = ["ProfileEdit", "build_profile", "refine_profile", "update_profile"]
 
+_NOT_FOR_REFINING = frozenset({"no-level"})
+"""Audit findings refining may not act on: recording a level the draft lacks raises it, and the
+check rejects a raise. Only the candidate can settle one, so it is left out of the refine prompt.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ProfileEdit:
@@ -171,7 +176,7 @@ def _audit(profile: Profile) -> str:
     return "\n".join(
         f"- {finding.text}: {finding.message}"
         for finding in review_profile(profile).findings
-        if finding.level is Level.ADVISE
+        if finding.level is Level.ADVISE and finding.rule not in _NOT_FOR_REFINING
     )
 
 

@@ -9,7 +9,8 @@ user afterwards:
   technology claiming more years than the career has, a role's stack naming a technology the
   profile never records, a highlight with no label or one that runs to a paragraph.
 * ASK is a fact only the candidate has: every open ``notes`` entry, and a role with nothing
-  recorded under it.
+  recorded under it. The notes come first, in the order the profile keeps them (most
+  consequential first), so a run of early jobs with no highlights never crowds them out.
 
 Every rule is deliberately narrow. The refine pass brings judgement to the whole file; this list
 is only what can be checked mechanically, so a finding here is worth reading rather than noise.
@@ -47,7 +48,8 @@ _SAME_WORDS = 0.75
 _MIN_WORDS = 4
 _SHORTEST_STEM = 3
 _PRESENT = "present"
-_YEAR = re.compile(r"(?<![0-9])(?:19[5-9][0-9]|20[0-9]{2})(?![0-9])")
+_YEAR = re.compile(r"(?<![0-9$€£])(?:19[5-9][0-9]|20[0-9]{2})(?![0-9%])(?!-?[A-Za-z])")
+"""A year written in prose; not an amount or a number with a unit, like "2048-bit" or "2000ms"."""
 _WORD = re.compile(r"[a-z0-9$%]+")
 _LEGAL = frozenset({"co", "company", "corp", "corporation", "inc", "llc", "ltd", "plc"})
 _STOPWORDS = frozenset(
@@ -60,15 +62,15 @@ def review_profile(profile: Profile, *, today: date | None = None) -> Review:
     """Audit ``profile`` and return every finding, with each open note as a question."""
     today = today or datetime.now(tz=UTC).date()
     findings = [
+        *_notes(profile),
         *_summary(profile),
         *_employers(profile),
         *_roles(profile),
-        *_highlights(profile),
+        *_highlights(profile, today),
         *_duplicates(profile),
         *_technologies(profile),
         *_technology_years(profile, today),
         *_stacks(profile),
-        *_notes(profile),
     ]
     return Review(tuple(findings))
 
@@ -160,7 +162,7 @@ def _before(start: Point, end: Point) -> bool:
 
 
 # --- accomplishments ------------------------------------------------------------------------------
-def _highlights(profile: Profile) -> list[Finding]:
+def _highlights(profile: Profile, today: date) -> list[Finding]:
     found: list[Finding] = []
     for where, role, tenure_company in _role_paths(profile):
         if not role.highlights:
@@ -181,16 +183,20 @@ def _highlights(profile: Profile) -> list[Finding]:
                     "the outcome"
                 )
                 found.append(Finding("long-highlight", Level.ADVISE, 0, path, message))
-            found += _after_role(highlight, role, path)
+            found += _after_role(highlight, role, path, today)
     return found
 
 
-def _after_role(highlight: Highlight, role: Role, path: str) -> list[Finding]:
-    """Flag a highlight that mentions a year after its role ended: it belongs to a later one."""
+def _after_role(highlight: Highlight, role: Role, path: str, today: date) -> list[Finding]:
+    """Flag a highlight that mentions a year after its role ended: it belongs to a later one.
+
+    A year still to come is a target, not when the work happened, so it is no evidence either way.
+    """
     if role.end == _PRESENT:
         return []
     ended = parse_point(role.end).year
-    later = sorted({int(year) for year in _YEAR.findall(highlight.text) if int(year) > ended})
+    years = {int(year) for year in _YEAR.findall(highlight.text)}
+    later = sorted(year for year in years if ended < year <= today.year)
     if not later:
         return []
     message = (
@@ -261,7 +267,8 @@ def _technologies(profile: Profile) -> list[Finding]:
         shown = ", ".join(unrated[:_SHOWN]) + (", …" if len(unrated) > _SHOWN else "")
         message = (
             f"{len(unrated)} technologies have no level ({shown}); tailoring leads only with "
-            "proficient or expert"
+            "proficient or expert, so add a level by hand (expert, proficient, working or "
+            "exposure) to each one you know"
         )
         found.append(Finding("no-level", Level.ADVISE, 0, "technologies", message))
     return found

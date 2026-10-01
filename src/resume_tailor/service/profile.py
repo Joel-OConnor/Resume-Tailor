@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from resume_tailor.agent import build_profile, refine_profile, update_profile
+from resume_tailor.agent import UnusableAnswerError, build_profile, refine_profile, update_profile
 from resume_tailor.errors import FabricationError, ModelError, ProfileError, RenderError
 from resume_tailor.paths import ANSWERS_PATH, BACKUPS_FOLDER, CAREER_HISTORY_DIR, SCHEMA_PATH
 from resume_tailor.profile import loads
@@ -59,6 +59,12 @@ _SCHEMA_COMMENT = "# yaml-language-server: $schema="
 _RAW_GUIDE = "README.md"
 """The project's own instructions for the folder, not the user's career history."""
 
+_DRAFT_KEPT = "the checked draft was written as it is"
+
+_TEXT_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".text"})
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+"""How Notepad's "Unicode" encoding opens a file: UTF-16, little- or big-endian."""
+
 type Asker = Callable[[tuple[Question, ...]], Sequence[Answer]]
 """Put questions to the candidate and return what they answered (blank answers are skips)."""
 
@@ -78,7 +84,8 @@ class RawDocuments:
     """Filename to extracted text, for every file that yielded any."""
 
     skipped: tuple[str, ...] = ()
-    """Files that produced no text — an unsupported format, or a PDF that is only a scan."""
+    """Files that produced no text: an unsupported format, text in an encoding that cannot be
+    read, or a PDF that is only a scan."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +103,8 @@ class ProfileUpdate:
     """The updated profile; ``None`` when the update failed and the file was left as it was."""
 
     error: str = ""
-    """Why the answers could not be recorded automatically, when they could not."""
+    """Why the answers could not be recorded automatically, when they could not, ending with where
+    they are logged instead."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +120,8 @@ class ProfileBuild:
     """The draft and the refined profile compared: what actually changed, counted."""
 
     refine_error: str = ""
-    """Why refining failed, when it did: the checked draft was written instead."""
+    """Why refining failed, when it did, as a whole sentence to print as it is: it did not pass
+    its checks, or it could not run at all. The checked draft was written instead."""
 
     review: Review = field(default_factory=Review)
     """The audit of the profile as written: what still needs a look, and its open questions."""
@@ -133,10 +142,11 @@ def build_master_profile(  # noqa: PLR0913 - one run; every argument is a distin
 ) -> ProfileBuild:
     """Draft, refine and write the master profile from ``raw``, then ask what it could not settle.
 
-    A refinement that fails its checks does not cost the draft: the draft (which the loader has
-    validated) is written instead and the failure is reported on the result. At most
-    :data:`~resume_tailor.review.MAX_QUESTIONS` open notes are asked, most consequential first;
-    the rest stay in ``notes`` for ``resume-tailor profile validate`` to list.
+    A refinement that fails its checks, or that cannot run at all, does not cost the draft: the
+    draft (which the loader has validated) is written instead and the failure is reported on the
+    result. At most :data:`~resume_tailor.review.MAX_QUESTIONS` questions are asked, the open notes
+    first and most consequential first; the rest stay in ``notes`` for ``resume-tailor profile
+    validate`` to list.
 
     Raises:
         ProfileError: there is nothing to read, or a profile exists and ``force`` is not set.
@@ -149,7 +159,8 @@ def build_master_profile(  # noqa: PLR0913 - one run; every argument is a distin
     if out.exists() and not force:
         msg = (
             f"{out} already exists. Building would replace it, losing any correction made by "
-            f"hand. Re-run with --force to replace it (a timestamped backup is kept)."
+            "hand. Re-run with --force (with make: make profile FORCE=--force) to replace it; a "
+            "timestamped backup is kept."
         )
         raise ProfileError(msg)
 
@@ -161,8 +172,10 @@ def build_master_profile(  # noqa: PLR0913 - one run; every argument is a distin
     difference: tuple[str, ...] = ()
     try:
         edit = refine_profile(draft, raw.documents, model, progress=progress)
-    except (FabricationError, ModelError) as exc:
-        error = str(exc)
+    except (FabricationError, UnusableAnswerError) as exc:
+        error = f"refining did not pass its checks, so {_DRAFT_KEPT}: {exc}"
+    except ModelError as exc:
+        error = f"refining could not run, so {_DRAFT_KEPT}: {exc}"
     else:
         text, changes = edit.yaml, edit.changes
         difference = describe_changes(loads(draft), edit.profile)
@@ -203,7 +216,10 @@ def apply_answers(  # noqa: PLR0913 - one step; every argument is a distinct inp
     progress: Progress = _silent,
     back_up: bool = True,
 ) -> ProfileUpdate | None:
-    """Record ``answers`` in the answers log and in the profile; ``None`` when none gave a fact.
+    """Record ``answers`` in the answers log and in the profile; ``None`` when they change nothing.
+
+    That is when none of them gives a fact, or when the profile already says everything they do:
+    then nothing is written, nothing is backed up, and nothing is reported as recorded.
 
     A model failure is reported on the result rather than raised: the answers are already safe in
     the log, and whatever the candidate was reviewing can still be finished without them.
@@ -220,11 +236,15 @@ def apply_answers(  # noqa: PLR0913 - one step; every argument is a distinct inp
     try:
         edit = update_profile(current, facts, model, progress=progress)
     except (FabricationError, ModelError) as exc:
-        return ProfileUpdate(facts, error=str(exc))
+        reason = str(exc).rstrip().removesuffix(".")
+        return ProfileUpdate(facts, error=f"{reason}. Your answers are logged in {answers_path}.")
+    before = loads(current)
+    if edit.profile == before:
+        return None
     backup = write_profile(profile_path, edit.yaml, back_up=back_up)
     return ProfileUpdate(
         answers=facts,
-        changes=describe_changes(loads(current), edit.profile),
+        changes=describe_changes(before, edit.profile),
         backup=backup,
         profile=edit.profile,
     )
@@ -313,11 +333,35 @@ def _extract(path: Path) -> str:
         return _extract_pdf(path)
     if suffix == ".docx":
         return _extract_docx(path)
-    if suffix in {".md", ".txt", ".markdown", ".text"}:
+    if suffix in _TEXT_SUFFIXES:
+        return _extract_text(path)
+    return ""
+
+
+def _extract_text(path: Path) -> str:
+    """Read a text file the way it was most likely saved.
+
+    UTF-8 first, with or without the byte-order mark Windows editors add, then Windows-1252, the
+    encoding Notepad and Word use for a "plain text" file in English, where one smart quote or
+    accented letter makes the file invalid UTF-8. A file that opens with a UTF-16 byte-order mark
+    (Notepad's "Unicode") is read as UTF-16. Anything else that decodes to NUL characters is not
+    text, and reads as nothing.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if data.startswith(_UTF16_BOMS):
         try:
-            return path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError):
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
             return ""
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return "" if "\x00" in text else text
     return ""
 
 
