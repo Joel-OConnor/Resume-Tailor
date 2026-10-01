@@ -88,6 +88,21 @@ def test_both_bullet_markers(marker: str) -> None:
     assert document.blocks[-1] == Bullet((Span("one"),))
 
 
+def test_a_bullet_is_one_line_and_a_wrapped_line_is_a_paragraph_of_its_own() -> None:
+    """Deliberate: like every other reader of these files, the grammar sees one bullet per line."""
+    # Joining an indented continuation here alone would make the review and the verifier, which
+    # also read line by line, disagree with the renderers about what the bullet says.
+    document = parse(
+        "# Ada\n\n## Experience\n- Led the migration of forty services\n"
+        "  to Kubernetes, cutting cost 30%.\n- Next"
+    )
+    assert document.blocks[2:] == (
+        Bullet((Span("Led the migration of forty services"),)),
+        Paragraph((Span("to Kubernetes, cutting cost 30%."),)),
+        Bullet((Span("Next"),)),
+    )
+
+
 def test_bullet_with_a_bold_lead_in() -> None:
     document = parse("# Ada\n\n## Experience\n- **Scope:** owned it")
     assert document.blocks[-1] == Bullet((Span("Scope:", bold=True), Span(" owned it")))
@@ -101,6 +116,21 @@ def test_skill_line() -> None:
 def test_skill_line_with_no_items() -> None:
     document = parse("# Ada\n\n## Skills\n**Languages:**")
     assert document.blocks[-1] == SkillLine("Languages", ())
+
+
+def test_a_skill_line_may_put_its_colon_outside_the_bold() -> None:
+    """Read as prose, ``**Label**: items`` lines ran the whole Skills section into one paragraph."""
+    document = parse("# Ada\n\n## Skills\n**Languages**: Python, Go\n**Data**:Redis\n**Cloud**:")
+    assert document.blocks[2:] == (
+        SkillLine("Languages", (Span("Python, Go"),)),
+        SkillLine("Data", (Span("Redis"),)),
+        SkillLine("Cloud", ()),
+    )
+
+
+def test_a_colon_after_a_bold_phrase_later_in_the_line_leaves_it_prose() -> None:
+    document = parse("# Ada\n\n## Summary\n**Shipped** the public API: twice")
+    assert isinstance(document.blocks[-1], Paragraph)
 
 
 def test_any_line_opening_with_a_bold_label_is_a_skill_line() -> None:

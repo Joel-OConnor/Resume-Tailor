@@ -11,9 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from resume_tailor.match import match_posting
+from resume_tailor.match import match_posting, render_markdown
 from resume_tailor.match.coverage import Confidence, find_coverage
-from resume_tailor.match.gaps import find_gaps
 from resume_tailor.match.lexicon import Provenance, Tier, build_lexicon
 from resume_tailor.match.posting import Section, parse_posting
 from resume_tailor.profile import load_mapping
@@ -43,32 +42,21 @@ _TECHNOLOGIES: list[dict[str, Any]] = [
 ]
 
 
+def _acme(*highlights: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return an experience list of one Acme role holding exactly ``highlights``."""
+    role = {"title": "Engineer", "start": "2020", "end": "present", "highlights": list(highlights)}
+    return [{"id": "acme", "company": "Acme", "roles": [role]}]
+
+
 def _profile(**overrides: Any) -> Profile:
     data: dict[str, Any] = {
         "contact": {"name": "Ada", "headline": "Engineer", "email": "a@b.c"},
         "summary": "s",
         "technologies": _TECHNOLOGIES,
-        "experience": [
-            {
-                "id": "acme",
-                "company": "Acme",
-                "roles": [
-                    {
-                        "title": "Engineer",
-                        "start": "2020",
-                        "end": "present",
-                        "highlights": [
-                            {
-                                "label": "Data Work",
-                                "text": "Tuned PostgreSQL and Caching.",
-                                "tags": ["postgresql"],
-                            },
-                            {"label": "People", "text": "Mentorship of four engineers."},
-                        ],
-                    }
-                ],
-            }
-        ],
+        "experience": _acme(
+            {"label": "Data Work", "text": "Tuned PostgreSQL and Caching.", "tags": ["postgresql"]},
+            {"label": "People", "text": "Mentorship of four engineers."},
+        ),
     }
     return load_mapping({**data, **overrides})
 
@@ -100,6 +88,54 @@ def test_a_category_alias_is_distinguished_from_a_respelling(profile: Profile) -
     assert by_surface["containers"].provenance is Provenance.CATEGORY
 
 
+def _provenance_of(name: str, alias: str) -> Provenance:
+    """Return the provenance the lexicon gives ``alias`` as a spelling of ``name``."""
+    technologies = [
+        {"group": "G", "items": [{"name": name, "aliases": [alias], "used_at": ["acme"]}]}
+    ]
+    forms = build_lexicon(_profile(technologies=technologies)).forms
+    return next(form for form in forms if form.surface == alias).provenance
+
+
+@pytest.mark.parametrize(
+    ("name", "alias"),
+    [
+        ("Kubernetes", "K8s"),
+        ("Test-driven development", "TDD"),
+        ("JavaScript", "JS"),
+        ("CI/CD", "Continuous Integration"),
+        ("CI/CD", "Continuous Delivery"),
+        ("Infrastructure as Code", "IaC"),
+        ("Internationalization", "i18n"),
+        # Either side may be the short one.
+        ("K8s", "Kubernetes"),
+        ("TDD", "Test-driven development"),
+        ("JS", "JavaScript"),
+    ],
+)
+def test_an_abbreviation_of_the_name_is_a_variant(name: str, alias: str) -> None:
+    """Initials and numeronyms respell the name; calling them categories made K8s a vendor."""
+    assert _provenance_of(name, alias) is Provenance.VARIANT
+
+
+@pytest.mark.parametrize(
+    ("name", "alias"),
+    [
+        ("BMC Remedy", "ITSM"),
+        ("Salesforce", "CRM"),
+        ("Terraform", "IaC"),
+        ("Terraform", "infrastructure as code"),
+        ("Docker", "containers"),
+        # K9s is a different tool: a numeronym has to count the letters it stands for.
+        ("Kubernetes", "K9s"),
+        # The platform a product runs on is broader than the product, whatever its initials.
+        ("AWS Lambda", "Amazon Web Services"),
+    ],
+)
+def test_an_alias_that_abbreviates_nothing_is_still_a_category(name: str, alias: str) -> None:
+    assert _provenance_of(name, alias) is Provenance.CATEGORY
+
+
 @pytest.mark.parametrize(
     ("surface", "tier"),
     [
@@ -122,6 +158,164 @@ def test_evidence_requires_a_highlight_not_just_a_stack_link(profile: Profile) -
     lexicon = build_lexicon(profile)
     assert lexicon.has_evidence("PostgreSQL")
     assert not lexicon.has_evidence("Docker"), "used_at alone is not evidence"
+
+
+@pytest.mark.parametrize(("tag", "technology"), [("docker", "Docker"), ("go", "Go")])
+def test_a_tag_alone_makes_a_highlight_evidence(tag: str, technology: str) -> None:
+    """Tags declare what a highlight is evidence for, even when its prose never says so.
+
+    A tag is a declaration, not prose, so it matches in any case: "go" alone would be the verb
+    in a sentence, but as a tag it can only mean the language.
+    """
+    profile = _profile(
+        experience=_acme(
+            {"label": "Scheduler", "text": "Moved the fleet to a new scheduler.", "tags": [tag]}
+        )
+    )
+    assert build_lexicon(profile).evidence[technology] == ("Scheduler",)
+
+
+def test_a_highlight_without_a_label_is_cited_by_its_opening_words() -> None:
+    text = (
+        "Tuned PostgreSQL until the nightly batch finished in forty minutes instead of four hours."
+    )
+    profile = _profile(experience=_acme({"text": text}))
+    assert build_lexicon(profile).evidence["PostgreSQL"] == (text[:60],)
+
+
+@pytest.mark.parametrize(
+    ("technology", "text"),
+    [("Java", "Built the settlement engine in Java."), ("Go", "Wrote the billing service in Go.")],
+)
+def test_a_highlight_naming_the_technology_as_a_word_is_evidence(
+    technology: str, text: str
+) -> None:
+    technologies = [{"group": "Languages", "items": [{"name": technology, "used_at": ["acme"]}]}]
+    profile = _profile(technologies=technologies, experience=_acme({"label": "Work", "text": text}))
+    assert build_lexicon(profile).has_evidence(technology)
+
+
+@pytest.mark.parametrize(
+    ("technology", "text"),
+    [
+        ("Java", "Built a JavaScript dashboard for ops."),
+        ("Go", "Migrated billing to Google Cloud."),
+        ("Go", "Helped the team go faster on releases."),
+    ],
+)
+def test_a_word_merely_containing_the_name_is_not_evidence(technology: str, text: str) -> None:
+    """A JavaScript dashboard says nothing about Java; Google Cloud and "go" say nothing of Go."""
+    technologies = [{"group": "Languages", "items": [{"name": technology, "used_at": ["acme"]}]}]
+    profile = _profile(technologies=technologies, experience=_acme({"label": "Work", "text": text}))
+    assert not build_lexicon(profile).has_evidence(technology)
+
+
+def _evidenced(item: dict[str, Any], text: str, label: str = "Work") -> bool:
+    """Report whether a highlight reading ``text`` is evidence for the one technology ``item``."""
+    technologies = [{"group": "G", "items": [{**item, "used_at": ["acme"]}]}]
+    profile = _profile(technologies=technologies, experience=_acme({"label": label, "text": text}))
+    return build_lexicon(profile).has_evidence(item["name"])
+
+
+@pytest.mark.parametrize(
+    ("item", "text"),
+    [
+        # A respelling the profile records is the same technology.
+        ({"name": "PostgreSQL", "aliases": ["Postgres"]}, "Tuned Postgres."),
+        # So is either half of the profile's "Name (ACRONYM)" convention.
+        ({"name": "Amazon Web Services (AWS)"}, "Cut AWS spend 22%."),
+        # A stack list names each of its parts, and a joined name is still whole.
+        ({"name": "React"}, "Shipped it on NestJS/React/PostgreSQL."),
+        ({"name": "CI/CD"}, "Owned CI/CD for the team."),
+        ({"name": "REST"}, "Designed REST APIs for partners."),
+        # Prose glues a name to the word beside it, the way resumes are written.
+        ({"name": "Python"}, "Built a Python-based ETL framework."),
+        ({"name": "Kafka"}, "Designed a Kafka-backed event bus."),
+        ({"name": "Terraform"}, "Moved 60 AWS accounts to Terraform-managed infrastructure."),
+        ({"name": "C#"}, "Rewrote billing on C#/.NET."),
+        ({"name": "SQL"}, "Built the reports in SQL/Python."),
+        ({"name": "SQL"}, "Wrote T-SQL stored procedures."),
+        ({"name": "React"}, "Shipped a React.js admin dashboard."),
+        ({"name": "Express", "aliases": ["Express.js"]}, "Served it from Node.js/Express.js."),
+        ({"name": "Express"}, "Served it from Express.js."),
+        # A lone letter counts when a tool frame sits on its natural side.
+        ({"name": "C"}, "Wrote the firmware in C."),
+        ({"name": "C"}, "Built a C library for parsing."),
+        # An abbreviation the profile records is a spelling, not a category.
+        ({"name": "Kubernetes", "aliases": ["K8s"]}, "Moved 40 services onto K8s."),
+        ({"name": "Test-driven development", "aliases": ["TDD"]}, "Brought TDD to the team."),
+        ({"name": "CI/CD", "aliases": ["Continuous Integration"]}, "Ran Continuous Integration."),
+    ],
+)
+def test_a_highlight_naming_a_spelling_of_the_technology_is_evidence(
+    item: dict[str, Any], text: str
+) -> None:
+    assert _evidenced(item, text)
+
+
+@pytest.mark.parametrize(
+    ("item", "text"),
+    [
+        # A category alias is not: running containers is not running Docker, even in a list.
+        ({"name": "Docker", "aliases": ["containers"]}, "Ran containers at scale."),
+        ({"name": "Docker", "aliases": ["containers"]}, "Ran containers/VMs."),
+        # An acronym that is also a word needs its capitals.
+        ({"name": "REST"}, "Moved the rest of the fleet."),
+        ({"name": "SQL"}, "Wrote sql-backed reports."),
+        # A part of a joined word has no frame, so an ordinary word never counts.
+        ({"name": "Go"}, "Owned the go-live for the payments launch."),
+        ({"name": "Go"}, "Ran the Go/No-Go review before launch."),
+        ({"name": "Node.js", "aliases": ["Node"]}, "Ran the Node-based batch workers."),
+        # A lone letter is capitalised whatever it means.
+        ({"name": "C"}, "Presented the roadmap to the C-suite."),
+        ({"name": "C"}, "Prepared the Series C data room."),
+        ({"name": "C"}, "Closed the Series C in March."),
+    ],
+)
+def test_a_highlight_naming_something_broader_or_different_is_not_evidence(
+    item: dict[str, Any], text: str
+) -> None:
+    assert not _evidenced(item, text)
+
+
+@pytest.mark.parametrize(
+    ("item", "label"),
+    [
+        ({"name": "Node.js", "aliases": ["Node"]}, "Worker Node Autoscaling"),
+        ({"name": "Express.js", "aliases": ["Express"]}, "Same-Day Express Checkout"),
+        ({"name": "C"}, "Series C Data Room"),
+        ({"name": "Vue"}, "Vue Migration"),
+    ],
+)
+def test_a_capital_in_a_title_case_label_is_not_evidence(item: dict[str, Any], label: str) -> None:
+    """Every word of a label is capitalised, so a capital there cannot mark a product name."""
+    assert not _evidenced(item, "Cut the queue time in half.", label=label)
+
+
+def test_a_label_can_still_name_an_acronym_or_a_distinctive_name() -> None:
+    assert _evidenced({"name": "REST"}, "Moved partners to v2.", label="REST API Redesign")
+    assert _evidenced({"name": "Kafka"}, "Cut consumer lag.", label="Kafka Migration")
+
+
+def test_a_common_word_label_does_not_confirm_the_technology_it_resembles() -> None:
+    """The report must not tell the model to lead with Node.js on a Kubernetes story."""
+    technologies = [
+        {
+            "group": "Runtimes",
+            "items": [
+                {"name": "Node.js", "aliases": ["Node"], "level": "proficient", "used_at": ["acme"]}
+            ],
+        }
+    ]
+    profile = _profile(
+        technologies=technologies,
+        experience=_acme(
+            {"label": "Worker Node Autoscaling", "text": "Scaled the Kubernetes worker pools."}
+        ),
+    )
+    result = _match("## Requirements\n- Experience with Node.\n", profile)
+    assert "Node.js" in result["qualified"]
+    assert "Node.js" not in result["confirmed"]
 
 
 def test_a_technology_named_in_notes_is_flagged_unconfirmed() -> None:
@@ -198,13 +392,103 @@ def test_a_substring_can_never_match(profile: Profile) -> None:
     assert not result["qualified"]
 
 
-def test_a_category_alias_only_ever_reaches_partial(profile: Profile) -> None:
+def test_a_category_alias_only_ever_reaches_partial() -> None:
+    """Remedy is evidenced here, so only the ITSM category keeps ServiceNow from confirming it."""
+    profile = _profile(
+        experience=_acme(
+            {"label": "Service Desk", "text": "Administered BMC Remedy for 4,000 users."}
+        )
+    )
+    assert build_lexicon(profile).has_evidence("BMC Remedy")
     result = _match("## Requirements\n- ServiceNow (ITSM) integration experience.\n", profile)
     assert "BMC Remedy" in result["qualified"]
+    assert "BMC Remedy" not in result["confirmed"]
     match = next(m for m in result["report"].qualified if m.technology == "BMC Remedy")
     assert match.confidence is Confidence.PARTIAL
     assert "different vendor" in match.caveat
     assert not match.satisfies_must_have
+
+
+def test_a_postings_abbreviation_of_a_technology_is_not_called_another_vendor() -> None:
+    """K8s is Kubernetes: the posting asks for exactly what the profile records."""
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Ops",
+                "items": [
+                    {
+                        "name": "Kubernetes",
+                        "aliases": ["K8s"],
+                        "level": "proficient",
+                        "used_at": ["acme"],
+                    }
+                ],
+            }
+        ],
+        experience=_acme({"label": "Clusters", "text": "Ran Kubernetes clusters for 40 services."}),
+    )
+    report = match_posting("## Requirements\n- Experience with K8s.\n", profile)
+    match = next(m for m in report.coverage.matches if m.technology == "Kubernetes")
+    assert "vendor" not in match.caveat
+    assert match in report.confirmed
+
+
+def _listed_profile() -> Profile:
+    """Return a profile that evidences every technology the list postings below name."""
+    names = ["Amazon Web Services (AWS)", "Kubernetes", "Terraform", "Go", "Kafka", "PostgreSQL"]
+    items = [{"name": name, "level": "proficient", "used_at": ["acme"]} for name in names]
+    return _profile(
+        technologies=[{"group": "Stack", "items": items}],
+        experience=_acme(
+            {
+                "label": "Platform",
+                "text": "Ran Go services on AWS and Kubernetes, provisioned with Terraform.",
+            },
+            {"label": "Events", "text": "Moved the ledger from PostgreSQL to Kafka."},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Hands-on with AWS, Kubernetes, and Terraform.",
+        "Experience with Go, Kubernetes and AWS.",
+        "Kafka, Go and PostgreSQL in production.",
+        "Strong Go (Kafka a plus).",
+    ],
+)
+def test_punctuation_ends_a_product_name(line: str) -> None:
+    """The next item of a list is not the rest of a longer product's name.
+
+    Read that way, every item of "AWS, Kubernetes, and Terraform" but the last was qualified as
+    naming "a more specific product", and the tailoring prompt is bound by that caveat.
+    """
+    report = match_posting(f"## Requirements\n- {line}\n", _listed_profile())
+    assert len(report.coverage.matches) >= 2
+    assert not [m.technology for m in report.coverage.matches if m.caveat]
+    assert report.confirmed == report.coverage.matches
+
+
+@pytest.mark.parametrize(
+    "line", ["Experience with AWS Lambda.", "Hands-on with AWS Lambda, Kubernetes, and Terraform."]
+)
+def test_a_name_followed_by_a_space_and_a_product_still_names_a_more_specific_one(
+    line: str,
+) -> None:
+    report = match_posting(f"## Requirements\n- {line}\n", _listed_profile())
+    aws = next(m for m in report.coverage.matches if m.technology == "Amazon Web Services (AWS)")
+    assert aws.confidence is Confidence.PARTIAL
+    assert aws.caveat == "the posting names a more specific product than the profile records"
+
+
+def test_products_bracketed_after_a_name_are_gaps_rather_than_a_caveat_on_it() -> None:
+    """Nothing is overstated: AWS is what the profile records, and the rest is reported missing."""
+    report = match_posting(
+        "## Requirements\n- AWS (Lambda, ECS) in production.\n", _listed_profile()
+    )
+    assert "Amazon Web Services (AWS)" in {m.technology for m in report.confirmed}
+    assert {"Lambda", "ECS"} <= {gap.term for gap in report.gaps}
 
 
 def test_a_technology_without_evidence_only_reaches_partial(profile: Profile) -> None:
@@ -214,11 +498,28 @@ def test_a_technology_without_evidence_only_reaches_partial(profile: Profile) ->
 
 
 def test_an_unconfirmed_technology_cannot_satisfy_a_must_have() -> None:
-    profile = _profile(notes=["Confirm Docker before claiming it."])
-    result = _match("## Requirements\n- Docker at scale.\n", profile)
-    match = next(m for m in result["report"].qualified if m.technology == "Docker")
+    """Every other gate passes here, so only the note keeps Kubernetes out of "lead with these"."""
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Ops",
+                "items": [{"name": "Kubernetes", "level": "proficient", "used_at": ["acme"]}],
+            }
+        ],
+        experience=_acme({"label": "Clusters", "text": "Ran Kubernetes clusters."}),
+        notes=["Kubernetes: hands-on, or only alongside the platform team?"],
+    )
+    report = match_posting("## Requirements\n- Kubernetes at scale.\n", profile)
+    match = next(m for m in report.coverage.matches if m.technology == "Kubernetes")
+    assert match.confidence is Confidence.COVERED
+    assert not match.is_shallow
     assert match.unconfirmed
     assert not match.satisfies_must_have
+    assert match in report.qualified
+    assert match not in report.confirmed
+    out = render_markdown(report)
+    assert "**unconfirmed**" in out
+    assert "| Kubernetes |" not in out, "an open question must not be cited as a confirmed match"
 
 
 def test_a_shallow_technology_cannot_satisfy_a_must_have(profile: Profile) -> None:
@@ -256,6 +557,37 @@ def test_the_postings_own_company_name_is_suppressed(profile: Profile) -> None:
     assert "Granite" not in result["confirmed"] | result["qualified"]
 
 
+def test_a_technology_in_the_postings_title_still_matches_in_the_body() -> None:
+    """A "Senior Python Engineer" posting is asking for Python; masking the title hid it.
+
+    The company half of the same heading is still masked, so Granite Telecom's posting does not
+    confirm the profile's Granite.
+    """
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Languages",
+                "items": [
+                    {"name": "Python", "level": "proficient", "used_at": ["acme"]},
+                    {"name": "Granite", "level": "proficient", "used_at": ["acme"]},
+                ],
+            }
+        ],
+        experience=_acme(
+            {"label": "ETL", "text": "Rewrote the ETL in Python."},
+            {"label": "Inventory", "text": "Built the inventory on Granite."},
+        ),
+    )
+    text = (
+        "# Senior Python Engineer - Granite Telecom\n\n## Requirements\n"
+        "- Python in production.\n- Work on Granite systems.\n"
+    )
+    result = _match(text, profile)
+    assert result["report"].posting.title == "Senior Python Engineer"
+    assert "Python" in result["confirmed"]
+    assert "Granite" not in result["confirmed"] | result["qualified"]
+
+
 def test_an_explicit_company_overrides_the_heading(profile: Profile) -> None:
     result = _match("## Requirements\n- Granite work.\n", profile, company="Granite")
     assert "Granite" not in result["confirmed"] | result["qualified"]
@@ -286,8 +618,29 @@ def test_a_guarded_word_needs_technology_framing(profile: Profile) -> None:
     assert "Granite" not in prose["confirmed"] | prose["qualified"]
 
 
-def test_a_cased_form_is_not_matched_by_the_lowercase_word(profile: Profile) -> None:
-    assert "Go" not in _match("## Requirements\n- You go where needed.\n", profile)["confirmed"]
+def test_a_cased_form_is_not_matched_by_the_lowercase_word() -> None:
+    """REST is an architecture; "the rest of the platform" is not asking for it."""
+    profile = _profile(
+        technologies=[{"group": "APIs", "items": [{"name": "REST", "used_at": ["acme"]}]}],
+        experience=_acme({"label": "Partner API", "text": "Designed REST APIs for partners."}),
+    )
+    assert next(f for f in build_lexicon(profile).forms if f.surface == "REST").tier is Tier.CASED
+    prose = _match("## Requirements\n- Own the rest of the platform.\n", profile)
+    assert "REST" not in prose["confirmed"] | prose["qualified"]
+    named = _match("## Requirements\n- Design REST APIs.\n", profile)
+    assert "REST" in named["confirmed"] | named["qualified"]
+
+
+def test_a_short_cased_form_proves_nothing_at_the_start_of_a_sentence() -> None:
+    """Every clause opens with a capital, so a leading "Vue" says nothing about its casing."""
+    profile = _profile(
+        technologies=[{"group": "UI", "items": [{"name": "Vue", "used_at": ["acme"]}]}]
+    )
+    assert next(f for f in build_lexicon(profile).forms if f.surface == "Vue").tier is Tier.CASED
+    opening = _match("## Requirements\n- Vue at scale.\n", profile)
+    assert "Vue" not in opening["confirmed"] | opening["qualified"]
+    inside = _match("## Requirements\n- Deep Vue work.\n", profile)
+    assert "Vue" in inside["confirmed"] | inside["qualified"]
 
 
 # --- gaps ------------------------------------------------------------------------------------
@@ -317,11 +670,17 @@ def test_a_shared_prefix_is_not_a_resemblance(profile: Profile) -> None:
     assert next(g for g in report.gaps if g.term == "postmortem").near_miss == ""
 
 
-def test_posting_furniture_is_not_reported_as_a_gap(profile: Profile) -> None:
-    gaps = _match("## Requirements\n- Senior Staff Engineer with 8 years experience.\n", profile)[
-        "gaps"
-    ]
-    assert not gaps
+@pytest.mark.parametrize(
+    "line",
+    [
+        "- Senior Staff Engineer with 8 years experience.",
+        # The title is no longer masked out of the body, so its restatement must read as noise.
+        "- We're hiring a Staff Software Engineer.",
+        "- 8+ years backend experience, with time at the Staff/Lead level.",
+    ],
+)
+def test_posting_furniture_is_not_reported_as_a_gap(profile: Profile, line: str) -> None:
+    assert not _match(f"## Requirements\n{line}\n", profile)["gaps"]
 
 
 def test_gaps_are_not_mined_from_non_requirements(profile: Profile) -> None:
@@ -334,9 +693,110 @@ def test_a_gap_records_every_line_it_appeared_on() -> None:
     assert next(g for g in report.gaps if g.term == "Kafka").lines == (2, 3)
 
 
-def test_find_gaps_accepts_an_empty_covered_set(profile: Profile) -> None:
-    posting = parse_posting("## Requirements\n- Kafka.\n")
-    assert find_gaps(posting, build_lexicon(profile), frozenset())
+def test_a_capitalised_opener_does_not_turn_a_matched_name_into_a_gap() -> None:
+    """The "Advanced SQL" case: a gap there forbids the skill the report just confirmed."""
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Languages",
+                "items": [
+                    {"name": "SQL", "used_at": ["acme"]},
+                    {"name": "Python", "used_at": ["acme"]},
+                ],
+            }
+        ],
+        experience=_acme(
+            {"label": "Reports", "text": "Wrote SQL reports."},
+            {"label": "ETL", "text": "Rewrote the ETL in Python."},
+        ),
+    )
+    result = _match(
+        "## Requirements\n- Advanced SQL for analytics.\n- Modern Python tooling.\n", profile
+    )
+    assert {"SQL", "Python"} <= result["confirmed"]
+    assert not {"Advanced SQL", "Modern Python"} & result["gaps"]
+
+
+@pytest.mark.parametrize(
+    "line", ["Apache Kafka at scale.", "Expert-level SQL.", "Production Apache Kafka."]
+)
+def test_a_qualifier_in_front_of_a_known_name_is_not_a_gap(line: str) -> None:
+    """Apache Kafka is the profile's Kafka, and the lead word of "Expert-level" is a qualifier."""
+    technologies = [
+        {
+            "group": "Data",
+            "items": [
+                {"name": "SQL", "used_at": ["acme"]},
+                {"name": "Kafka", "used_at": ["acme"]},
+            ],
+        }
+    ]
+    assert (
+        _match(f"## Requirements\n- {line}\n", _profile(technologies=technologies))["gaps"] == set()
+    )
+
+
+def test_a_known_name_inside_a_longer_product_name_is_still_a_gap() -> None:
+    """Only a known qualifier is dropped in front of a known name; a product built on it stays.
+
+    Spark SQL and Kafka Streams are not SQL and Kafka, and Microsoft SQL Server is not SQL.
+    """
+    profile = _profile(
+        technologies=[
+            {
+                "group": "Data",
+                "items": [
+                    {"name": "SQL", "used_at": ["acme"]},
+                    {"name": "Kafka", "used_at": ["acme"]},
+                ],
+            }
+        ],
+        experience=_acme({"label": "Reports", "text": "Wrote SQL reports fed from Kafka."}),
+    )
+    text = (
+        "## Requirements\n- Spark SQL pipelines.\n- Kafka Streams in production.\n"
+        "- Microsoft SQL Server administration.\n"
+    )
+    assert {"Spark SQL", "Kafka Streams", "Microsoft SQL Server"} <= _match(text, profile)["gaps"]
+
+
+@pytest.mark.parametrize(
+    ("line", "gap"),
+    [
+        # The profile knows "development", "continuous", "integration", "web" and "services"
+        # only as fragments of longer names, which is no reason to drop the word before them.
+        ("Java Development (5+ years).", "Java Development"),
+        ("Rust Development experience.", "Rust Development"),
+        ("Jenkins Continuous Integration pipelines.", "Jenkins Continuous Integration"),
+        ("Ansible Infrastructure automation.", "Ansible Infrastructure"),
+        ("Experience with Azure Web Services.", "Azure Web Services"),
+        # A product in front of a known name is not a qualifier of it.
+        ("Snowflake SQL and dbt.", "Snowflake SQL"),
+        ("Azure Postgres at scale.", "Azure Postgres"),
+    ],
+)
+def test_a_missing_technology_in_front_of_a_known_word_is_still_a_gap(line: str, gap: str) -> None:
+    """Hiding a gap is the unsafe direction: the model is never told not to claim it."""
+    technologies = [
+        {
+            "group": "Practice",
+            "items": [
+                {"name": "SQL", "used_at": ["acme"]},
+                {"name": "PostgreSQL", "aliases": ["Postgres"], "used_at": ["acme"]},
+                {"name": "Test-driven development", "used_at": ["acme"]},
+                {"name": "Amazon Web Services (AWS)", "used_at": ["acme"]},
+                {
+                    "name": "CI/CD",
+                    "aliases": ["Continuous Integration", "Continuous Delivery"],
+                    "used_at": ["acme"],
+                },
+                {"name": "Terraform", "aliases": ["infrastructure as code"], "used_at": ["acme"]},
+            ],
+        }
+    ]
+    assert (
+        gap in _match(f"## Requirements\n- {line}\n", _profile(technologies=technologies))["gaps"]
+    )
 
 
 def test_punctuation_separates_two_requirements_instead_of_welding_them() -> None:
@@ -459,32 +919,77 @@ def test_the_role_is_found_on_either_side_of_the_separator() -> None:
     assert company_first.company == "Granite Telecom"
 
 
-def test_a_heading_with_no_role_word_keeps_the_company_first_reading() -> None:
-    posting = parse_posting("# Northwind Freight — Widgets Division\n\nBody.\n")
-    assert posting.company == "Northwind Freight"
+@pytest.mark.parametrize(
+    ("heading", "title", "company"),
+    [
+        ("Rust SRE - Contoso", "Rust SRE", "Contoso"),
+        ("Contoso - Platform DevOps", "Platform DevOps", "Contoso"),
+        ("Acme — Senior Backend Dev", "Senior Backend Dev", "Acme"),
+    ],
+)
+def test_a_short_role_word_places_the_title(heading: str, title: str, company: str) -> None:
+    posting = parse_posting(f"# {heading}\n\nBody.\n")
+    assert (posting.title, posting.company) == (title, company)
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["Northwind Freight - Widgets Division", "Senior Python Developer - Data Engineering"],
+)
+def test_a_heading_whose_halves_cannot_be_told_apart_names_no_company(heading: str) -> None:
+    """Neither half, or both, reads as the role, so which one is the company is a guess."""
+    posting = parse_posting(f"# {heading}\n\nBody.\n")
+    assert (posting.title, posting.company) == (heading, "")
+
+
+def test_a_guessed_company_never_masks_the_title_out_of_the_body() -> None:
+    """Masking the title as if it were the company erased the posting's main requirement."""
+    technologies = [
+        {
+            "group": "Languages",
+            "items": [
+                {"name": "Python", "level": "proficient", "used_at": ["acme"]},
+                {"name": "Kubernetes", "level": "proficient", "used_at": ["acme"]},
+            ],
+        }
+    ]
+    profile = _profile(
+        technologies=technologies,
+        experience=_acme(
+            {"label": "ETL", "text": "Rewrote the ETL in Python."},
+            {"label": "Clusters", "text": "Ran Kubernetes clusters."},
+        ),
+    )
+    body = "\n\n## Requirements\n- Python in production.\n- Kubernetes in production.\n"
+    for heading in (
+        "# Senior Python Developer - Data Engineering",
+        "# Python and Kubernetes Wrangler - Contoso",
+    ):
+        assert {"Python", "Kubernetes"} <= _match(heading + body, profile)["confirmed"], heading
+    rust = _match("# Rust SRE - Contoso\n\n## Requirements\n- Rust in production.\n", profile)
+    assert "Rust" in rust["gaps"]
 
 
 def test_generic_prose_is_not_reported_as_a_missing_technology() -> None:
     """Generic prose must not be reported as a technology the profile lacks."""
-    posting = parse_posting(
+    text = (
         "# Staff Engineer — Acme\n\n## Requirements\n"
         "- Production experience with Apache Kafka at scale.\n"
         "- Strong ownership and a quality mindset across the platform.\n"
     )
-    lexicon = build_lexicon(_profile())
-    gaps = {gap.term.casefold() for gap in find_gaps(posting, lexicon, frozenset())}
+    gaps = {gap.term.casefold() for gap in match_posting(text, _profile()).gaps}
     for noise in ("production", "ownership", "quality", "platform", "scale"):
         assert noise not in gaps, f"{noise} reported as a missing technology"
 
 
 def test_a_bare_name_and_its_fuller_form_are_one_gap() -> None:
     """A posting naming both "Apache Kafka" and "Kafka" is missing one thing, not two."""
-    posting = parse_posting(
+    text = (
         "# Staff Engineer — Acme\n\n## Requirements\n"
         "- Production experience with Apache Kafka.\n"
         "- Kafka tuning at scale.\n"
     )
-    gaps = find_gaps(posting, build_lexicon(_profile()), frozenset())
+    gaps = match_posting(text, _profile()).gaps
     terms = [gap.term for gap in gaps]
     assert "Apache Kafka" in terms
     assert "Kafka" not in terms

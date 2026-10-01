@@ -14,9 +14,9 @@ if TYPE_CHECKING:
 
 __all__ = ["FONT_STACK", "page", "spans_to_html"]
 
-# Roboto is what the polished source document used; the rest are ubiquitous metric-compatible
-# fallbacks so the PDF still looks right on a machine without it installed.
-FONT_STACK = "Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif"
+# Arial is installed on every Mac and Windows machine, so the browser has nothing to fetch at print
+# time and Word draws the .docx in the same face. Helvetica, its metric twin, covers anywhere else.
+FONT_STACK = "Arial, Helvetica, sans-serif"
 
 
 def spans_to_html(spans: tuple[Span, ...]) -> str:

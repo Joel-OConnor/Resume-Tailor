@@ -39,7 +39,7 @@ class ProfileError(ResumeTailorError):
 
 
 class ConfigError(ResumeTailorError):
-    """The standalone path is not configured — usually a missing API key."""
+    """The settings that choose and reach the model are missing or wrong, usually the API key."""
 
 
 class ModelError(ResumeTailorError):

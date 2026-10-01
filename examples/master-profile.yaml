@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=../schema/master-profile.schema.json
-# Example master profile — copy to profile/master-profile.yaml and replace with your own history.
+# Example master profile: copy it to output/master-profile.yaml and replace it with your own history.
 #
-#   cp templates/master-profile.example.yaml profile/master-profile.yaml
-#   make profile-check     # validate
-#   make profile-md        # readable Markdown view
+#   cp examples/master-profile.yaml output/master-profile.yaml
+#   .venv/bin/resume-tailor profile validate   # validate and audit
+#   .venv/bin/resume-tailor profile render     # readable Markdown view
 #
 # Everything in this file is fictional. Validated against schema/master-profile.schema.json.
 
@@ -14,7 +14,7 @@ contact:
   headline: Senior Backend Engineer
   email: jordan.rivera@email.com
   phone: (415) 555-0132
-  location: Austin, TX — open to remote
+  location: Austin, TX (open to remote)
   work_authorization: US citizen
   links:
     - label: LinkedIn
@@ -79,6 +79,11 @@ technologies:
         level: proficient
         years: 5
         used_at: [northwind-payments, cedar-analytics]
+      - name: Amazon DynamoDB
+        aliases: [DynamoDB]
+        level: working
+        years: 2
+        used_at: [cedar-analytics]
 
   - group: Practices
     items:
@@ -96,7 +101,7 @@ technologies:
 experience:
   - id: northwind-payments
     company: Northwind Payments
-    industry: Fintech — payments
+    industry: Fintech, payments
     location: Austin, TX
     summary: Payment processor settling card transactions for mid-market merchants.
     roles:

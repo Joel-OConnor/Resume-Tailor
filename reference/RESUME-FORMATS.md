@@ -1,70 +1,75 @@
-# Two layouts, and when to send which
+# The resume file, and the optional two-column version
 
-Every resume in this project renders twice from the same Markdown source. They contain identical
-words. They differ only in how those words are arranged — and that difference decides whether a
-machine can read them.
+Every resume in this project renders from one Markdown source into `resume.docx` and `resume.pdf`.
+That pair is the product: one file that an AI or applicant-tracking parser reads cleanly and a
+person can skim in ten seconds.
 
-## The ATS layout — `resume.docx` / `resume.pdf`
+## The resume: `resume.docx` / `resume.pdf`
 
-Single column, top to bottom. Standard section headings. Real bullet lists. Contact details in the
-document body, never in the header region. No tables, images, text boxes, or icons.
+The layout follows the guidance that holds across recruiters, parser vendors and career services:
+a single-column, text-first, reverse-chronological resume with clean type and room to breathe.
 
-**Send this to anything that isn't a person:** Workday, Greenhouse, Lever, Taleo, iCIMS, any
-"upload your resume" form, any job board apply button. When in doubt, this one.
+**For the parser**
 
-It looks plainer than the polished version. That is the point — a resume parser reads structure, not
-design, and everything a designer would add is something a parser can lose.
+- **Single column, top to bottom.** A two-column layout gets read straight across the page, so
+  the columns interleave into nonsense.
+- **Standard headings:** Summary, Skills, Experience, Education, Certifications, Projects. A
+  parser looks for those words; it cannot find "Where I've Made Magic".
+- **No tables, text boxes, icons, logos, charts or images.** Parsers skip or scramble them.
+- **Contact details in the body**, on one line under the name, never in the page header or
+  footer, which many parsers ignore.
+- **Real text, exported as `.docx` or a text-based PDF**, never an image.
 
-## The polished layout — `resume-polished.docx` / `resume-polished.pdf`
+**For the person**
 
-Two columns divided by a hairline rule. A narrow left rail carries contact details, skills, and
-education; the wide right column carries the name, summary, and experience. The name is set large
-and light; accomplishments lead with a bold phrase rather than a bullet glyph.
+- **Arial throughout**, a clean sans-serif installed on every Mac and Windows machine, so the
+  `.docx` looks the same wherever a recruiter opens it and the PDF embeds it.
+- **A clear hierarchy:** a 28pt name, 15pt section headings, 10pt body with an 11pt summary, a
+  10pt contact line.
+- **One weight per idea:** each role's heading bolds the job title and leaves the company plain
+  (`### **Senior Backend Engineer** – Northwind Payments`), so a skim follows the career.
+- **0.6in top and bottom, 0.7in side margins**, and a bullet glyph with a hanging indent on
+  every accomplishment.
 
-**Send this to a person:** attached to an email to a recruiter or hiring manager, handed to a
-referral, brought to a networking conversation, or posted somewhere a human will look at it.
+**Send this one everywhere.** `resume.docx` is the most reliably parsed format, so it is the one to
+upload to Workday, Greenhouse, Lever, Taleo, iCIMS and any "upload your resume" form. `resume.pdf`
+is the same document for a form that only takes PDF, or for an email.
 
-**Do not upload it to an application portal.** Its two columns are a Word table. Most parsers read a
-table in an order nobody intended — interleaving the rail into the middle of a job title, or
-dropping it entirely. A resume that looks better and parses worse is a net loss.
+## The two-column version: `resume-polished.docx` / `resume-polished.pdf` (opt-in)
 
-## Which is "the real one"?
-
-Both. They say the same true things about the same career. The ATS version optimises for the first
-reader (software); the polished version optimises for the second (a person with ten seconds). Most
-applications only ever meet the first, which is why the ATS layout keeps the plain `resume.docx`
-name and the polished one is suffixed.
-
-## Choosing at export time
+The same typography in a two-column arrangement: a narrow left rail carrying contact details,
+skills and education beside a wide column carrying the name, summary and experience, divided by a
+hairline rule. Neither script produces it; render it from a resume when you want it:
 
 ```bash
-.venv/bin/resume-tailor build applications/<folder>/resume.md                    # both (default)
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout ats       # portal-safe
-.venv/bin/resume-tailor build applications/<folder>/resume.md --layout polished  # design only
+.venv/bin/resume-tailor build output/applications/<folder>/resume.md --layout polished   # two-column only
+.venv/bin/resume-tailor build output/applications/<folder>/resume.md --layout both       # the pair
 ```
 
-Cover letters render single-column: a document with no `## ` sections is a letter, so the
-default skips the polished pass entirely. Passing `--layout polished` still forces one if you
-really want it.
+**Do not upload it to an application portal.** Its two columns are a Word table. Most parsers read
+a table in an order nobody intended, interleaving the rail into the middle of a job title or
+dropping it entirely. Hand it to a person, if at all.
 
-By default the polished layout puts **Skills**, **Technical Core**, **Core Competencies**,
-**Education**, and **Certifications** in the left rail, and everything else in the main column.
-Override it per export:
+By default it puts **Skills**, **Technical Core**, **Core Competencies**, **Education** and
+**Certifications** in the left rail and everything else in the main column. Override it per export:
 
 ```bash
 .venv/bin/resume-tailor build resume.md --layout polished --sidebar "Skills,Education,Languages"
 ```
 
-Keep rail entries short: the column is about 2.4 inches wide, so a long degree title will wrap
-across three lines.
+Keep rail entries short: the column is about 2.4 inches wide, so a long degree title will wrap.
+
+## Cover letters
+
+A document with no `## ` sections is a letter, and a letter renders single-column: `--layout both`
+gives a letter only its single-column `.docx` and `.pdf`. Only an explicit `--layout polished`
+makes a two-column letter, if you really want one.
 
 ## PDF fidelity
 
 PDFs are produced by printing the layout's HTML through headless Chrome, so the text stays
-selectable — an ATS can read the PDF as well as the Word file. If no Chromium-family browser is
-installed, the exporter writes the `.html` next to the source instead and tells you; open it and
-print to PDF by hand.
-
-The polished layout is designed in Roboto (what the original design used). Without Roboto installed
-it falls back to Helvetica Neue / Helvetica / Arial, which are metric-similar — the layout holds,
-the letterforms shift slightly.
+selectable and is stored in reading order, every bullet under its own role: a parser reads the
+PDF as well as the Word file. Tests print real PDFs and check that order wherever Chrome is
+installed. If no Chromium-family browser (Chrome, Edge, Brave, Chromium) is installed, or it fails,
+the exporter writes the `.html` where the PDF would have gone and tells you; open it and print to
+PDF by hand. Arial is a system font, so printing needs no network.

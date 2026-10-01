@@ -2,7 +2,7 @@
 
 This is where "never fabricates" stops being an instruction in a prompt and becomes a check that
 runs. Generated Markdown goes in; every employer, title, date, credential, technology, and figure
-is traced back to ``profile/master-profile.yaml``, and whatever does not trace back comes out as a
+is traced back to ``output/master-profile.yaml``, and whatever does not trace back comes out as a
 :class:`Violation` worded so the writer can fix it on its next attempt.
 
 Precision matters in both directions. A missed fabrication ships a resume that collapses in the
@@ -35,7 +35,7 @@ def verify_resume(markdown: str, profile: Profile) -> Verdict:
     lexicon = build_lexicon(profile)
     found = [
         *check_history(source, profile),
-        *check_skills(source, lexicon),
+        *check_skills(source, profile, lexicon),
         *check_metrics(source, profile, lexicon),
     ]
     unique = {violation.sort_key: violation for violation in found}

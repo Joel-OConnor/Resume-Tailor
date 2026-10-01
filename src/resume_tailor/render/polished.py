@@ -1,11 +1,20 @@
 """The polished layout: a two-column, typographic resume for human readers.
 
-This reproduces the design of the user's own "2026 Polished Resume" — a narrow left rail holding
-contact details, skills, and education, separated by a hairline rule from a wide right column
-holding the name, summary, and experience.
+This reproduces the arrangement of the user's own "2026 Polished Resume": a narrow left rail
+holding contact details, skills, and education, separated by a hairline rule from a wide right
+column holding the name, summary, and experience. The geometry was measured from that PDF: 0.2in
+page and column margins, a 12pt line pitch for body text and 13.5pt for the summary, and a bullet
+glyph with a 0.25in hanging indent on every accomplishment and on every skill in the rail. The
+face is Arial throughout, in the only two weights it has: regular for the name, contact lines,
+and headings, bold for the job title in a role heading (see :mod:`resume_tailor.render.emphasis`),
+lead-ins, and rail labels.
 
 It is **not** ATS-safe: the two columns are a table, and table layouts get scrambled or dropped
-by resume parsers. Send this one to a person; send :mod:`resume_tailor.render.ats` to a portal.
+by resume parsers. That is why it is opt-in (``--layout polished``): the default export is
+:mod:`resume_tailor.render.ats`, the same typography in one column, which any parser can read.
+
+Arial ships with macOS and Windows, so the PDF printed from the HTML fetches nothing at print time
+and Word draws the ``.docx`` in the same face the PDF shows.
 """
 
 from __future__ import annotations
@@ -14,7 +23,7 @@ from typing import TYPE_CHECKING, assert_never, cast
 
 from docx import Document as new_docx
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 
 from resume_tailor.documents.blocks import (
     Bullet,
@@ -27,14 +36,19 @@ from resume_tailor.documents.blocks import (
     SectionGroup,
     SkillLine,
     Span,
+    is_contact_line,
+    is_note,
+    title_of,
 )
 from resume_tailor.render.docx_common import (
     add_spans,
     set_cell_border,
     set_cell_margins,
     set_indent,
+    set_properties,
     set_spacing,
 )
+from resume_tailor.render.emphasis import entry_spans
 from resume_tailor.render.html_common import FONT_STACK, page, spans_to_html
 
 if TYPE_CHECKING:
@@ -45,7 +59,12 @@ if TYPE_CHECKING:
 
     from resume_tailor.documents.blocks import Block, Document, GroupBlock
 
-__all__ = ["DEFAULT_SIDEBAR_SECTIONS", "render_docx", "render_html", "split_columns"]
+__all__ = [
+    "DEFAULT_SIDEBAR_SECTIONS",
+    "render_docx",
+    "render_html",
+    "split_columns",
+]
 
 #: Sections that belong in the left rail. Matched case-insensitively against ``## `` headings.
 DEFAULT_SIDEBAR_SECTIONS: tuple[str, ...] = (
@@ -56,50 +75,55 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[str, ...] = (
     "certifications",
 )
 
-FONT = "Roboto"
-FONT_LIGHT = "Roboto ExtraLight"
-FONT_SEMIBOLD = "Roboto SemiBold"
+FONT = "Arial"
 BODY_PT = 10.0
-CONTACT_PT = 9.0
+PROSE_PT = 11.0
+CONTACT_PT = 10.0
 SECTION_PT = 15.0
 SUBTITLE_PT = 12.0
-NAME_PT = 35.0
+NAME_PT = 28.0
 
-# Absolute, so Word and the browser agree — see docx_common.set_spacing for why a ratio does not.
-LINE_PT = 11.5
-NAME_LINE_PT = 36.75
-# The gap ABOVE each block. It lives in exactly one property on each side.
+# Line boxes, absolute so Word and the browser agree (see docx_common.set_spacing). Each is at
+# least Arial's natural box at that size, 1.15 times it, so Word's "at least" never has to widen
+# one and the two renderers stack lines identically. Every vertical measure here is a multiple of
+# 0.75pt, one CSS pixel: the browser snaps line boxes and margins to whole pixels, Word does not,
+# and a value that is already whole keeps the PDF and the .docx from drifting a fraction per line.
+LINE_PT = 12.0
+PROSE_LINE_PT = 13.5
+SUBTITLE_LINE_PT = 14.25
+SECTION_LINE_PT = 18.0
+NAME_LINE_PT = 33.0
+
+# The gap ABOVE each block. It lives in exactly one property on each side, and a block that opens
+# its column gets none at all: both columns start at the page margin.
 GAP_PT = {
     "name": 0.0,
-    "contact": 2.0,
-    "subtitle": 2.0,
-    "section": 12.0,
-    "entry": 6.0,
-    "meta": 0.0,
-    "lead": 3.0,
-    "bullet": 2.0,
-    "para": 4.0,
-    "skill-group": 6.0,
-    "skill-item": 0.0,
-    "skill-inline": 2.0,
+    "contact": 4.5,
+    "subtitle": 2.25,
+    "section": 9.75,
+    "section-rail": 15.75,
+    "section-after-name": 37.5,
+    "section-after-subtitle": 21.0,
+    "entry": 5.25,
+    "meta": 1.5,
+    "bullet": 2.25,
+    "bullet-first": 6.75,
+    "note": 2.25,
+    "para": 5.25,
+    "skill-group": 3.75,
+    "skill-item": 1.5,
+    "skill-item-first": 3.75,
+    "skill-inline": 2.25,
 }
 
-PAGE_MARGIN_IN = 0.45
+PAGE_MARGIN_IN = 0.2
 SIDEBAR_WIDTH_IN = 2.42
 MAIN_WIDTH_IN = 6.08
-SIDEBAR_INDENT = (0.45, 0.25)
-MAIN_INDENT = (0.30, 0.50)
-BULLET_HANGING_IN = 0.18
-
-
-def _is_contact_line(spans: tuple[Span, ...]) -> bool:
-    """Contact lines are the pipe-separated ones; anything else is a target-title subtitle.
-
-    Any pipe counts, not just the documented ``" | "``, so a contact line written without spaces
-    still reaches the rail. The cost is that a target title containing a pipe is misread as
-    contact details — write the title without one.
-    """
-    return "|" in "".join(span.text for span in spans)
+SIDEBAR_INDENT = (0.2, 0.2)
+MAIN_INDENT = (0.2, 0.25)
+BULLET_HANGING_IN = 0.25
+NOTE_INDENT_IN = 0.05
+BULLET_GLYPH = "•"
 
 
 def _split_contact(spans: tuple[Span, ...]) -> list[tuple[Span, ...]]:
@@ -138,13 +162,36 @@ def split_columns(
             preamble_sidebar: list[GroupBlock] = []
             preamble_main: list[GroupBlock] = []
             for block in group.blocks:
-                if isinstance(block, HeaderLine) and _is_contact_line(block.spans):
+                if isinstance(block, HeaderLine) and is_contact_line(block.spans):
                     preamble_sidebar += [HeaderLine(entry) for entry in _split_contact(block.spans)]
                 else:
                     preamble_main.append(block)
             sidebar.append(SectionGroup("", tuple(preamble_sidebar)))
             main.append(SectionGroup("", tuple(preamble_main)))
     return sidebar, main
+
+
+# --- the gaps, by what comes before ---------------------------------------------------------------
+def _gap(kind: str, previous: Block | None) -> float:
+    """Return the space above a block: its kind's gap, or none when it opens the column."""
+    return 0.0 if previous is None else GAP_PT[kind]
+
+
+def _section_kind(previous: Block | None, *, sidebar: bool) -> str:
+    """Return the gap a heading takes: more in the rail, most of all directly under the name."""
+    if sidebar:
+        return "section-rail"
+    if isinstance(previous, Name):
+        return "section-after-name"
+    if isinstance(previous, HeaderLine):
+        return "section-after-subtitle"
+    return "section"
+
+
+def _bullet_kind(previous: Block | None, *, sidebar: bool) -> str:
+    """Return the gap a bullet takes: the first of a run stands off, the rest sit tighter."""
+    base = "skill-item" if sidebar else "bullet"
+    return base if isinstance(previous, Bullet) else f"{base}-first"
 
 
 # --- .docx ----------------------------------------------------------------------------------------
@@ -155,6 +202,11 @@ def render_docx(
 ) -> None:
     """Write ``document`` as the two-column polished ``.docx``."""
     docx = new_docx()
+    # Word measures a line by its paragraph mark too, and the mark takes Normal's font. Left at
+    # python-docx's default it would be Cambria 11pt, a taller line than the PDF draws.
+    normal = docx.styles["Normal"].font
+    normal.name = FONT
+    normal.size = Pt(BODY_PT)
     for section in docx.sections:
         section.top_margin = section.bottom_margin = Inches(PAGE_MARGIN_IN)
         section.left_margin = section.right_margin = Inches(0)
@@ -173,6 +225,7 @@ def render_docx(
     sidebar_groups, main_groups = split_columns(document, sidebar_sections)
     _fill_cell(rail, sidebar_groups, indent=SIDEBAR_INDENT, sidebar=True)
     _fill_cell(main, main_groups, indent=MAIN_INDENT, sidebar=False)
+    set_properties(docx, document)
     docx.save(str(out))
 
 
@@ -191,11 +244,13 @@ def _fill_cell(
     contact line.
     """
     placeholder = cell.paragraphs[0]
+    previous: Block | None = None
     for group in groups:
-        if group.title:
-            _add(cell, Section(group.title), indent=indent, sidebar=sidebar)
-        for block in group.blocks:
-            _add(cell, block, indent=indent, sidebar=sidebar)
+        blocks: list[Block] = [Section(group.title)] if group.title else []
+        blocks += group.blocks
+        for block in blocks:
+            _add(cell, block, indent=indent, sidebar=sidebar, previous=previous)
+            previous = block
     if len(cell.paragraphs) > 1:
         cell._tc.remove(placeholder._p)  # noqa: SLF001
 
@@ -203,7 +258,7 @@ def _fill_cell(
 def _paragraph(  # noqa: PLR0913 - each argument is one independent paragraph property
     cell: _Cell,
     indent: tuple[float, float],
-    kind: str,
+    before: float,
     *,
     hanging: float = 0.0,
     style: str | None = None,
@@ -211,76 +266,84 @@ def _paragraph(  # noqa: PLR0913 - each argument is one independent paragraph pr
 ) -> DocxParagraph:
     paragraph = cast("DocxParagraph", cell.add_paragraph(style=style))
     set_indent(paragraph, left=indent[0] + hanging, right=indent[1], hanging=hanging)
-    set_spacing(paragraph, before=GAP_PT[kind], line=line)
+    set_spacing(paragraph, before=before, line=line)
     return paragraph
 
 
-def _lead_in(spans: tuple[Span, ...]) -> bool:
-    """Report whether a bullet opens with a bold lead-in, e.g. ``**Data Layer Design:** …``."""
-    return bool(spans) and spans[0].bold
-
-
 def _add(  # noqa: C901 - flat dispatch over the block union
-    cell: _Cell, block: Block, *, indent: tuple[float, float], sidebar: bool
+    cell: _Cell,
+    block: Block,
+    *,
+    indent: tuple[float, float],
+    sidebar: bool,
+    previous: Block | None,
 ) -> None:
     match block:
         case Name(spans):
-            paragraph = _paragraph(cell, indent, "name", line=NAME_LINE_PT)
-            add_spans(paragraph, spans, font=FONT_LIGHT, size=NAME_PT)
+            paragraph = _paragraph(cell, indent, _gap("name", previous), line=NAME_LINE_PT)
+            add_spans(paragraph, spans, font=FONT, size=NAME_PT)
         case HeaderLine(spans) if sidebar:
-            paragraph = _paragraph(cell, indent, "contact")
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=CONTACT_PT)
+            paragraph = _paragraph(cell, indent, _gap("contact", previous))
+            add_spans(paragraph, spans, font=FONT, size=CONTACT_PT)
         case HeaderLine(spans):
-            paragraph = _paragraph(cell, indent, "subtitle")
+            before = _gap("subtitle", previous)
+            paragraph = _paragraph(cell, indent, before, line=SUBTITLE_LINE_PT)
             add_spans(paragraph, spans, font=FONT, size=SUBTITLE_PT)
         case Section(title):
-            paragraph = _paragraph(cell, indent, "section")
+            before = _gap(_section_kind(previous, sidebar=sidebar), previous)
+            paragraph = _paragraph(cell, indent, before, line=SECTION_LINE_PT)
             add_spans(paragraph, (Span(title),), font=FONT, size=SECTION_PT)
         case Entry(spans):
-            paragraph = _paragraph(cell, indent, "entry")
-            # The family name already carries the weight; adding bold on top resolves to the
-            # bold companion of SemiBold, which is heavier than the design and than the HTML.
-            add_spans(paragraph, spans, font=FONT_SEMIBOLD, size=BODY_PT)
+            paragraph = _paragraph(cell, indent, _gap("entry", previous))
+            add_spans(paragraph, entry_spans(spans), font=FONT, size=BODY_PT)
         case Meta(spans):
-            paragraph = _paragraph(cell, indent, "meta")
+            paragraph = _paragraph(cell, indent, _gap("meta", previous))
             add_spans(paragraph, spans, font=FONT, size=BODY_PT, italic=True)
         case SkillLine(label, items):
-            _add_skill(cell, label, items, indent=indent, sidebar=sidebar)
-        case Bullet(spans) if _lead_in(spans):
-            paragraph = _paragraph(cell, indent, "lead")
-            add_spans(paragraph, spans, font=FONT, size=BODY_PT)
+            _add_skill(cell, label, items, indent=indent, sidebar=sidebar, previous=previous)
         case Bullet(spans):
-            paragraph = _paragraph(
-                cell, indent, "bullet", hanging=BULLET_HANGING_IN, style="List Bullet"
-            )
+            before = _gap(_bullet_kind(previous, sidebar=sidebar), previous)
+            _add_bullet(cell, spans, indent=indent, before=before)
+        case Paragraph(spans) if is_note(spans):
+            inset = (indent[0] + NOTE_INDENT_IN, indent[1])
+            paragraph = _paragraph(cell, inset, _gap("note", previous))
             add_spans(paragraph, spans, font=FONT, size=BODY_PT)
         case Paragraph(spans):
-            paragraph = _paragraph(cell, indent, "para")
-            add_spans(paragraph, spans, font=FONT, size=BODY_PT)
+            paragraph = _paragraph(cell, indent, _gap("para", previous), line=PROSE_LINE_PT)
+            add_spans(paragraph, spans, font=FONT, size=PROSE_PT)
         case _:  # pragma: no cover - mypy proves the block union is exhaustive
             assert_never(block)
 
 
-def _add_skill(
+def _add_bullet(
+    cell: _Cell, spans: tuple[Span, ...], *, indent: tuple[float, float], before: float
+) -> None:
+    """One bulleted line: the glyph at the column edge, the text hanging past it."""
+    paragraph = _paragraph(cell, indent, before, hanging=BULLET_HANGING_IN, style="List Bullet")
+    add_spans(paragraph, spans, font=FONT, size=BODY_PT)
+
+
+def _add_skill(  # noqa: PLR0913 - one skills line; each argument is a distinct input
     cell: _Cell,
     label: str,
     items: tuple[Span, ...],
     *,
     indent: tuple[float, float],
     sidebar: bool,
+    previous: Block | None,
 ) -> None:
-    """In the rail a skill group stacks one item per line; in the main column it stays inline."""
+    """In the rail a skill group is a bold label over bulleted items; inline in the main column."""
     if not sidebar:
-        paragraph = _paragraph(cell, indent, "skill-inline")
+        paragraph = _paragraph(cell, indent, _gap("skill-inline", previous))
         add_spans(paragraph, (Span(f"{label}: "),), font=FONT, size=BODY_PT, bold=True)
         add_spans(paragraph, items, font=FONT, size=BODY_PT)
         return
 
-    heading = _paragraph(cell, indent, "skill-group")
+    heading = _paragraph(cell, indent, _gap("skill-group", previous))
     add_spans(heading, (Span(label),), font=FONT, size=BODY_PT, bold=True)
-    for item in _skill_items(items):
-        paragraph = _paragraph(cell, indent, "skill-item")
-        add_spans(paragraph, item, font=FONT, size=BODY_PT)
+    for index, item in enumerate(_skill_items(items)):
+        kind = "skill-item" if index else "skill-item-first"
+        _add_bullet(cell, item, indent=indent, before=GAP_PT[kind])
 
 
 def _skill_items(items: tuple[Span, ...]) -> list[tuple[Span, ...]]:
@@ -325,9 +388,13 @@ CSS = f"""
 * {{ box-sizing: border-box; }}
 /* Every gap is a margin-TOP, every bottom margin is 0, and line-height is absolute — the .docx
    sums adjacent spacing where CSS collapses it, and Word's line "multiple" is a ratio of the
-   font's natural line box rather than of its size. Points mean the same thing to both. */
+   font's natural line box rather than of its size. Points mean the same thing to both. A word
+   too long for its column (a long email or URL in the rail) breaks at the column's edge, as Word
+   breaks it, instead of running across the rule into the other column. */
 body {{ font-family: {FONT_STACK}; font-size: {BODY_PT}pt; line-height: {LINE_PT}pt;
-        color: #111; margin: 0; }}
+        color: #111; margin: 0; overflow-wrap: anywhere; }}
+/* Arial has two weights, regular and bold, which is also all a .docx run can say, so no rule
+   here names a weight between them. An entry heading's bold comes from its spans, as in Word. */
 h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
 /* The rule stops where the content does, exactly as the .docx table row does. */
 .sheet {{ display: flex; align-items: stretch; }}
@@ -335,20 +402,38 @@ h1, h2, h3, p, ul, li, div, aside, section {{ margin: 0; }}
          padding: 0 {SIDEBAR_INDENT[1]}in 0 {SIDEBAR_INDENT[0]}in; }}
 .main {{ width: {MAIN_WIDTH_IN}in; flex: 1 1 {MAIN_WIDTH_IN}in;
          padding: 0 {MAIN_INDENT[1]}in 0 {MAIN_INDENT[0]}in; }}
-h1 {{ font-size: {NAME_PT}pt; font-weight: 200; line-height: {NAME_LINE_PT}pt;
+h1 {{ font-size: {NAME_PT}pt; font-weight: 400; line-height: {NAME_LINE_PT}pt;
       margin-top: {GAP_PT["name"]}pt; }}
-h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; margin-top: {GAP_PT["section"]}pt; }}
-h3 {{ font-size: {BODY_PT}pt; font-weight: 600; margin-top: {GAP_PT["entry"]}pt; }}
-.subtitle {{ font-size: {SUBTITLE_PT}pt; margin-top: {GAP_PT["subtitle"]}pt; }}
-.contact {{ font-size: {CONTACT_PT}pt; font-weight: 600; margin-top: {GAP_PT["contact"]}pt; }}
+h2 {{ font-size: {SECTION_PT}pt; font-weight: 400; line-height: {SECTION_LINE_PT}pt;
+      margin-top: {GAP_PT["section"]}pt; }}
+.rail h2 {{ margin-top: {GAP_PT["section-rail"]}pt; }}
+h1 + h2 {{ margin-top: {GAP_PT["section-after-name"]}pt; }}
+.subtitle + h2 {{ margin-top: {GAP_PT["section-after-subtitle"]}pt; }}
+h3 {{ font-size: {BODY_PT}pt; font-weight: 400; margin-top: {GAP_PT["entry"]}pt; }}
+.subtitle {{ font-size: {SUBTITLE_PT}pt; line-height: {SUBTITLE_LINE_PT}pt;
+             margin-top: {GAP_PT["subtitle"]}pt; }}
+.contact {{ font-size: {CONTACT_PT}pt; margin-top: {GAP_PT["contact"]}pt; }}
 .meta {{ font-style: italic; margin-top: {GAP_PT["meta"]}pt; }}
 .skill-group {{ font-weight: 700; margin-top: {GAP_PT["skill-group"]}pt; }}
-.skill-item {{ margin-top: {GAP_PT["skill-item"]}pt; }}
 .skill-inline {{ margin-top: {GAP_PT["skill-inline"]}pt; }}
-.lead {{ margin-top: {GAP_PT["lead"]}pt; }}
-p {{ margin-top: {GAP_PT["para"]}pt; }}
-ul {{ padding-left: {BULLET_HANGING_IN + MAIN_INDENT[0]}in; list-style-position: outside; }}
-li {{ margin-top: {GAP_PT["bullet"]}pt; }}
+p {{ font-size: {PROSE_PT}pt; line-height: {PROSE_LINE_PT}pt; margin-top: {GAP_PT["para"]}pt; }}
+p.note {{ font-size: {BODY_PT}pt; line-height: {LINE_PT}pt; padding-left: {NOTE_INDENT_IN}in;
+          margin-top: {GAP_PT["note"]}pt; }}
+/* Every bullet draws its glyph at the column edge and hangs its text past it, with the left
+   indent and negative first-line indent of the .docx "List Bullet" paragraphs. The glyph stays
+   in the text flow: a positioned box is painted after everything else, so Chrome would write
+   each bullet's text last and a parser would read every skill and accomplishment detached from
+   its label or role. The first of a run stands off from what precedes it; the rest sit tighter. */
+ul {{ padding: 0; list-style: none; }}
+li {{ padding-left: {BULLET_HANGING_IN}in; text-indent: -{BULLET_HANGING_IN}in;
+      margin-top: {GAP_PT["bullet"]}pt; }}
+li:first-child {{ margin-top: {GAP_PT["bullet-first"]}pt; }}
+li::before {{ content: "{BULLET_GLYPH}"; display: inline-block; width: {BULLET_HANGING_IN}in;
+              text-indent: 0; }}
+.rail li {{ margin-top: {GAP_PT["skill-item"]}pt; }}
+.rail li:first-child {{ margin-top: {GAP_PT["skill-item-first"]}pt; }}
+/* Both columns start at the page margin, as the first paragraph of each .docx cell does. */
+.rail > :first-child, .main > :first-child {{ margin-top: 0; }}
 """
 
 
@@ -363,53 +448,52 @@ def render_html(
         f'<section class="main">{_html_groups(main_groups, sidebar=False)}</section>'
         "</div>"
     )
-    return page(document.name or "Resume", CSS, body)
+    return page(title_of(document), CSS, body)
 
 
-def _html_groups(  # noqa: C901, PLR0912 - flat dispatch over the block union
-    groups: list[SectionGroup], *, sidebar: bool
-) -> str:
+def _html_groups(groups: list[SectionGroup], *, sidebar: bool) -> str:
+    """Render the groups of one column, wrapping each run of bullets in a single list."""
     out: list[str] = []
     in_list = False
-
-    def close_list() -> None:
-        nonlocal in_list
+    for group in groups:
         if in_list:
             out.append("</ul>")
             in_list = False
-
-    for group in groups:
-        close_list()
         if group.title:
             out.append(f"<h2>{spans_to_html((Span(group.title),))}</h2>")
         for block in group.blocks:
-            if not (isinstance(block, Bullet) and not _lead_in(block.spans)):
-                close_list()
-            match block:
-                case Name(spans):
-                    out.append(f"<h1>{spans_to_html(spans)}</h1>")
-                case HeaderLine(spans):
-                    css = "contact" if sidebar else "subtitle"
-                    out.append(f'<div class="{css}">{spans_to_html(spans)}</div>')
-                case Entry(spans):
-                    out.append(f"<h3>{spans_to_html(spans)}</h3>")
-                case Meta(spans):
-                    out.append(f'<div class="meta">{spans_to_html(spans)}</div>')
-                case SkillLine(label, items):
-                    out.append(_html_skill(label, items, sidebar=sidebar))
-                case Bullet(spans) if _lead_in(spans):
-                    out.append(f'<div class="lead">{spans_to_html(spans)}</div>')
-                case Bullet(spans):
-                    if not in_list:
-                        out.append("<ul>")
-                        in_list = True
-                    out.append(f"<li>{spans_to_html(spans)}</li>")
-                case Paragraph(spans):
-                    out.append(f"<p>{spans_to_html(spans)}</p>")
-                case _:  # pragma: no cover - mypy proves the block union is exhaustive
-                    assert_never(block)
-    close_list()
+            if isinstance(block, Bullet) != in_list:
+                out.append("<ul>" if in_list is False else "</ul>")
+                in_list = not in_list
+            out.append(_html_block(block, sidebar=sidebar))
+    if in_list:
+        out.append("</ul>")
     return "".join(out)
+
+
+def _html_block(block: GroupBlock, *, sidebar: bool) -> str:
+    """Render one block; a bullet comes back as a bare ``<li>`` for the caller's list."""
+    match block:
+        case Name(spans):
+            html = f"<h1>{spans_to_html(spans)}</h1>"
+        case HeaderLine(spans):
+            css = "contact" if sidebar else "subtitle"
+            html = f'<div class="{css}">{spans_to_html(spans)}</div>'
+        case Entry(spans):
+            html = f"<h3>{spans_to_html(entry_spans(spans))}</h3>"
+        case Meta(spans):
+            html = f'<div class="meta">{spans_to_html(spans)}</div>'
+        case SkillLine(label, items):
+            html = _html_skill(label, items, sidebar=sidebar)
+        case Bullet(spans):
+            html = f"<li>{spans_to_html(spans)}</li>"
+        case Paragraph(spans) if is_note(spans):
+            html = f'<p class="note">{spans_to_html(spans)}</p>'
+        case Paragraph(spans):
+            html = f"<p>{spans_to_html(spans)}</p>"
+        case _:  # pragma: no cover - mypy proves the block union is exhaustive
+            assert_never(block)
+    return html
 
 
 def _html_skill(label: str, items: tuple[Span, ...], *, sidebar: bool) -> str:
@@ -418,7 +502,5 @@ def _html_skill(label: str, items: tuple[Span, ...], *, sidebar: bool) -> str:
             f'<div class="skill-inline">{spans_to_html((Span(f"{label}: ", bold=True),))}'
             f"{spans_to_html(items)}</div>"
         )
-    rows = "".join(
-        f'<div class="skill-item">{spans_to_html(item)}</div>' for item in _skill_items(items)
-    )
-    return f'<div class="skill-group">{spans_to_html((Span(label),))}</div>{rows}'
+    rows = "".join(f"<li>{spans_to_html(item)}</li>" for item in _skill_items(items))
+    return f'<div class="skill-group">{spans_to_html((Span(label),))}</div><ul>{rows}</ul>'

@@ -23,6 +23,10 @@ __all__ = [
     "SectionGroup",
     "SkillLine",
     "Span",
+    "is_contact_line",
+    "is_note",
+    "is_sectioned",
+    "title_of",
 ]
 
 
@@ -72,7 +76,7 @@ class Meta:
 
 @dataclass(frozen=True, slots=True)
 class SkillLine:
-    """A ``**Category:** item, item`` line inside a skills section."""
+    """A ``**Category:** item, item`` line (or ``**Category**: item``) in a skills section."""
 
     label: str
     items: tuple[Span, ...]
@@ -90,6 +94,22 @@ class Paragraph:
     """Body prose — the summary, or a cover-letter paragraph."""
 
     spans: tuple[Span, ...]
+
+
+def is_contact_line(spans: tuple[Span, ...]) -> bool:
+    """Report whether a header line is the contact line rather than a target-title subtitle.
+
+    Any pipe counts, not just the documented ``" | "``, so a contact line written without spaces
+    is still recognised. The cost is that a target title containing a pipe is misread as contact
+    details — write the title without one.
+    """
+    return "|" in "".join(span.text for span in spans)
+
+
+def is_note(spans: tuple[Span, ...]) -> bool:
+    """Report whether a paragraph is set entirely in italics: a closing ``*Tech Stack*`` note."""
+    written = [span for span in spans if span.text.strip()]
+    return bool(written) and all(span.italic for span in written)
 
 
 GroupBlock = Name | HeaderLine | Entry | Meta | SkillLine | Bullet | Paragraph
@@ -142,3 +162,17 @@ class Document:
                 current.append(block)
         groups.append(SectionGroup(title, tuple(current)))
         return tuple(groups)
+
+
+def is_sectioned(document: Document) -> bool:
+    """Report whether this is a resume (it has ``## `` sections) rather than a cover letter."""
+    return any(isinstance(block, Section) for block in document.blocks)
+
+
+def title_of(document: Document) -> str:
+    """Return what the file is, for its title: "Ada Lovelace Resume", "Ada Lovelace Cover Letter".
+
+    The .docx properties and the PDF share it, so both files name themselves the same way.
+    """
+    kind = "Resume" if is_sectioned(document) else "Cover Letter"
+    return f"{document.name} {kind}".strip()

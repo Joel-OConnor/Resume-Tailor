@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -43,7 +44,7 @@ def test_period_formatting(start: str, end: str, expected: str) -> None:
 def test_the_minimal_profile_renders_the_core_sections() -> None:
     markdown = _render()
     assert markdown.startswith("# Master Profile — Ada\n")
-    assert "> Generated from `profile/master-profile.yaml`" in markdown
+    assert "> Generated from `output/master-profile.yaml`" in markdown
     assert "## Contact & links" in markdown
     assert "- **Name:** Ada" in markdown
     assert "## Professional summary" in markdown
@@ -51,6 +52,22 @@ def test_the_minimal_profile_renders_the_core_sections() -> None:
     assert "### Analytical Engine Programme" in markdown
     assert "#### Principal Engineer" in markdown
     assert "*January 1843 – Present*" in markdown
+
+
+def test_the_header_names_the_file_the_view_was_rendered_from() -> None:
+    """A view of a backup or the example must not send the reader to edit the live profile."""
+    profile = loader.load_mapping(MINIMAL)
+    markdown = render_markdown(profile, source=Path("examples/master-profile.yaml"))
+    assert markdown.splitlines()[2] == (
+        "> Generated from `examples/master-profile.yaml`. Edit the YAML, not this file."
+    )
+    assert "output/master-profile.yaml" not in markdown
+
+
+def test_without_a_source_the_header_names_the_default_profile() -> None:
+    assert _render().splitlines()[2] == (
+        "> Generated from `output/master-profile.yaml`. Edit the YAML, not this file."
+    )
 
 
 def test_it_ends_with_exactly_one_newline() -> None:
@@ -198,7 +215,7 @@ def test_notes_render_under_a_warning_heading() -> None:
 
 
 def test_the_shipped_example_renders() -> None:
-    profile = loader.load(REPO_ROOT / "templates" / "master-profile.example.yaml")
+    profile = loader.load(REPO_ROOT / "examples" / "master-profile.yaml")
     markdown = render_markdown(profile)
     assert "# Master Profile — Jordan Rivera" in markdown
     assert "March 2021 – Present" in markdown

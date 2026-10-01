@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from docx.enum.text import WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt
+
+from resume_tailor.documents.blocks import title_of
 
 if TYPE_CHECKING:
+    from docx.document import Document as DocxDocument
     from docx.table import Table, _Cell
     from docx.text.paragraph import Paragraph as DocxParagraph
 
-    from resume_tailor.documents.blocks import Span
+    from resume_tailor.documents.blocks import Document, Span
 
 # The ``w:pPr`` child order from ECMA-376. python-docx builds its accessors from the same list
 # and then deletes it, so it is restated here: an element inserted out of sequence yields a
@@ -65,12 +69,30 @@ def _successors(tag: str) -> tuple[str, ...]:
 
 __all__ = [
     "add_spans",
-    "set_bottom_border",
     "set_cell_border",
     "set_cell_margins",
     "set_indent",
+    "set_properties",
     "set_spacing",
 ]
+
+
+def set_properties(docx: DocxDocument, document: Document) -> None:
+    """Replace the template's file properties with this document's own.
+
+    python-docx starts every file from a blank template whose properties say it was written by
+    "python-docx" in December 2013 and has no title. Word's File > Info, Finder's Get Info and
+    anything that indexes the file read those, so each export names the candidate as its author,
+    says what it is ("Ada Lovelace Resume", "Ada Lovelace Cover Letter"), and is dated now.
+    """
+    now = datetime.now(UTC).replace(microsecond=0)  # the file format records whole seconds
+    properties = docx.core_properties
+    properties.title = title_of(document)
+    properties.author = document.name
+    properties.last_modified_by = document.name
+    properties.comments = ""
+    properties.created = now
+    properties.modified = now
 
 
 def add_spans(  # noqa: PLR0913 - every argument is one independent text attribute
@@ -81,7 +103,6 @@ def add_spans(  # noqa: PLR0913 - every argument is one independent text attribu
     size: float,
     bold: bool = False,
     italic: bool = False,
-    color: str | None = None,
 ) -> None:
     """Append ``spans`` to ``paragraph``, layering each span's emphasis over the defaults."""
     for span in spans:
@@ -92,32 +113,10 @@ def add_spans(  # noqa: PLR0913 - every argument is one independent text attribu
         run.italic = italic or span.italic
         run.font.name = font
         run.font.size = Pt(size)
-        if color is not None:
-            run.font.color.rgb = RGBColor.from_string(color)
 
 
-def set_bottom_border(paragraph: DocxParagraph, *, color: str = "999999", size: int = 6) -> None:
-    """Draw a thin rule under a heading.
-
-    A paragraph border, not a table — parsers read the text either way.
-
-    ``w:pBdr`` has a fixed position in ``CT_PPrBase``; appending it after ``w:spacing`` produces
-    a document Word may refuse to open, so it is inserted ahead of everything that follows it in
-    the schema sequence.
-    """
-    borders = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), str(size))
-    bottom.set(qn("w:space"), "2")
-    bottom.set(qn("w:color"), color)
-    borders.append(bottom)
-    properties = paragraph._p.get_or_add_pPr()  # noqa: SLF001
-    properties.insert_element_before(borders, *_successors("w:pBdr"))
-
-
-def set_cell_border(cell: _Cell, edge: str, *, color: str = "000000", size: int = 8) -> None:
-    """Draw a single border edge (``left``/``right``/``top``/``bottom``) on a table cell."""
+def set_cell_border(cell: _Cell, edge: str) -> None:
+    """Draw a thin black border edge (``left``/``right``/``top``/``bottom``) on a table cell."""
     properties = cell._tc.get_or_add_tcPr()  # noqa: SLF001
     borders = properties.find(qn("w:tcBorders"))
     if borders is None:
@@ -125,9 +124,9 @@ def set_cell_border(cell: _Cell, edge: str, *, color: str = "000000", size: int 
         properties.append(borders)
     element = OxmlElement(f"w:{edge}")
     element.set(qn("w:val"), "single")
-    element.set(qn("w:sz"), str(size))
+    element.set(qn("w:sz"), "8")  # eighths of a point: a 1pt rule
     element.set(qn("w:space"), "0")
-    element.set(qn("w:color"), color)
+    element.set(qn("w:color"), "000000")
     borders.append(element)
 
 

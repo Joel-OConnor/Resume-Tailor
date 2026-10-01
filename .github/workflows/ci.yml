@@ -19,12 +19,12 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          # .python-version pins the interpreter, so CI cannot drift onto whatever uv
-          # happens to resolve for requires-python = ">=3.12".
-          python-version-file: .python-version
 
+      # uv picks the interpreter from .python-version on its own, so CI cannot drift onto
+      # whatever it would resolve for requires-python = ">=3.12". --locked fails the run when
+      # uv.lock has drifted from pyproject.toml, instead of quietly re-resolving it.
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-groups --locked
 
       - name: Lint
         run: |
@@ -39,4 +39,4 @@ jobs:
 
       # The example profile doubles as a fixture: if it stops validating, the docs are lying.
       - name: Validate the example profile
-        run: uv run resume-tailor profile validate templates/master-profile.example.yaml
+        run: uv run resume-tailor profile validate examples/master-profile.yaml

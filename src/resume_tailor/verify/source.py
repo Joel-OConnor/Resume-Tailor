@@ -22,7 +22,9 @@ _SKIP = re.compile(r"^$|^(?:-{3,}|_{3,}|\*{3,})$")
 _SECTION = re.compile(r"^##\s+(?P<title>\S.*)$")
 _ENTRY = re.compile(r"^###\s+(?P<title>\S.*)$")
 _BULLET = re.compile(r"^[-*]\s+(?P<text>.*)$")
-_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<items>.*)$")
+# The colon inside the bold ("**Languages:** Go") is the format's; outside it ("**Languages**: Go")
+# is as common a habit, and the renderer reads both as a skills line, so both are checked as one.
+_SKILL = re.compile(r"^\*\*(?P<label>[^*]+?)(?::\*\*|\*\*:)\s*(?P<items>.*)$")
 _ORDINAL = re.compile(r"^[0-9]{1,2}[.)]\s+")
 
 
@@ -51,11 +53,24 @@ class Kind(StrEnum):
 
 # Section titles are written by a model, so they are matched by keyword rather than by equality:
 # "Professional Experience" and "Technical Skills" have to land in the same place as the bare word.
+# Certifications, licenses, awards and any other heading a credential list goes under are checked
+# exactly as a degree is, against the one pool of credentials, so they share its area. A section
+# mixing projects in with them stays unchecked, since a project is not a credential and could
+# never match that pool.
 _AREAS: tuple[tuple[str, Area], ...] = (
     ("skill", Area.SKILLS),
     ("experience", Area.EXPERIENCE),
     ("employment", Area.EXPERIENCE),
     ("education", Area.EDUCATION),
+    ("project", Area.OTHER),
+    ("certif", Area.EDUCATION),
+    ("licen", Area.EDUCATION),
+    ("award", Area.EDUCATION),
+    ("honor", Area.EDUCATION),
+    ("honour", Area.EDUCATION),
+    ("credential", Area.EDUCATION),
+    ("accredit", Area.EDUCATION),
+    ("professional development", Area.EDUCATION),
 )
 
 
@@ -69,6 +84,9 @@ class Line:
     kind: Kind
     body: str = ""
     """The content without its marker: an entry title, a bullet's text, a skill line's items."""
+
+    label: str = ""
+    """A skill line's bold label, without its colon; empty on every other kind of line."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +132,8 @@ def scan(markdown: str) -> Source:
             lines.append(Line(number, text, area, Kind.BULLET, match["text"].strip()))
             expect_meta = False
         elif match := _SKILL.match(text):
-            lines.append(Line(number, text, area, Kind.SKILL, match["items"].strip()))
+            body, label = match["items"].strip(), match["label"].strip()
+            lines.append(Line(number, text, area, Kind.SKILL, body, label))
             expect_meta = False
         elif expect_meta:
             entries[-1] = replace(entries[-1], meta=text, meta_line=number)

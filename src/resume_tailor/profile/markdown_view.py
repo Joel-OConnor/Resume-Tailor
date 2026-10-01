@@ -9,10 +9,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from resume_tailor.paths import PROFILE_PATH
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from resume_tailor.profile.models import Profile, Role, Tenure
 
-__all__ = ["format_period", "render_markdown"]
+__all__ = ["format_date", "format_period", "render_markdown"]
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -62,7 +66,7 @@ _MONTHS = (
 )
 
 
-def _month_name(value: str) -> str:
+def format_date(value: str) -> str:
     """Turn ``2022-06`` into ``June 2022``; leave ``2022`` and ``present`` alone."""
     if value == "present":
         return "Present"
@@ -74,15 +78,20 @@ def _month_name(value: str) -> str:
 
 def format_period(start: str, end: str) -> str:
     """Render a date range the way a resume prints it."""
-    return f"{_month_name(start)} – {_month_name(end)}"
+    return f"{format_date(start)} – {format_date(end)}"
 
 
-def render_markdown(profile: Profile) -> str:
-    """Render the whole profile as Markdown."""
+def render_markdown(profile: Profile, *, source: Path = PROFILE_PATH) -> str:
+    """Render the whole profile as Markdown.
+
+    ``source`` is the YAML file the profile was loaded from. The header names it as the file to
+    edit, so a view rendered from a backup or the example never points the reader at the live
+    profile instead.
+    """
     out: list[str] = [
         f"# Master Profile — {_line(profile.contact.name)}",
         "",
-        "> Generated from `profile/master-profile.yaml`. Edit the YAML, not this file.",
+        f"> Generated from `{_line(source.as_posix())}`. Edit the YAML, not this file.",
         "",
     ]
     _contact(profile, out)
@@ -188,7 +197,7 @@ def _education(profile: Profile, out: list[str]) -> None:
         details = [
             part
             for part in (
-                _month_name(entry.completed) if entry.completed else "",
+                format_date(entry.completed) if entry.completed else "",
                 _line(entry.location),
                 _line(entry.notes),
             )

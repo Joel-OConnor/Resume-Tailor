@@ -7,12 +7,9 @@ import sys
 
 import pytest
 
+# Importing it must not run the CLI: without its __name__ guard, collection fails right here.
 import resume_tailor.__main__
 from resume_tailor import __version__
-
-
-def test_importing_the_module_does_not_run_the_cli() -> None:
-    assert resume_tailor.__main__.__name__ == "resume_tailor.__main__"
 
 
 def test_running_the_package_as_a_module(

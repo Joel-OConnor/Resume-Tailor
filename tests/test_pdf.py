@@ -79,6 +79,36 @@ def test_without_chrome_the_html_is_written_instead(tmp_path: Path) -> None:
     assert out.with_suffix(".html").read_text(encoding="utf-8") == HTML
 
 
+def test_without_chrome_an_earlier_pdf_is_removed(tmp_path: Path) -> None:
+    """The fallback says to print the .html by hand; last time's printout must not pass for it."""
+    out = tmp_path / "resume.pdf"
+    out.write_bytes(b"%PDF-1.4\nLAST WEEK'S RESUME")
+    result = pdf.html_to_pdf(HTML, out)
+    assert result.reason == NO_BROWSER
+    assert not out.exists()
+    assert out.with_suffix(".html").read_text(encoding="utf-8") == HTML
+
+
+def test_without_chrome_only_the_pdf_being_built_is_removed(tmp_path: Path) -> None:
+    """The cover letter's PDF in the same folder is a different document and stays."""
+    out = tmp_path / "resume.pdf"
+    out.write_bytes(b"%PDF-1.4\nLAST WEEK'S RESUME")
+    other = tmp_path / "cover-letter.pdf"
+    other.write_bytes(b"%PDF-1.4\nCOVER LETTER")
+    pdf.html_to_pdf(HTML, out)
+    assert other.read_bytes() == b"%PDF-1.4\nCOVER LETTER"
+
+
+def test_an_earlier_pdf_is_replaced_by_a_successful_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "resume.pdf"
+    out.write_bytes(b"%PDF-1.4\nLAST WEEK'S RESUME")
+    _fake_chrome(monkeypatch, _writes_pdf)
+    assert pdf.html_to_pdf(HTML, out).ok is True
+    assert out.read_bytes() == b"%PDF-1.4\n"
+
+
 def test_a_successful_run_produces_the_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls = _fake_chrome(monkeypatch, _writes_pdf)
     out = tmp_path / "resume.pdf"
@@ -88,6 +118,16 @@ def test_a_successful_run_produces_the_pdf(monkeypatch: pytest.MonkeyPatch, tmp_
     assert len(calls) == 1
     assert calls[0][1] == "--headless=new"
     assert calls[0][-1].startswith("file://")
+    assert f"--print-to-pdf={out}" in calls[0]
+    # Otherwise Chrome prints the date, title, file URL and page numbers into the margins.
+    assert "--no-pdf-header-footer" in calls[0]
+
+
+def test_printing_waits_for_no_web_font(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Both layouts set Arial, which is installed, so Chrome prints as soon as the page loads."""
+    calls = _fake_chrome(monkeypatch, _writes_pdf)
+    pdf.html_to_pdf(HTML, tmp_path / "resume.pdf")
+    assert not [argument for argument in calls[0] if "virtual-time-budget" in argument]
 
 
 def test_the_legacy_headless_flag_is_retried(
